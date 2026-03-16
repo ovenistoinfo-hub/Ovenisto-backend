@@ -1,0 +1,816 @@
+// Prisma schema for Ovenisto POS System
+// Generated from BACKEND_DEVELOPMENT_GUIDE.md
+// Covers all 10 implementation phases
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================
+// PHASE 1: Auth & Users
+// =============================================
+
+model Outlet {
+  id        String   @id @default(uuid())
+  name      String   @db.VarChar(100)
+  code      String   @unique @db.VarChar(20)
+  address   String?
+  city      String?  @db.VarChar(50)
+  phone     String?  @db.VarChar(20)
+  email     String?  @db.VarChar(100)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  // Relations
+  users              User[]
+  settings           Settings[]
+  loyaltySettings    LoyaltySettings[]
+  transfersFrom      Transfer[]         @relation("TransferFrom")
+  transfersTo        Transfer[]         @relation("TransferTo")
+
+  @@map("outlets")
+}
+
+enum UserRole {
+  SUPER_ADMIN @map("Super Admin")
+  ADMIN       @map("Admin")
+  MANAGER     @map("Manager")
+  CASHIER     @map("Cashier")
+  WAITER      @map("Waiter")
+  KITCHEN     @map("Kitchen Staff")
+}
+
+model User {
+  id           String    @id @default(uuid())
+  name         String    @db.VarChar(100)
+  email        String    @unique @db.VarChar(100)
+  passwordHash String    @db.VarChar(255)
+  phone        String?   @db.VarChar(20)
+  role         UserRole
+  branch       String?   @db.VarChar(100)
+  outletId     String?
+  avatar       String?
+  status       String    @default("active") @db.VarChar(20)
+  lastLogin    DateTime?
+  createdAt    DateTime  @default(now())
+
+  // Relations
+  outlet           Outlet?           @relation(fields: [outletId], references: [id])
+  orders           Order[]
+  stockAdjustments StockAdjustment[]
+  attendance       Attendance[]
+  shifts           Shift[]
+  staffSchedules   StaffSchedule[]
+  leaveRequests    LeaveRequest[]
+  leaveBalance     LeaveBalance?
+
+  @@map("users")
+}
+
+// =============================================
+// PHASE 2: Settings
+// =============================================
+
+model Settings {
+  id                String   @id @default(uuid())
+  outletId          String?
+  restaurantName    String?  @db.VarChar(100)
+  currency          String   @default("Rs.") @db.VarChar(10)
+  taxRate           Decimal  @default(16) @db.Decimal(5, 2)
+  taxName           String   @default("GST") @db.VarChar(20)
+  phone             String?  @db.VarChar(20)
+  email             String?  @db.VarChar(100)
+  address           String?
+  receiptHeader     String?
+  tableManagement   Boolean  @default(true)
+  onlineOrders      Boolean  @default(true)
+  reservations      Boolean  @default(false)
+  selfOrderConfig   Json     @default("{}")
+  websiteConfig     Json     @default("{}")
+  reservationConfig Json     @default("{}")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  outlet Outlet? @relation(fields: [outletId], references: [id])
+
+  @@map("settings")
+}
+
+// =============================================
+// PHASE 3: Menu Management
+// =============================================
+
+model FoodCategory {
+  id           String   @id @default(uuid())
+  name         String   @db.VarChar(100)
+  displayOrder Int      @default(0)
+  status       String   @default("active") @db.VarChar(20)
+
+  // Relations
+  menuItems FoodMenuItem[]
+
+  @@map("food_categories")
+}
+
+model FoodMenuItem {
+  id          String   @id @default(uuid())
+  name        String   @db.VarChar(100)
+  code        String?  @unique @db.VarChar(20)
+  categoryId  String?
+  price       Decimal  @db.Decimal(10, 2)
+  available   Boolean  @default(true)
+  image       String?
+  tags        String[]
+  cookingTime Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  // Relations
+  category   FoodCategory?      @relation(fields: [categoryId], references: [id])
+  variants   FoodMenuVariant[]
+  recipes    FoodRecipe[]
+  orderItems OrderItem[]
+
+  @@map("food_menu_items")
+}
+
+model FoodMenuVariant {
+  id           String  @id @default(uuid())
+  menuItemId   String
+  name         String  @db.VarChar(100)
+  price        Decimal @db.Decimal(10, 2)
+  displayOrder Int     @default(0)
+
+  // Relations
+  menuItem FoodMenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+
+  @@map("food_menu_variants")
+}
+
+model Modifier {
+  id     String  @id @default(uuid())
+  name   String  @db.VarChar(100)
+  price  Decimal @default(0) @db.Decimal(10, 2)
+  type   String? @db.VarChar(20) // addon, removal
+  status String  @default("active") @db.VarChar(20)
+
+  @@map("modifiers")
+}
+
+// =============================================
+// PHASE 4: Inventory & Ingredients
+// =============================================
+
+model IngredientCategory {
+  id          String  @id @default(uuid())
+  name        String  @db.VarChar(100)
+  description String?
+  status      String  @default("active") @db.VarChar(20)
+
+  // Relations
+  ingredients Ingredient[]
+
+  @@map("ingredient_categories")
+}
+
+model IngredientUnit {
+  id     String @id @default(uuid())
+  name   String @db.VarChar(20)
+  status String @default("active") @db.VarChar(20)
+
+  // Relations
+  ingredients Ingredient[]
+
+  @@map("ingredient_units")
+}
+
+model Ingredient {
+  id            String  @id @default(uuid())
+  name          String  @db.VarChar(100)
+  categoryId    String?
+  unitId        String?
+  purchasePrice Decimal? @db.Decimal(10, 2)
+  currentStock  Decimal @default(0) @db.Decimal(10, 3)
+  lowStockLevel Decimal @default(0) @db.Decimal(10, 3)
+  status        String  @default("active") @db.VarChar(20)
+
+  // Relations
+  category         IngredientCategory? @relation(fields: [categoryId], references: [id])
+  unit             IngredientUnit?     @relation(fields: [unitId], references: [id])
+  recipes          FoodRecipe[]
+  stockAdjustments StockAdjustment[]
+  stockTakeItems   StockTakeItem[]
+
+  @@map("ingredients")
+}
+
+model FoodRecipe {
+  id           String  @id @default(uuid())
+  menuItemId   String
+  ingredientId String
+  qtyPerUnit   Decimal @db.Decimal(10, 4)
+
+  // Relations
+  menuItem   FoodMenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  ingredient Ingredient   @relation(fields: [ingredientId], references: [id])
+
+  @@map("food_recipes")
+}
+
+model PreMadeFood {
+  id            String  @id @default(uuid())
+  name          String  @db.VarChar(100)
+  unit          String? @db.VarChar(20)
+  currentStock  Decimal @default(0) @db.Decimal(10, 3)
+  lowStockLevel Decimal @default(0) @db.Decimal(10, 3)
+  costPerUnit   Decimal? @db.Decimal(10, 2)
+  status        String  @default("active") @db.VarChar(20)
+
+  @@map("pre_made_food")
+}
+
+model StockAdjustment {
+  id           String   @id @default(uuid())
+  ingredientId String
+  type         String   @db.VarChar(20) // add, deduct, damage, correction
+  quantity     Decimal  @db.Decimal(10, 3)
+  reason       String?
+  adjustedById String?
+  date         DateTime @default(now())
+
+  // Relations
+  ingredient Ingredient @relation(fields: [ingredientId], references: [id])
+  adjustedBy User?      @relation(fields: [adjustedById], references: [id])
+
+  @@map("stock_adjustments")
+}
+
+model StockTake {
+  id                 String    @id @default(uuid())
+  reference          String?   @unique @db.VarChar(20)
+  date               DateTime  @db.Date
+  status             String    @default("active") @db.VarChar(20)
+  countedBy          String?   @db.VarChar(100)
+  totalVarianceValue Decimal   @default(0) @db.Decimal(10, 2)
+  notes              String?
+  completedAt        DateTime?
+  createdAt          DateTime  @default(now())
+
+  // Relations
+  items StockTakeItem[]
+
+  @@map("stock_takes")
+}
+
+model StockTakeItem {
+  id            String  @id @default(uuid())
+  stockTakeId   String
+  ingredientId  String
+  systemQty     Decimal? @db.Decimal(10, 3)
+  countedQty    Decimal? @db.Decimal(10, 3)
+  variance      Decimal? @db.Decimal(10, 3)
+  varianceValue Decimal? @db.Decimal(10, 2)
+
+  // Relations
+  stockTake  StockTake  @relation(fields: [stockTakeId], references: [id], onDelete: Cascade)
+  ingredient Ingredient @relation(fields: [ingredientId], references: [id])
+
+  @@map("stock_take_items")
+}
+
+model Production {
+  id         String   @id @default(uuid())
+  itemName   String?  @db.VarChar(100)
+  quantity   Decimal? @db.Decimal(10, 3)
+  unit       String?  @db.VarChar(20)
+  producedBy String?  @db.VarChar(100)
+  date       DateTime @default(now())
+  notes      String?
+
+  @@map("productions")
+}
+
+model Transfer {
+  id            String   @id @default(uuid())
+  fromOutletId  String?
+  toOutletId    String?
+  itemName      String?  @db.VarChar(100)
+  quantity      Decimal? @db.Decimal(10, 3)
+  unit          String?  @db.VarChar(20)
+  status        String   @default("pending") @db.VarChar(20)
+  transferredBy String?  @db.VarChar(100)
+  date          DateTime @default(now())
+  notes         String?
+
+  // Relations
+  fromOutlet Outlet? @relation("TransferFrom", fields: [fromOutletId], references: [id])
+  toOutlet   Outlet? @relation("TransferTo", fields: [toOutletId], references: [id])
+
+  @@map("transfers")
+}
+
+model WasteRecord {
+  id         String   @id @default(uuid())
+  itemName   String?  @db.VarChar(100)
+  quantity   Decimal? @db.Decimal(10, 3)
+  unit       String?  @db.VarChar(20)
+  reason     String?
+  cost       Decimal? @db.Decimal(10, 2)
+  recordedBy String?  @db.VarChar(100)
+  date       DateTime @default(now())
+
+  @@map("waste_records")
+}
+
+// =============================================
+// PHASE 5: Orders & POS
+// =============================================
+
+enum OrderType {
+  DINE_IN    @map("Dine In")
+  TAKE_AWAY  @map("Take Away")
+  DELIVERY   @map("Delivery")
+  ONLINE     @map("Online")
+  SELF_ORDER @map("Self Order")
+  FOODPANDA  @map("Foodpanda")
+  WALKIN     @map("Walk-in")
+}
+
+enum OrderStatus {
+  PENDING    @map("pending")
+  PREPARING  @map("preparing")
+  READY      @map("ready")
+  COMPLETED  @map("completed")
+  CANCELLED  @map("cancelled")
+  SCHEDULED  @map("scheduled")
+}
+
+model Order {
+  id              String       @id @default(uuid())
+  orderNumber     String       @unique @db.VarChar(20)
+  customerId      String?
+  customerName    String?      @db.VarChar(100)
+  phone           String?      @db.VarChar(20)
+  type            OrderType    @default(WALKIN)
+  subtotal        Decimal      @db.Decimal(10, 2)
+  discount        Decimal      @default(0) @db.Decimal(10, 2)
+  tax             Decimal      @default(0) @db.Decimal(10, 2)
+  total           Decimal      @db.Decimal(10, 2)
+  status          OrderStatus  @default(PENDING)
+  paymentMethod   String?      @db.VarChar(30)
+  date            DateTime     @db.Date
+  time            String?      @db.VarChar(20)
+  staffId         String?
+  staffName       String?      @db.VarChar(100)
+  tableNumber     Int?
+  deliveryAddress String?
+  riderId         String?
+  // Future Sale fields
+  isFutureSale    Boolean      @default(false)
+  scheduledDate   DateTime?    @db.Date
+  scheduledTime   String?      @db.VarChar(20)
+  futureNotes     String?
+  advancePayment  Decimal      @default(0) @db.Decimal(10, 2)
+  // Enhanced POS fields
+  isUrgent        Boolean      @default(false)
+  customerType    String?      @db.VarChar(20) // walk-in, regular, corporate, vip
+  orderSource     String?      @db.VarChar(20) // pos, self-order, website, foodpanda, phone
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  // Relations
+  customer      Customer?               @relation(fields: [customerId], references: [id])
+  staff         User?                   @relation(fields: [staffId], references: [id])
+  rider         DeliveryRider?          @relation(fields: [riderId], references: [id])
+  items         OrderItem[]
+  modifications OrderModificationLog[]
+  deliveries    DeliveryAssignment[]
+  loyaltyTx     LoyaltyTransaction[]
+
+  @@map("orders")
+}
+
+model OrderItem {
+  id          String   @id @default(uuid())
+  orderId     String
+  menuItemId  String?
+  name        String   @db.VarChar(100)
+  price       Decimal  @db.Decimal(10, 2)
+  qty         Int
+  discount    Decimal  @default(0) @db.Decimal(10, 2)
+  modifiers   String[]
+  cookingTime Int?
+  notes       String?
+
+  // Relations
+  order    Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menuItem FoodMenuItem? @relation(fields: [menuItemId], references: [id])
+
+  @@map("order_items")
+}
+
+model OrderModificationLog {
+  id        String   @id @default(uuid())
+  orderId   String
+  action    String   @db.VarChar(30) // item_added, item_removed, qty_changed, etc.
+  detail    String?
+  staff     String?  @db.VarChar(100)
+  timestamp DateTime @default(now())
+
+  // Relations
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("order_modification_logs")
+}
+
+model Kitchen {
+  id                 String   @id @default(uuid())
+  name               String   @db.VarChar(100)
+  assignedCategories String[]
+  status             String   @default("active") @db.VarChar(20)
+
+  @@map("kitchens")
+}
+
+// =============================================
+// PHASE 6: Customers & Loyalty
+// =============================================
+
+model Customer {
+  id              String   @id @default(uuid())
+  name            String   @db.VarChar(100)
+  phone           String?  @db.VarChar(20)
+  email           String?  @db.VarChar(100)
+  address         String?
+  customerType    String   @default("walk-in") @db.VarChar(20) // walk-in, regular, corporate, vip
+  loyaltyPoints   Int      @default(0)
+  customPriceList String?  @db.VarChar(50)
+  totalOrders     Int      @default(0)
+  totalSpent      Decimal  @default(0) @db.Decimal(12, 2)
+  outstandingDue  Decimal  @default(0) @db.Decimal(10, 2)
+  lastOrder       DateTime? @db.Date
+  createdAt       DateTime @default(now())
+
+  // Relations
+  orders        Order[]
+  loyaltyMember LoyaltyMember?
+
+  @@map("customers")
+}
+
+model LoyaltySettings {
+  id             String  @id @default(uuid())
+  outletId       String?
+  pointsPerAmount Int    @default(1)
+  amountPerPoint Decimal @default(100) @db.Decimal(10, 2)
+  signupBonus    Int     @default(100)
+  birthdayBonus  Int     @default(50)
+  tiers          Json    @default("[]")
+
+  // Relations
+  outlet Outlet? @relation(fields: [outletId], references: [id])
+
+  @@map("loyalty_settings")
+}
+
+model LoyaltyMember {
+  id              String   @id @default(uuid())
+  customerId      String   @unique
+  phone           String?  @db.VarChar(20)
+  totalPoints     Int      @default(0)
+  availablePoints Int      @default(0)
+  tier            String   @default("Bronze") @db.VarChar(30)
+  joinedDate      DateTime @default(now()) @db.Date
+
+  // Relations
+  customer     Customer             @relation(fields: [customerId], references: [id])
+  transactions LoyaltyTransaction[]
+
+  @@map("loyalty_members")
+}
+
+model LoyaltyReward {
+  id             String  @id @default(uuid())
+  name           String? @db.VarChar(100)
+  pointsRequired Int
+  type           String  @db.VarChar(30) // freeItem, percentDiscount, fixedDiscount
+  value          String? @db.VarChar(100)
+  isActive       Boolean @default(true)
+
+  @@map("loyalty_rewards")
+}
+
+model LoyaltyTransaction {
+  id          String   @id @default(uuid())
+  memberId    String
+  type        String   @db.VarChar(10) // earn, redeem
+  points      Int
+  description String?
+  orderId     String?
+  date        DateTime @default(now()) @db.Date
+
+  // Relations
+  member LoyaltyMember @relation(fields: [memberId], references: [id])
+  order  Order?        @relation(fields: [orderId], references: [id])
+
+  @@map("loyalty_transactions")
+}
+
+// =============================================
+// PHASE 7: Financial
+// =============================================
+
+model Supplier {
+  id             String   @id @default(uuid())
+  name           String   @db.VarChar(100)
+  company        String?  @db.VarChar(100)
+  phone          String?  @db.VarChar(20)
+  email          String?  @db.VarChar(100)
+  totalPurchases Decimal  @default(0) @db.Decimal(12, 2)
+  totalDue       Decimal  @default(0) @db.Decimal(10, 2)
+  createdAt      DateTime @default(now())
+
+  // Relations
+  purchases Purchase[]
+
+  @@map("suppliers")
+}
+
+model Purchase {
+  id            String   @id @default(uuid())
+  supplierId    String?
+  invoiceNumber String?  @db.VarChar(30)
+  items         Json     // [{name, qty, unit, price, total}]
+  subtotal      Decimal? @db.Decimal(10, 2)
+  tax           Decimal? @db.Decimal(10, 2)
+  total         Decimal? @db.Decimal(10, 2)
+  paid          Decimal  @default(0) @db.Decimal(10, 2)
+  due           Decimal  @default(0) @db.Decimal(10, 2)
+  status        String   @default("pending") @db.VarChar(20)
+  date          DateTime @default(now()) @db.Date
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  // Relations
+  supplier Supplier? @relation(fields: [supplierId], references: [id])
+
+  @@map("purchases")
+}
+
+model Expense {
+  id            String   @id @default(uuid())
+  category      String?  @db.VarChar(50)
+  description   String?
+  amount        Decimal  @db.Decimal(10, 2)
+  paymentMethod String?  @db.VarChar(30)
+  reference     String?  @db.VarChar(50)
+  date          DateTime @default(now()) @db.Date
+  recordedBy    String?  @db.VarChar(100)
+  createdAt     DateTime @default(now())
+
+  @@map("expenses")
+}
+
+// =============================================
+// PHASE 8: Delivery
+// =============================================
+
+model DeliveryRider {
+  id               String @id @default(uuid())
+  name             String @db.VarChar(100)
+  phone            String? @db.VarChar(20)
+  isAvailable      Boolean @default(true)
+  activeDeliveries Int    @default(0)
+
+  // Relations
+  orders     Order[]
+  deliveries DeliveryAssignment[]
+
+  @@map("delivery_riders")
+}
+
+model DeliveryAssignment {
+  id              String    @id @default(uuid())
+  orderId         String
+  riderId         String
+  status          String    @default("pending") @db.VarChar(20) // pending, dispatched, delivered, returned
+  assignedAt      DateTime  @default(now())
+  deliveredAt     DateTime?
+  estimatedTime   Int?      // minutes
+  customerAddress String?
+  customerPhone   String?   @db.VarChar(20)
+  notes           String?
+
+  // Relations
+  order Order         @relation(fields: [orderId], references: [id])
+  rider DeliveryRider @relation(fields: [riderId], references: [id])
+
+  @@map("delivery_assignments")
+}
+
+// =============================================
+// PHASE 9: HR & Staff
+// =============================================
+
+model Attendance {
+  id       String    @id @default(uuid())
+  userId   String
+  date     DateTime  @db.Date
+  checkIn  DateTime?
+  checkOut DateTime?
+  status   String    @default("present") @db.VarChar(20)
+  notes    String?
+
+  // Relations
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("attendance")
+}
+
+model ShiftTemplate {
+  id        String  @id @default(uuid())
+  name      String  @db.VarChar(50)
+  startTime String? @db.VarChar(10)
+  endTime   String? @db.VarChar(10)
+  color     String? @db.VarChar(100)
+
+  @@map("shift_templates")
+}
+
+model StaffSchedule {
+  id         String   @id @default(uuid())
+  employeeId String
+  weekStart  DateTime @db.Date
+  shifts     Json     // [{day, templateId, templateName, startTime, endTime}]
+  status     String   @default("draft") @db.VarChar(20)
+  createdBy  String?  @db.VarChar(100)
+  createdAt  DateTime @default(now())
+
+  // Relations
+  employee User @relation(fields: [employeeId], references: [id])
+
+  @@map("staff_schedules")
+}
+
+model LeaveRequest {
+  id          String    @id @default(uuid())
+  employeeId  String
+  leaveType   String    @db.VarChar(20) // sick, casual, annual, emergency
+  startDate   DateTime  @db.Date
+  endDate     DateTime  @db.Date
+  totalDays   Int?
+  reason      String?
+  status      String    @default("pending") @db.VarChar(20)
+  appliedOn   DateTime  @default(now()) @db.Date
+  reviewedBy  String?   @db.VarChar(100)
+  reviewedOn  DateTime? @db.Date
+  reviewNote  String?
+
+  // Relations
+  employee User @relation(fields: [employeeId], references: [id])
+
+  @@map("leave_requests")
+}
+
+model LeaveBalance {
+  id          String @id @default(uuid())
+  employeeId  String @unique
+  annualTotal Int    @default(14)
+  annualUsed  Int    @default(0)
+  sickTotal   Int    @default(8)
+  sickUsed    Int    @default(0)
+  casualTotal Int    @default(6)
+  casualUsed  Int    @default(0)
+
+  // Relations
+  employee User @relation(fields: [employeeId], references: [id])
+
+  @@map("leave_balances")
+}
+
+model Shift {
+  id               String    @id @default(uuid())
+  shiftNumber      String?   @unique @db.VarChar(20)
+  cashierId        String?
+  cashierName      String?   @db.VarChar(100)
+  openedAt         DateTime
+  closedAt         DateTime?
+  openingCash      Decimal?  @db.Decimal(10, 2)
+  closingCash      Decimal?  @db.Decimal(10, 2)
+  status           String    @default("open") @db.VarChar(10) // open, closed
+  totalSales       Decimal   @default(0) @db.Decimal(10, 2)
+  totalCashSales   Decimal   @default(0) @db.Decimal(10, 2)
+  totalCardSales   Decimal   @default(0) @db.Decimal(10, 2)
+  totalOnlineSales Decimal   @default(0) @db.Decimal(10, 2)
+  orderCount       Int       @default(0)
+  cancelledOrders  Int       @default(0)
+  totalExpenses    Decimal   @default(0) @db.Decimal(10, 2)
+  expectedCash     Decimal   @default(0) @db.Decimal(10, 2)
+  cashDifference   Decimal?  @db.Decimal(10, 2)
+  notes            String?
+
+  // Relations
+  cashier User? @relation(fields: [cashierId], references: [id])
+
+  @@map("shifts")
+}
+
+// =============================================
+// PHASE 10: Advanced
+// =============================================
+
+model Deal {
+  id                  String    @id @default(uuid())
+  name                String    @db.VarChar(100)
+  description         String?
+  type                String    @db.VarChar(30) // percentage, combo, buyXgetY, timeBased, optionCombo
+  discountPercent     Decimal?  @db.Decimal(5, 2)
+  applicableItems     String[]
+  applicableCategories String[]
+  comboItems          Json?     // [{itemId, qty}]
+  comboPrice          Decimal?  @db.Decimal(10, 2)
+  buyQty              Int?
+  getQty              Int?
+  buyItemId           String?
+  getItemId           String?
+  startTime           String?   @db.VarChar(10)
+  endTime             String?   @db.VarChar(10)
+  timeDiscountPercent Decimal?  @db.Decimal(5, 2)
+  optionGroups        Json?     // [{id, label, allowedItems[], maxSelections}]
+  dealPrice           Decimal?  @db.Decimal(10, 2)
+  validFrom           DateTime? @db.Date
+  validTo             String?   @db.VarChar(20) // 'always' or date string
+  isActive            Boolean   @default(true)
+  createdAt           DateTime  @default(now())
+
+  @@map("deals")
+}
+
+model Coupon {
+  id             String    @id @default(uuid())
+  code           String    @unique @db.VarChar(30)
+  type           String    @db.VarChar(20) // percentage, fixed
+  value          Decimal   @db.Decimal(10, 2)
+  minOrderAmount Decimal   @default(0) @db.Decimal(10, 2)
+  maxDiscount    Decimal?  @db.Decimal(10, 2)
+  usageLimit     Int       @default(0)
+  usedCount      Int       @default(0)
+  validFrom      DateTime? @db.Date
+  validTo        DateTime? @db.Date
+  isActive       Boolean   @default(true)
+  applicableTo   String    @default("all") @db.VarChar(20)
+  createdAt      DateTime  @default(now())
+
+  @@map("coupons")
+}
+
+model Reservation {
+  id              String   @id @default(uuid())
+  customerName    String   @db.VarChar(100)
+  customerPhone   String?  @db.VarChar(20)
+  date            DateTime @db.Date
+  time            String   @db.VarChar(10)
+  guestCount      Int      @default(1)
+  tableId         String?
+  tableNumber     String?  @db.VarChar(10)
+  status          String   @default("pending") @db.VarChar(20) // pending, confirmed, seated, completed, cancelled, noShow
+  specialRequests String?
+  source          String?  @db.VarChar(20) // phone, walkin, online
+  createdAt       DateTime @default(now())
+
+  // Relations
+  table RestaurantTable? @relation(fields: [tableId], references: [id])
+
+  @@map("reservations")
+}
+
+model RestaurantTable {
+  id               String   @id @default(uuid())
+  number           String   @unique @db.VarChar(10)
+  capacity         Int      @default(4)
+  floor            String?  @db.VarChar(50)
+  shape            String?  @db.VarChar(20) // square, round, rectangle
+  status           String   @default("available") @db.VarChar(20)
+  currentOrderId   String?
+  reservationId    String?
+
+  // Relations
+  reservations Reservation[]
+
+  @@map("restaurant_tables")
+}
+
+model SmsHistory {
+  id        String   @id @default(uuid())
+  recipient String?  @db.VarChar(20)
+  message   String?
+  status    String?  @db.VarChar(20)
+  sentAt    DateTime @default(now())
+
+  @@map("sms_history")
+}
