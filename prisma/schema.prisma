@@ -37,12 +37,19 @@ model Outlet {
 }
 
 enum UserRole {
-  SUPER_ADMIN @map("Super Admin")
-  ADMIN       @map("Admin")
-  MANAGER     @map("Manager")
-  CASHIER     @map("Cashier")
-  WAITER      @map("Waiter")
-  KITCHEN     @map("Kitchen Staff")
+  SUPER_ADMIN      @map("Super Admin")
+  ADMIN            @map("Admin")
+  MANAGER          @map("Manager")
+  CASHIER          @map("Cashier")
+  WAITER           @map("Waiter")
+  KITCHEN          @map("Kitchen Staff")
+  KITCHEN_MANAGER  @map("Kitchen Manager")
+  FLOOR_MANAGER    @map("Floor Manager")
+  DELIVERY_MANAGER @map("Delivery Manager")
+  STORE_MANAGER    @map("Store Manager")
+  ACCOUNTANT       @map("Accountant")
+  RIDER            @map("Rider")
+  CUSTOMER_SCREEN  @map("Customer Screen")
 }
 
 model User {

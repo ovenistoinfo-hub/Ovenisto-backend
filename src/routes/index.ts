@@ -5,6 +5,13 @@
 
 import { Router, type Request, type Response } from 'express';
 import { ApiResponse } from '../utils/ApiResponse.js';
+import authRoutes from '../modules/auth/auth.routes.js';
+import userRoutes from '../modules/users/user.routes.js';
+import outletRoutes from '../modules/outlets/outlet.routes.js';
+import settingsRoutes from '../modules/settings/settings.routes.js';
+import menuRoutes from '../modules/menu/menu.routes.js';
+import inventoryRoutes from '../modules/inventory/inventory.routes.js';
+import stockRoutes from '../modules/stock/stock.routes.js';
 
 const router = Router();
 
@@ -78,18 +85,19 @@ router.get('/', (_req: Request, res: Response) => {
 // ============================================
 
 // Phase 1: Authentication & Users
-// router.use('/auth', authRoutes);
-// router.use('/users', userRoutes);
+router.use('/auth', authRoutes);
+router.use('/users', userRoutes);
 
 // Phase 2: Settings & Outlets
-// router.use('/settings', settingsRoutes);
-// router.use('/outlets', outletRoutes);
+router.use('/settings', settingsRoutes);
+router.use('/outlets', outletRoutes);
 
 // Phase 3: Menu Management
-// router.use('/menu', menuRoutes);
+router.use('/menu', menuRoutes);
 
 // Phase 4: Inventory
-// router.use('/inventory', inventoryRoutes);
+router.use('/inventory', inventoryRoutes);
+router.use('/stock', stockRoutes);
 // router.use('/production', productionRoutes);
 // router.use('/transfers', transferRoutes);
 // router.use('/waste', wasteRoutes);
