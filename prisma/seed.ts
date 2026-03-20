@@ -162,7 +162,7 @@ async function main() {
   // ============================================
   // Create default settings
   // ============================================
-  const settings = await prisma.settings.create({
+  await prisma.settings.create({
     data: {
       outletId: outlet.id,
       restaurantName: 'Ovenisto - Flame Kissed Flavor',
