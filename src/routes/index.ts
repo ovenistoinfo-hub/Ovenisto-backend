@@ -15,6 +15,7 @@ import stockRoutes from '../modules/stock/stock.routes.js';
 import uploadRoutes from '../modules/upload/upload.routes.js';
 import { ordersRouter, kitchensRouter } from '../modules/order/order.routes.js';
 import { customersRouter } from '../modules/customer/customer.routes.js';
+import { shiftsRouter } from '../modules/shifts/shift.routes.js';
 
 const router = Router();
 
@@ -126,7 +127,7 @@ router.use('/customers', customersRouter);
 
 // Phase 9: HR & Staff
 // router.use('/attendance', attendanceRoutes);
-// router.use('/shifts', shiftRoutes);
+router.use('/shifts', shiftsRouter);
 // router.use('/scheduling', schedulingRoutes);
 // router.use('/leave', leaveRoutes);
 
