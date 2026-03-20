@@ -266,14 +266,64 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
   const { status } = req.body;
   if (!status) throw ApiError.badRequest('Status is required');
 
-  const existing = await prisma.order.findUnique({ where: { id } });
+  const existing = await prisma.order.findUnique({
+    where: { id },
+    include: { items: true },
+  });
   if (!existing) throw ApiError.notFound('Order not found');
 
   const prismaStatus = STATUS_TO_PRISMA[status] ?? status.toUpperCase();
-  const order = await prisma.order.update({
-    where: { id },
-    data: { status: prismaStatus as any },
-    include: { items: true },
+
+  const order = await prisma.$transaction(async (tx) => {
+    const updated = await tx.order.update({
+      where: { id },
+      data: { status: prismaStatus as any },
+      include: { items: true },
+    });
+
+    // Deduct ingredient stock when order is completed
+    if (prismaStatus === 'COMPLETED' && existing.status !== 'COMPLETED') {
+      const menuItemIds = updated.items
+        .filter((i) => i.menuItemId)
+        .map((i) => i.menuItemId as string);
+
+      if (menuItemIds.length > 0) {
+        const recipes = await tx.foodRecipe.findMany({
+          where: { menuItemId: { in: menuItemIds } },
+        });
+
+        // Group deductions: ingredientId → total qty to deduct
+        const deductions: Record<string, number> = {};
+        for (const item of updated.items) {
+          if (!item.menuItemId) continue;
+          const itemRecipes = recipes.filter((r) => r.menuItemId === item.menuItemId);
+          for (const r of itemRecipes) {
+            const qty = Number(r.qtyPerUnit) * item.qty;
+            deductions[r.ingredientId] = (deductions[r.ingredientId] || 0) + qty;
+          }
+        }
+
+        // Apply deductions and log StockAdjustment for each
+        for (const [ingredientId, qty] of Object.entries(deductions)) {
+          await tx.ingredient.update({
+            where: { id: ingredientId },
+            data: { currentStock: { decrement: qty } },
+          });
+          await tx.stockAdjustment.create({
+            data: {
+              ingredientId,
+              type: 'deduct',
+              quantity: qty,
+              reason: `Order ${existing.orderNumber} completed`,
+              adjustedById: req.user?.id || null,
+              date: new Date(),
+            },
+          });
+        }
+      }
+    }
+
+    return updated;
   });
 
   res.json(ApiResponse.success(mapOrderOut(order), 'Order status updated'));
