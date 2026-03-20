@@ -32,12 +32,19 @@ export type UserRole =
   | 'Manager'
   | 'Cashier'
   | 'Waiter'
-  | 'Kitchen Staff';
+  | 'Kitchen Staff'
+  | 'Kitchen Manager'
+  | 'Floor Manager'
+  | 'Delivery Manager'
+  | 'Store Manager'
+  | 'Accountant'
+  | 'Rider'
+  | 'Customer Screen';
 
 export interface JwtPayload {
   userId: string;
   email: string;
-  role: UserRole;
+  role: string; // mapped human-readable role string (e.g. 'Super Admin')
   outletId?: string;
   iat?: number;
   exp?: number;
@@ -47,7 +54,7 @@ export interface AuthUser {
   id: string;
   name: string;
   email: string;
-  role: UserRole;
+  role: string;
   outletId?: string;
   avatar?: string;
 }

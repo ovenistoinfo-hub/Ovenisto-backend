@@ -12,6 +12,9 @@ import settingsRoutes from '../modules/settings/settings.routes.js';
 import menuRoutes from '../modules/menu/menu.routes.js';
 import inventoryRoutes from '../modules/inventory/inventory.routes.js';
 import stockRoutes from '../modules/stock/stock.routes.js';
+import uploadRoutes from '../modules/upload/upload.routes.js';
+import { ordersRouter, kitchensRouter } from '../modules/order/order.routes.js';
+import { customersRouter } from '../modules/customer/customer.routes.js';
 
 const router = Router();
 
@@ -92,6 +95,9 @@ router.use('/users', userRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/outlets', outletRoutes);
 
+// Uploads (Cloudinary)
+router.use('/upload', uploadRoutes);
+
 // Phase 3: Menu Management
 router.use('/menu', menuRoutes);
 
@@ -103,11 +109,11 @@ router.use('/stock', stockRoutes);
 // router.use('/waste', wasteRoutes);
 
 // Phase 5: Orders & POS
-// router.use('/orders', orderRoutes);
-// router.use('/kitchens', kitchenRoutes);
+router.use('/orders', ordersRouter);
+router.use('/kitchens', kitchensRouter);
 
 // Phase 6: Customers & Loyalty
-// router.use('/customers', customerRoutes);
+router.use('/customers', customersRouter);
 // router.use('/loyalty', loyaltyRoutes);
 
 // Phase 7: Financial

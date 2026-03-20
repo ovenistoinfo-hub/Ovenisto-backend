@@ -9,6 +9,39 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 
+// ── Helpers ──
+
+/** Normalize a menu item — convert Prisma Decimal fields to numbers */
+function normalizeMenuItem(item: any): any {
+  return {
+    ...item,
+    price: Number(item.price),
+    variants: (item.variants ?? []).map((v: any) => ({ ...v, price: Number(v.price) })),
+  };
+}
+
+/** Auto-generate item code from name: "Chicken Tikka" → "CT", "Pizza" → "PIZ" */
+function buildCodePrefix(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length >= 2) {
+    return words.map(w => w[0].toUpperCase()).join('').slice(0, 4);
+  }
+  return words[0].slice(0, 3).toUpperCase();
+}
+
+async function generateUniqueCode(name: string): Promise<string> {
+  const prefix = buildCodePrefix(name);
+  let n = 1;
+  while (n <= 999) {
+    const candidate = `${prefix}-${String(n).padStart(3, '0')}`;
+    const exists = await prisma.foodMenuItem.findUnique({ where: { code: candidate } });
+    if (!exists) return candidate;
+    n++;
+  }
+  // Fallback: prefix + timestamp
+  return `${prefix}-${Date.now().toString().slice(-4)}`;
+}
+
 // ============================================================
 // FOOD CATEGORIES
 // ============================================================
@@ -99,7 +132,7 @@ export const getMenuItems = asyncHandler(async (req: Request, res: Response) => 
     prisma.foodMenuItem.count({ where }),
   ]);
 
-  res.json(ApiResponse.paginated(items, Number(page), Number(limit), total));
+  res.json(ApiResponse.paginated(items.map(normalizeMenuItem), Number(page), Number(limit), total));
 });
 
 /** GET /api/menu/items/:id */
@@ -113,7 +146,7 @@ export const getMenuItem = asyncHandler(async (req: Request, res: Response) => {
     },
   });
   if (!item) throw ApiError.notFound('Menu item not found');
-  res.json(ApiResponse.success(item));
+  res.json(ApiResponse.success(normalizeMenuItem(item)));
 });
 
 /** POST /api/menu/items */
@@ -123,15 +156,20 @@ export const createMenuItem = asyncHandler(async (req: Request, res: Response) =
   if (!name?.trim()) throw ApiError.badRequest('Item name is required');
   if (price === undefined || price === null) throw ApiError.badRequest('Price is required');
 
-  if (code) {
-    const codeTaken = await prisma.foodMenuItem.findUnique({ where: { code } });
+  // Auto-generate code if not provided; validate uniqueness if provided
+  let finalCode: string | null = null;
+  if (code?.trim()) {
+    const codeTaken = await prisma.foodMenuItem.findUnique({ where: { code: code.trim() } });
     if (codeTaken) throw ApiError.conflict('An item with this code already exists');
+    finalCode = code.trim();
+  } else {
+    finalCode = await generateUniqueCode(name);
   }
 
   const item = await prisma.foodMenuItem.create({
     data: {
       name: name.trim(),
-      code: code?.trim() || null,
+      code: finalCode,
       categoryId: categoryId || null,
       price,
       available: available ?? true,
@@ -147,7 +185,7 @@ export const createMenuItem = asyncHandler(async (req: Request, res: Response) =
       variants: { orderBy: { displayOrder: 'asc' } },
     },
   });
-  res.status(201).json(ApiResponse.created(item, 'Menu item created'));
+  res.status(201).json(ApiResponse.created(normalizeMenuItem(item), 'Menu item created'));
 });
 
 /** PUT /api/menu/items/:id */
@@ -190,7 +228,7 @@ export const updateMenuItem = asyncHandler(async (req: Request, res: Response) =
     });
   });
 
-  res.json(ApiResponse.success(item, 'Menu item updated'));
+  res.json(ApiResponse.success(normalizeMenuItem(item), 'Menu item updated'));
 });
 
 /** DELETE /api/menu/items/:id */
