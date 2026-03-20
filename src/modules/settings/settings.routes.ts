@@ -13,8 +13,8 @@ import { updateSettingsSchema } from './settings.schema.js';
 
 const router = Router();
 
-// Retrieve settings (accessible to any authenticated user)
-router.get('/', authenticate, getSettings);
+// Retrieve settings — public (currency, tax rate, restaurant name are not sensitive)
+router.get('/', getSettings);
 
 // Update settings (Admin/Super Admin only)
 router.put(

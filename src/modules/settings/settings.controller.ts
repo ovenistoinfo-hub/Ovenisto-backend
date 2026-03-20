@@ -32,7 +32,7 @@ export const getSettings = asyncHandler(async (req: Request, res: Response) => {
     throw ApiError.notFound('Restaurant settings not configured yet');
   }
 
-  res.json(ApiResponse.success(settings));
+  res.json(ApiResponse.success({ ...settings, taxRate: Number(settings.taxRate) }));
 });
 
 /**
