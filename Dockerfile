@@ -1,5 +1,8 @@
 FROM node:20-slim
 
+# Install OpenSSL — required by Prisma's schema engine
+RUN apt-get update -y && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Copy dependency manifests and prisma schema first (better layer caching)
