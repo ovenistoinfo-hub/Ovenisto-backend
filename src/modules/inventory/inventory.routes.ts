@@ -28,9 +28,9 @@ router.post('/ingredient-categories', authenticate, authorize(adminRoles), creat
 router.put('/ingredient-categories/:id', authenticate, authorize(adminRoles), updateIngredientCategory);
 router.delete('/ingredient-categories/:id', authenticate, authorize(adminRoles), deleteIngredientCategory);
 
-// ── Ingredients ──
-router.get('/ingredients', authenticate, getIngredients);
-router.get('/ingredients/:id', authenticate, getIngredient);
+// ── Ingredients ── (GET public — low stock alert needs no auth)
+router.get('/ingredients', getIngredients);
+router.get('/ingredients/:id', getIngredient);
 router.post('/ingredients', authenticate, authorize(adminRoles), createIngredient);
 router.put('/ingredients/:id', authenticate, authorize(adminRoles), updateIngredient);
 router.delete('/ingredients/:id', authenticate, authorize(adminRoles), deleteIngredient);
