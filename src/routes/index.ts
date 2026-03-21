@@ -15,7 +15,8 @@ import stockRoutes from '../modules/stock/stock.routes.js';
 import uploadRoutes from '../modules/upload/upload.routes.js';
 import { ordersRouter, kitchensRouter } from '../modules/order/order.routes.js';
 import { customersRouter } from '../modules/customer/customer.routes.js';
-import { shiftsRouter } from '../modules/shifts/shift.routes.js';
+import { shiftsRouter }   from '../modules/shifts/shift.routes.js';
+import { deliveryRouter } from '../modules/delivery/delivery.routes.js';
 
 const router = Router();
 
@@ -123,7 +124,7 @@ router.use('/customers', customersRouter);
 // router.use('/expenses', expenseRoutes);
 
 // Phase 8: Delivery
-// router.use('/delivery', deliveryRoutes);
+router.use('/delivery', deliveryRouter);
 
 // Phase 9: HR & Staff
 // router.use('/attendance', attendanceRoutes);

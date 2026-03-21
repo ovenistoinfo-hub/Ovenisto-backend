@@ -75,6 +75,7 @@ model User {
   staffSchedules   StaffSchedule[]
   leaveRequests    LeaveRequest[]
   leaveBalance     LeaveBalance?
+  riderProfile     DeliveryRider?
 
   @@map("users")
 }
@@ -588,13 +589,16 @@ model Expense {
 // =============================================
 
 model DeliveryRider {
-  id               String @id @default(uuid())
-  name             String @db.VarChar(100)
+  id               String  @id @default(uuid())
+  userId           String? @unique  // links to User account (role=Rider)
+  name             String  @db.VarChar(100)
   phone            String? @db.VarChar(20)
   isAvailable      Boolean @default(true)
-  activeDeliveries Int    @default(0)
+  activeDeliveries Int     @default(0)
+  status           String  @default("available") @db.VarChar(20) // available, on_delivery, offline
 
   // Relations
+  user       User?               @relation(fields: [userId], references: [id])
   orders     Order[]
   deliveries DeliveryAssignment[]
 
@@ -605,13 +609,18 @@ model DeliveryAssignment {
   id              String    @id @default(uuid())
   orderId         String
   riderId         String
-  status          String    @default("pending") @db.VarChar(20) // pending, dispatched, delivered, returned
+  status          String    @default("pending") @db.VarChar(20) // pending, accepted, dispatched, delivered, returned
   assignedAt      DateTime  @default(now())
+  acceptedAt      DateTime?
   deliveredAt     DateTime?
   estimatedTime   Int?      // minutes
   customerAddress String?
   customerPhone   String?   @db.VarChar(20)
   notes           String?
+  // Amount collection
+  amountToCollect Decimal?  @db.Decimal(10, 2)  // order total (cash on delivery)
+  collectedAt     DateTime?                       // when manager collected cash from rider
+  collectedBy     String?   @db.VarChar(100)     // name of manager who collected
 
   // Relations
   order Order         @relation(fields: [orderId], references: [id])
