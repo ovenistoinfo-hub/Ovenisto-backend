@@ -28,13 +28,29 @@ function mapAssignment(a: any) {
 
 // ─── Rider CRUD ──────────────────────────────────────────────────────────────
 
-/** GET /api/delivery/riders */
+/** GET /api/delivery/riders — derived from Users with role=Rider */
 export const getRiders = asyncHandler(async (_req: Request, res: Response) => {
-  const riders = await prisma.deliveryRider.findMany({
-    include: { user: { select: { id: true, email: true, status: true } } },
+  // Pull users with Rider role and join their DeliveryRider profile
+  const riderUsers = await prisma.user.findMany({
+    where: { role: 'RIDER' as any, status: 'active' },
+    include: { riderProfile: true },
     orderBy: { name: 'asc' },
   });
-  res.json(ApiResponse.success(riders.map(mapRider)));
+
+  // Return DeliveryRider profiles (create on-the-fly for any without one)
+  const profiles = await Promise.all(riderUsers.map(async u => {
+    let profile = u.riderProfile;
+    if (!profile) {
+      profile = await prisma.deliveryRider.upsert({
+        where: { userId: u.id },
+        update: { name: u.name, phone: u.phone ?? null },
+        create: { userId: u.id, name: u.name, phone: u.phone ?? null, status: 'available' },
+      });
+    }
+    return mapRider({ ...profile, user: { id: u.id, email: u.email, status: u.status } });
+  }));
+
+  res.json(ApiResponse.success(profiles));
 });
 
 /** POST /api/delivery/riders — create rider profile */

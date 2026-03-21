@@ -186,6 +186,15 @@ export const createUser = asyncHandler(async (req: Request, res: Response) => {
     },
   });
 
+  // Auto-create DeliveryRider profile for Rider role
+  if (input.role === 'Rider') {
+    await prisma.deliveryRider.upsert({
+      where: { userId: user.id },
+      update: { name: user.name, phone: user.phone ?? null },
+      create: { userId: user.id, name: user.name, phone: user.phone ?? null, status: 'available' },
+    });
+  }
+
   res.status(201).json(ApiResponse.created(mapUser(user), 'User created successfully'));
 });
 
@@ -246,6 +255,19 @@ export const updateUser = asyncHandler(async (req: Request, res: Response) => {
       outlet: { select: { id: true, name: true, code: true } },
     },
   });
+
+  // Sync DeliveryRider profile: create if role became Rider, update name/phone if already Rider
+  const newRole = updateData.role ?? existing.role;
+  if (newRole === 'RIDER') {
+    await prisma.deliveryRider.upsert({
+      where: { userId: id },
+      update: {
+        ...(updateData.name  !== undefined && { name:  updateData.name }),
+        ...(updateData.phone !== undefined && { phone: updateData.phone }),
+      },
+      create: { userId: id, name: user.name, phone: user.phone ?? null, status: 'available' },
+    });
+  }
 
   res.json(ApiResponse.success(mapUser(user), 'User updated successfully'));
 });
