@@ -65,6 +65,7 @@ function mapOrderOut(order: any): any {
       ...i,
       price: Number(i.price),
       discount: Number(i.discount),
+      categoryName: i.menuItem?.category?.name ?? null,
     })),
   };
 }
@@ -89,7 +90,7 @@ async function generateOrderNumber(): Promise<string> {
 
 /** GET /api/orders */
 export const getOrders = asyncHandler(async (req: Request, res: Response) => {
-  const { search, status, type, date, page = '1', limit = '50' } = req.query;
+  const { search, status, type, date, tableNumber, orderSource, page = '1', limit = '50' } = req.query;
   const skip = (Number(page) - 1) * Number(limit);
 
   const where: any = {};
@@ -113,6 +114,8 @@ export const getOrders = asyncHandler(async (req: Request, res: Response) => {
     next.setDate(next.getDate() + 1);
     where.date = { gte: d, lt: next };
   }
+  if (tableNumber) where.tableNumber = Number(tableNumber);
+  if (orderSource) where.orderSource = String(orderSource);
 
   const [orders, total] = await Promise.all([
     prisma.order.findMany({
@@ -120,7 +123,15 @@ export const getOrders = asyncHandler(async (req: Request, res: Response) => {
       skip,
       take: Number(limit),
       orderBy: { createdAt: 'desc' },
-      include: { items: true },
+      include: {
+        items: {
+          include: {
+            menuItem: {
+              select: { category: { select: { name: true } } },
+            },
+          },
+        },
+      },
     }),
     prisma.order.count({ where }),
   ]);
@@ -133,7 +144,13 @@ export const getOrder = asyncHandler(async (req: Request, res: Response) => {
   const order = await prisma.order.findUnique({
     where: { id: req.params.id },
     include: {
-      items: true,
+      items: {
+        include: {
+          menuItem: {
+            select: { category: { select: { name: true } } },
+          },
+        },
+      },
       modifications: { orderBy: { timestamp: 'desc' } },
     },
   });
@@ -199,7 +216,15 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
         })),
       },
     },
-    include: { items: true },
+    include: {
+      items: {
+        include: {
+          menuItem: {
+            select: { category: { select: { name: true } } },
+          },
+        },
+      },
+    },
   });
 
   res.status(201).json(ApiResponse.created(mapOrderOut(order), 'Order created'));
@@ -255,7 +280,15 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
           },
         }),
       },
-      include: { items: true },
+      include: {
+        items: {
+          include: {
+            menuItem: {
+              select: { category: { select: { name: true } } },
+            },
+          },
+        },
+      },
     });
   });
 
@@ -280,7 +313,15 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
     const updated = await tx.order.update({
       where: { id },
       data: { status: prismaStatus as any },
-      include: { items: true },
+      include: {
+        items: {
+          include: {
+            menuItem: {
+              select: { category: { select: { name: true } } },
+            },
+          },
+        },
+      },
     });
 
     // Deduct ingredient stock when order is completed

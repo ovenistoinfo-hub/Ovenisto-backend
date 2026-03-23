@@ -17,6 +17,7 @@ import { ordersRouter, kitchensRouter } from '../modules/order/order.routes.js';
 import { customersRouter } from '../modules/customer/customer.routes.js';
 import { shiftsRouter }   from '../modules/shifts/shift.routes.js';
 import { deliveryRouter } from '../modules/delivery/delivery.routes.js';
+import tableRoutes from '../modules/tables/table.routes.js';
 
 const router = Router();
 
@@ -136,7 +137,7 @@ router.use('/shifts', shiftsRouter);
 // router.use('/deals', dealRoutes);
 // router.use('/coupons', couponRoutes);
 // router.use('/reservations', reservationRoutes);
-// router.use('/tables', tableRoutes);
+router.use('/tables', tableRoutes);
 // router.use('/reports', reportRoutes);
 // router.use('/analytics', analyticsRoutes);
 // router.use('/sms', smsRoutes);
