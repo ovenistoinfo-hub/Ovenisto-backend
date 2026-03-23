@@ -128,35 +128,45 @@ model FoodCategory {
 }
 
 model FoodMenuItem {
-  id          String   @id @default(uuid())
-  name        String   @db.VarChar(100)
-  code        String?  @unique @db.VarChar(20)
-  categoryId  String?
-  price       Decimal  @db.Decimal(10, 2)
-  available   Boolean  @default(true)
-  image       String?
-  tags        String[]
-  cookingTime Int      @default(0)
-  createdAt   DateTime @default(now())
+  id             String   @id @default(uuid())
+  name           String   @db.VarChar(100)
+  code           String?  @unique @db.VarChar(20)
+  categoryId     String?
+  price          Decimal  @db.Decimal(10, 2)
+  dineInPrice    Decimal? @db.Decimal(10, 2)
+  takeAwayPrice  Decimal? @db.Decimal(10, 2)
+  deliveryPrice  Decimal? @db.Decimal(10, 2)
+  foodpandaPrice Decimal? @db.Decimal(10, 2)
+  available      Boolean  @default(true)
+  image          String?
+  tags           String[]
+  cookingTime    Int      @default(0)
+  createdAt      DateTime @default(now())
 
   // Relations
   category   FoodCategory?      @relation(fields: [categoryId], references: [id])
   variants   FoodMenuVariant[]
   recipes    FoodRecipe[]
+  modifiers  MenuItemModifier[]
   orderItems OrderItem[]
 
   @@map("food_menu_items")
 }
 
 model FoodMenuVariant {
-  id           String  @id @default(uuid())
-  menuItemId   String
-  name         String  @db.VarChar(100)
-  price        Decimal @db.Decimal(10, 2)
-  displayOrder Int     @default(0)
+  id             String  @id @default(uuid())
+  menuItemId     String
+  name           String  @db.VarChar(100)
+  price          Decimal @db.Decimal(10, 2)
+  dineInPrice    Decimal? @db.Decimal(10, 2)
+  takeAwayPrice  Decimal? @db.Decimal(10, 2)
+  deliveryPrice  Decimal? @db.Decimal(10, 2)
+  foodpandaPrice Decimal? @db.Decimal(10, 2)
+  displayOrder   Int     @default(0)
 
   // Relations
   menuItem FoodMenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  recipes  FoodRecipe[]
 
   @@map("food_menu_variants")
 }
@@ -168,7 +178,24 @@ model Modifier {
   type   String? @db.VarChar(20) // addon, removal
   status String  @default("active") @db.VarChar(20)
 
+  // Relations
+  menuItems MenuItemModifier[]
+
   @@map("modifiers")
+}
+
+model MenuItemModifier {
+  id         String   @id @default(uuid())
+  menuItemId String
+  modifierId String
+  variantIds String[] // empty = all variants; populated = only these variant IDs
+
+  // Relations
+  menuItem FoodMenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  modifier Modifier     @relation(fields: [modifierId], references: [id], onDelete: Cascade)
+
+  @@unique([menuItemId, modifierId])
+  @@map("menu_item_modifiers")
 }
 
 // =============================================
@@ -193,7 +220,8 @@ model IngredientUnit {
   status String @default("active") @db.VarChar(20)
 
   // Relations
-  ingredients Ingredient[]
+  ingredients  Ingredient[]
+  recipeUsages FoodRecipe[]
 
   @@map("ingredient_units")
 }
@@ -221,12 +249,16 @@ model Ingredient {
 model FoodRecipe {
   id           String  @id @default(uuid())
   menuItemId   String
+  variantId    String?
   ingredientId String
   qtyPerUnit   Decimal @db.Decimal(10, 4)
+  usageUnitId  String?
 
   // Relations
-  menuItem   FoodMenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
-  ingredient Ingredient   @relation(fields: [ingredientId], references: [id])
+  menuItem   FoodMenuItem     @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  variant    FoodMenuVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  ingredient Ingredient       @relation(fields: [ingredientId], references: [id])
+  usageUnit  IngredientUnit?  @relation(fields: [usageUnitId], references: [id])
 
   @@map("food_recipes")
 }
@@ -408,7 +440,8 @@ model OrderItem {
   id          String   @id @default(uuid())
   orderId     String
   menuItemId  String?
-  name        String   @db.VarChar(100)
+  variantId   String?
+  name        String   @db.VarChar(200)
   price       Decimal  @db.Decimal(10, 2)
   qty         Int
   discount    Decimal  @default(0) @db.Decimal(10, 2)

@@ -188,6 +188,7 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
       items: {
         create: items.map((item: any) => ({
           menuItemId: item.menuItemId || null,
+          variantId: item.variantId || null,
           name: item.name,
           price: item.price,
           qty: item.qty,
@@ -242,6 +243,7 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
           items: {
             create: items.map((item: any) => ({
               menuItemId: item.menuItemId || null,
+              variantId: item.variantId || null,
               name: item.name,
               price: item.price,
               qty: item.qty,
@@ -293,10 +295,15 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
         });
 
         // Group deductions: ingredientId → total qty to deduct
+        // If order item has a variantId, use variant-specific recipes; otherwise use item-level recipes
         const deductions: Record<string, number> = {};
         for (const item of updated.items) {
           if (!item.menuItemId) continue;
-          const itemRecipes = recipes.filter((r) => r.menuItemId === item.menuItemId);
+          const itemRecipes = recipes.filter((r) => {
+            if (r.menuItemId !== item.menuItemId) return false;
+            if (item.variantId) return r.variantId === item.variantId;
+            return !r.variantId; // item-level recipe (no variant)
+          });
           for (const r of itemRecipes) {
             const qty = Number(r.qtyPerUnit) * item.qty;
             deductions[r.ingredientId] = (deductions[r.ingredientId] || 0) + qty;

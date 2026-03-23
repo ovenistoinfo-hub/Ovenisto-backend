@@ -15,8 +15,27 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 function normalizeMenuItem(item: any): any {
   return {
     ...item,
-    price: Number(item.price),
-    variants: (item.variants ?? []).map((v: any) => ({ ...v, price: Number(v.price) })),
+    price:          Number(item.price),
+    dineInPrice:    item.dineInPrice    != null ? Number(item.dineInPrice)    : null,
+    takeAwayPrice:  item.takeAwayPrice  != null ? Number(item.takeAwayPrice)  : null,
+    deliveryPrice:  item.deliveryPrice  != null ? Number(item.deliveryPrice)  : null,
+    foodpandaPrice: item.foodpandaPrice != null ? Number(item.foodpandaPrice) : null,
+    variants: (item.variants ?? []).map((v: any) => ({
+      ...v,
+      price:          Number(v.price),
+      dineInPrice:    v.dineInPrice    != null ? Number(v.dineInPrice)    : null,
+      takeAwayPrice:  v.takeAwayPrice  != null ? Number(v.takeAwayPrice)  : null,
+      deliveryPrice:  v.deliveryPrice  != null ? Number(v.deliveryPrice)  : null,
+      foodpandaPrice: v.foodpandaPrice != null ? Number(v.foodpandaPrice) : null,
+    })),
+    modifiers: (item.modifiers ?? []).map((m: any) => ({
+      id:         m.modifier?.id     ?? m.id,
+      name:       m.modifier?.name   ?? m.name,
+      price:      Number(m.modifier?.price ?? m.price ?? 0),
+      type:       m.modifier?.type   ?? m.type,
+      status:     m.modifier?.status ?? m.status,
+      variantIds: m.variantIds ?? [],
+    })),
   };
 }
 
@@ -127,6 +146,7 @@ export const getMenuItems = asyncHandler(async (req: Request, res: Response) => 
       include: {
         category: { select: { id: true, name: true } },
         variants: { orderBy: { displayOrder: 'asc' } },
+        modifiers: { include: { modifier: true } },
       },
     }),
     prisma.foodMenuItem.count({ where }),
@@ -142,7 +162,8 @@ export const getMenuItem = asyncHandler(async (req: Request, res: Response) => {
     include: {
       category: { select: { id: true, name: true } },
       variants: { orderBy: { displayOrder: 'asc' } },
-      recipes: { include: { ingredient: { include: { unit: true } } } },
+      recipes: { include: { ingredient: { include: { unit: true } }, usageUnit: { select: { id: true, name: true } } } },
+      modifiers: { include: { modifier: true } },
     },
   });
   if (!item) throw ApiError.notFound('Menu item not found');
@@ -151,7 +172,10 @@ export const getMenuItem = asyncHandler(async (req: Request, res: Response) => {
 
 /** POST /api/menu/items */
 export const createMenuItem = asyncHandler(async (req: Request, res: Response) => {
-  const { name, code, categoryId, price, available, image, tags, cookingTime, variants } = req.body;
+  const {
+    name, code, categoryId, price, dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice,
+    available, image, tags, cookingTime, variants, modifierIds, modifiers: modifiersInput,
+  } = req.body;
 
   if (!name?.trim()) throw ApiError.badRequest('Item name is required');
   if (price === undefined || price === null) throw ApiError.badRequest('Price is required');
@@ -166,23 +190,42 @@ export const createMenuItem = asyncHandler(async (req: Request, res: Response) =
     finalCode = await generateUniqueCode(name);
   }
 
+  // Resolve modifier data: support both legacy `modifierIds` (string[]) and new `modifiers` ([{ id, variantIds }])
+  const modData = modifiersInput?.length
+    ? modifiersInput.map((m: any) => ({ modifierId: m.id, variantIds: m.variantIds ?? [] }))
+    : modifierIds?.length
+      ? modifierIds.map((mid: string) => ({ modifierId: mid, variantIds: [] as string[] }))
+      : [];
+
   const item = await prisma.foodMenuItem.create({
     data: {
       name: name.trim(),
       code: finalCode,
       categoryId: categoryId || null,
       price,
+      dineInPrice:    dineInPrice    ?? null,
+      takeAwayPrice:  takeAwayPrice  ?? null,
+      deliveryPrice:  deliveryPrice  ?? null,
+      foodpandaPrice: foodpandaPrice ?? null,
       available: available ?? true,
       image: image || null,
       tags: tags ?? [],
       cookingTime: cookingTime ?? 0,
       variants: variants?.length
-        ? { create: variants.map((v: any, i: number) => ({ name: v.name, price: v.price, displayOrder: i })) }
+        ? { create: variants.map((v: any, i: number) => ({
+            name: v.name, price: v.price, displayOrder: i,
+            dineInPrice: v.dineInPrice ?? null, takeAwayPrice: v.takeAwayPrice ?? null,
+            deliveryPrice: v.deliveryPrice ?? null, foodpandaPrice: v.foodpandaPrice ?? null,
+          })) }
+        : undefined,
+      modifiers: modData.length
+        ? { create: modData }
         : undefined,
     },
     include: {
       category: { select: { id: true, name: true } },
       variants: { orderBy: { displayOrder: 'asc' } },
+      modifiers: { include: { modifier: true } },
     },
   });
   res.status(201).json(ApiResponse.created(normalizeMenuItem(item), 'Menu item created'));
@@ -191,7 +234,10 @@ export const createMenuItem = asyncHandler(async (req: Request, res: Response) =
 /** PUT /api/menu/items/:id */
 export const updateMenuItem = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { name, code, categoryId, price, available, image, tags, cookingTime, variants } = req.body;
+  const {
+    name, code, categoryId, price, dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice,
+    available, image, tags, cookingTime, variants, modifierIds, modifiers: modifiersInput,
+  } = req.body;
 
   const existing = await prisma.foodMenuItem.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Menu item not found');
@@ -201,10 +247,21 @@ export const updateMenuItem = asyncHandler(async (req: Request, res: Response) =
     if (codeTaken) throw ApiError.conflict('An item with this code already exists');
   }
 
-  // Update item + replace variants if provided
+  // Resolve modifier data
+  const hasModInput = modifiersInput !== undefined || modifierIds !== undefined;
+  const modData = modifiersInput?.length
+    ? modifiersInput.map((m: any) => ({ modifierId: m.id, variantIds: m.variantIds ?? [] }))
+    : modifierIds?.length
+      ? modifierIds.map((mid: string) => ({ modifierId: mid, variantIds: [] as string[] }))
+      : [];
+
+  // Update item + replace variants & modifiers if provided
   const item = await prisma.$transaction(async (tx) => {
     if (variants !== undefined) {
       await tx.foodMenuVariant.deleteMany({ where: { menuItemId: id } });
+    }
+    if (hasModInput) {
+      await tx.menuItemModifier.deleteMany({ where: { menuItemId: id } });
     }
     return tx.foodMenuItem.update({
       where: { id },
@@ -213,17 +270,29 @@ export const updateMenuItem = asyncHandler(async (req: Request, res: Response) =
         ...(code !== undefined && { code: code?.trim() || null }),
         ...(categoryId !== undefined && { categoryId: categoryId || null }),
         ...(price !== undefined && { price }),
+        ...(dineInPrice !== undefined && { dineInPrice: dineInPrice ?? null }),
+        ...(takeAwayPrice !== undefined && { takeAwayPrice: takeAwayPrice ?? null }),
+        ...(deliveryPrice !== undefined && { deliveryPrice: deliveryPrice ?? null }),
+        ...(foodpandaPrice !== undefined && { foodpandaPrice: foodpandaPrice ?? null }),
         ...(available !== undefined && { available }),
         ...(image !== undefined && { image: image || null }),
         ...(tags !== undefined && { tags }),
         ...(cookingTime !== undefined && { cookingTime }),
         ...(variants !== undefined && variants.length > 0 && {
-          variants: { create: variants.map((v: any, i: number) => ({ name: v.name, price: v.price, displayOrder: i })) },
+          variants: { create: variants.map((v: any, i: number) => ({
+            name: v.name, price: v.price, displayOrder: i,
+            dineInPrice: v.dineInPrice ?? null, takeAwayPrice: v.takeAwayPrice ?? null,
+            deliveryPrice: v.deliveryPrice ?? null, foodpandaPrice: v.foodpandaPrice ?? null,
+          })) },
+        }),
+        ...(hasModInput && modData.length > 0 && {
+          modifiers: { create: modData },
         }),
       },
       include: {
         category: { select: { id: true, name: true } },
         variants: { orderBy: { displayOrder: 'asc' } },
+        modifiers: { include: { modifier: true } },
       },
     });
   });
@@ -300,7 +369,10 @@ export const getRecipe = asyncHandler(async (req: Request, res: Response) => {
 
   const recipes = await prisma.foodRecipe.findMany({
     where: { menuItemId: id },
-    include: { ingredient: { include: { unit: { select: { id: true, name: true } }, category: { select: { id: true, name: true } } } } },
+    include: {
+      ingredient: { include: { unit: { select: { id: true, name: true } }, category: { select: { id: true, name: true } } } },
+      usageUnit: { select: { id: true, name: true } },
+    },
   });
   res.json(ApiResponse.success(recipes));
 });
@@ -308,7 +380,7 @@ export const getRecipe = asyncHandler(async (req: Request, res: Response) => {
 /** PUT /api/menu/items/:id/recipe (replace all) */
 export const updateRecipe = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { ingredients } = req.body; // [{ ingredientId, qtyPerUnit }]
+  const { ingredients } = req.body; // [{ ingredientId, qtyPerUnit, variantId?, usageUnitId? }]
 
   const item = await prisma.foodMenuItem.findUnique({ where: { id }, select: { id: true } });
   if (!item) throw ApiError.notFound('Menu item not found');
@@ -317,14 +389,23 @@ export const updateRecipe = asyncHandler(async (req: Request, res: Response) => 
     await tx.foodRecipe.deleteMany({ where: { menuItemId: id } });
     if (ingredients?.length) {
       await tx.foodRecipe.createMany({
-        data: ingredients.map((r: any) => ({ menuItemId: id, ingredientId: r.ingredientId, qtyPerUnit: r.qtyPerUnit })),
+        data: ingredients.map((r: any) => ({
+          menuItemId: id,
+          ingredientId: r.ingredientId,
+          qtyPerUnit: r.qtyPerUnit,
+          variantId: r.variantId || null,
+          usageUnitId: r.usageUnitId || null,
+        })),
       });
     }
   });
 
   const recipes = await prisma.foodRecipe.findMany({
     where: { menuItemId: id },
-    include: { ingredient: { include: { unit: { select: { id: true, name: true } } } } },
+    include: {
+      ingredient: { include: { unit: { select: { id: true, name: true } } } },
+      usageUnit: { select: { id: true, name: true } },
+    },
   });
   res.json(ApiResponse.success(recipes, 'Recipe updated'));
 });
