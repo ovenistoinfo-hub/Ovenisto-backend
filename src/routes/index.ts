@@ -18,6 +18,7 @@ import { customersRouter } from '../modules/customer/customer.routes.js';
 import { shiftsRouter }   from '../modules/shifts/shift.routes.js';
 import { deliveryRouter } from '../modules/delivery/delivery.routes.js';
 import tableRoutes from '../modules/tables/table.routes.js';
+import { mealTypeRouter } from '../modules/mealTypes/mealType.routes.js';
 import { suppliersRouter } from '../modules/suppliers/supplier.routes.js';
 import { purchasesRouter } from '../modules/purchases/purchase.routes.js';
 import { expensesRouter }  from '../modules/expenses/expense.routes.js';
@@ -106,6 +107,7 @@ router.use('/upload', uploadRoutes);
 
 // Phase 3: Menu Management
 router.use('/menu', menuRoutes);
+router.use('/meal-types', mealTypeRouter);
 
 // Phase 4: Inventory
 router.use('/inventory', inventoryRoutes);

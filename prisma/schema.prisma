@@ -141,6 +141,7 @@ model FoodMenuItem {
   image          String?
   tags           String[]
   cookingTime    Int      @default(0)
+  mealTypeIds    String[]
   createdAt      DateTime @default(now())
 
   // Relations
@@ -870,6 +871,15 @@ model RestaurantTable {
   reservations Reservation[]
 
   @@map("restaurant_tables")
+}
+
+model MealType {
+  id        String   @id @default(uuid())
+  name      String   @unique @db.VarChar(50)
+  status    String   @default("active") @db.VarChar(20)
+  createdAt DateTime @default(now())
+
+  @@map("meal_types")
 }
 
 model SmsHistory {

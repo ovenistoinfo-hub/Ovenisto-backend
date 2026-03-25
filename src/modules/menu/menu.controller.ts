@@ -20,6 +20,7 @@ function normalizeMenuItem(item: any): any {
     takeAwayPrice:  item.takeAwayPrice  != null ? Number(item.takeAwayPrice)  : null,
     deliveryPrice:  item.deliveryPrice  != null ? Number(item.deliveryPrice)  : null,
     foodpandaPrice: item.foodpandaPrice != null ? Number(item.foodpandaPrice) : null,
+    mealTypeIds: item.mealTypeIds ?? [],
     variants: (item.variants ?? []).map((v: any) => ({
       ...v,
       price:          Number(v.price),
@@ -174,7 +175,7 @@ export const getMenuItem = asyncHandler(async (req: Request, res: Response) => {
 export const createMenuItem = asyncHandler(async (req: Request, res: Response) => {
   const {
     name, code, categoryId, price, dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice,
-    available, image, tags, cookingTime, variants, modifierIds, modifiers: modifiersInput,
+    available, image, tags, cookingTime, mealTypeIds, variants, modifierIds, modifiers: modifiersInput,
   } = req.body;
 
   if (!name?.trim()) throw ApiError.badRequest('Item name is required');
@@ -211,6 +212,7 @@ export const createMenuItem = asyncHandler(async (req: Request, res: Response) =
       image: image || null,
       tags: tags ?? [],
       cookingTime: cookingTime ?? 0,
+      mealTypeIds: mealTypeIds ?? [],
       variants: variants?.length
         ? { create: variants.map((v: any, i: number) => ({
             name: v.name, price: v.price, displayOrder: i,
@@ -236,7 +238,7 @@ export const updateMenuItem = asyncHandler(async (req: Request, res: Response) =
   const { id } = req.params;
   const {
     name, code, categoryId, price, dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice,
-    available, image, tags, cookingTime, variants, modifierIds, modifiers: modifiersInput,
+    available, image, tags, cookingTime, mealTypeIds, variants, modifierIds, modifiers: modifiersInput,
   } = req.body;
 
   const existing = await prisma.foodMenuItem.findUnique({ where: { id } });
@@ -278,6 +280,7 @@ export const updateMenuItem = asyncHandler(async (req: Request, res: Response) =
         ...(image !== undefined && { image: image || null }),
         ...(tags !== undefined && { tags }),
         ...(cookingTime !== undefined && { cookingTime }),
+        ...(mealTypeIds !== undefined && { mealTypeIds }),
         ...(variants !== undefined && variants.length > 0 && {
           variants: { create: variants.map((v: any, i: number) => ({
             name: v.name, price: v.price, displayOrder: i,
