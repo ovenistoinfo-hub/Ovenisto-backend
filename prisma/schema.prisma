@@ -216,14 +216,30 @@ model IngredientCategory {
 
 model IngredientUnit {
   id     String @id @default(uuid())
-  name   String @db.VarChar(20)
+  name   String @db.VarChar(50)
+  symbol String @default("") @db.VarChar(10)
   status String @default("active") @db.VarChar(20)
 
   // Relations
-  ingredients  Ingredient[]
-  recipeUsages FoodRecipe[]
+  ingredients     Ingredient[]
+  recipeUsages    FoodRecipe[]
+  conversionsFrom UnitConversion[] @relation("FromUnit")
+  conversionsTo   UnitConversion[] @relation("ToUnit")
 
   @@map("ingredient_units")
+}
+
+model UnitConversion {
+  id         String  @id @default(uuid())
+  fromUnitId String
+  toUnitId   String
+  factor     Decimal @db.Decimal(18, 8)
+
+  fromUnit IngredientUnit @relation("FromUnit", fields: [fromUnitId], references: [id], onDelete: Cascade)
+  toUnit   IngredientUnit @relation("ToUnit", fields: [toUnitId], references: [id], onDelete: Cascade)
+
+  @@unique([fromUnitId, toUnitId])
+  @@map("unit_conversions")
 }
 
 model Ingredient {
@@ -611,6 +627,7 @@ model Expense {
   amount        Decimal  @db.Decimal(10, 2)
   paymentMethod String?
   reference     String?  @db.VarChar(50)
+  receipt       Boolean  @default(false)
   date          DateTime @default(now()) @db.Date
   recordedBy    String?  @db.VarChar(100)
   createdAt     DateTime @default(now())

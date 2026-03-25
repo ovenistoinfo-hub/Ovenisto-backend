@@ -1,0 +1,22 @@
+import { Router } from 'express';
+import { authenticate } from '../../middleware/authenticate.js';
+import { authorize } from '../../middleware/authorize.js';
+import {
+  getSuppliers,
+  getSupplier,
+  createSupplier,
+  updateSupplier,
+  deleteSupplier,
+  recordPayment,
+} from './supplier.controller.js';
+
+const writeRoles = ['Super Admin', 'Admin', 'Manager', 'Store Manager', 'Accountant'];
+
+export const suppliersRouter = Router();
+
+suppliersRouter.get('/',              authenticate, getSuppliers);
+suppliersRouter.get('/:id',           authenticate, getSupplier);
+suppliersRouter.post('/',             authenticate, authorize(writeRoles), createSupplier);
+suppliersRouter.put('/:id',           authenticate, authorize(writeRoles), updateSupplier);
+suppliersRouter.delete('/:id',        authenticate, authorize(writeRoles), deleteSupplier);
+suppliersRouter.post('/:id/payment',  authenticate, authorize(writeRoles), recordPayment);

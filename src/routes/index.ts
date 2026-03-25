@@ -18,6 +18,9 @@ import { customersRouter } from '../modules/customer/customer.routes.js';
 import { shiftsRouter }   from '../modules/shifts/shift.routes.js';
 import { deliveryRouter } from '../modules/delivery/delivery.routes.js';
 import tableRoutes from '../modules/tables/table.routes.js';
+import { suppliersRouter } from '../modules/suppliers/supplier.routes.js';
+import { purchasesRouter } from '../modules/purchases/purchase.routes.js';
+import { expensesRouter }  from '../modules/expenses/expense.routes.js';
 
 const router = Router();
 
@@ -120,9 +123,9 @@ router.use('/customers', customersRouter);
 // router.use('/loyalty', loyaltyRoutes);
 
 // Phase 7: Financial
-// router.use('/suppliers', supplierRoutes);
-// router.use('/purchases', purchaseRoutes);
-// router.use('/expenses', expenseRoutes);
+router.use('/suppliers', suppliersRouter);
+router.use('/purchases', purchasesRouter);
+router.use('/expenses',  expensesRouter);
 
 // Phase 8: Delivery
 router.use('/delivery', deliveryRouter);
