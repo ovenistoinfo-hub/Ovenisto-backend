@@ -7,7 +7,7 @@ import http from 'http';
 import { Server as SocketServer } from 'socket.io';
 import app from './app.js';
 import { env } from './config/env.js';
-import { connectDatabase, disconnectDatabase } from './config/database.js';
+import { connectDatabase, disconnectDatabase, startKeepAlive } from './config/database.js';
 
 // Create HTTP server
 const server = http.createServer(app);
@@ -33,9 +33,15 @@ io.on('connection', (socket) => {
 // Export io for use in other modules
 export { io };
 
+// Keep-alive interval handle (cleared on shutdown)
+let keepAliveHandle: ReturnType<typeof setInterval> | undefined;
+
 // Graceful shutdown handler
 async function gracefulShutdown(signal: string): Promise<void> {
   console.log(`\n${signal} received. Starting graceful shutdown...`);
+
+  // Stop keep-alive ping
+  if (keepAliveHandle) clearInterval(keepAliveHandle);
 
   // Close server first (stop accepting new connections)
   server.close(() => {
@@ -69,6 +75,9 @@ async function startServer(): Promise<void> {
   try {
     // Connect to database
     await connectDatabase();
+
+    // Start keep-alive ping to prevent Neon cold starts
+    keepAliveHandle = startKeepAlive();
 
     // Start listening
     server.listen(env.PORT, () => {

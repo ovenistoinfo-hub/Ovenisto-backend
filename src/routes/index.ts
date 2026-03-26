@@ -19,9 +19,12 @@ import { shiftsRouter }   from '../modules/shifts/shift.routes.js';
 import { deliveryRouter } from '../modules/delivery/delivery.routes.js';
 import tableRoutes from '../modules/tables/table.routes.js';
 import { mealTypeRouter } from '../modules/mealTypes/mealType.routes.js';
+import { warehouseRouter } from '../modules/warehouse/warehouse.routes.js';
 import { suppliersRouter } from '../modules/suppliers/supplier.routes.js';
 import { purchasesRouter } from '../modules/purchases/purchase.routes.js';
 import { expensesRouter }  from '../modules/expenses/expense.routes.js';
+import { challansRouter } from '../modules/challans/challan.routes.js';
+import { demandsRouter }  from '../modules/demands/demand.routes.js';
 
 const router = Router();
 
@@ -102,6 +105,9 @@ router.use('/users', userRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/outlets', outletRoutes);
 
+// Phase W1: Warehouse Management
+router.use('/warehouses', warehouseRouter);
+
 // Uploads (Cloudinary)
 router.use('/upload', uploadRoutes);
 
@@ -128,6 +134,8 @@ router.use('/customers', customersRouter);
 router.use('/suppliers', suppliersRouter);
 router.use('/purchases', purchasesRouter);
 router.use('/expenses',  expensesRouter);
+router.use('/challans',  challansRouter);
+router.use('/demands',   demandsRouter);
 
 // Phase 8: Delivery
 router.use('/delivery', deliveryRouter);

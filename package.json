@@ -7,18 +7,18 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "prisma generate && tsc",
-    "start": "prisma db push && node dist/index.js",
+    "start": "node scripts/db-push.mjs && node dist/index.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
-    "db:push": "prisma db push",
+    "db:push": "node scripts/db-push.mjs",
     "db:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed-warehouses": "tsx src/seeds/warehouseMigration.ts",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@prisma/client": "^5.10.0",
-    "prisma": "^5.10.0",
     "@types/multer": "^2.1.0",
     "bcryptjs": "^2.4.3",
     "cloudinary": "^2.9.0",
@@ -28,6 +28,7 @@
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
     "multer": "^2.1.1",
+    "prisma": "^5.10.0",
     "socket.io": "^4.7.4",
     "uuid": "^9.0.1",
     "zod": "^3.22.4"
@@ -40,6 +41,7 @@
     "@types/morgan": "^1.9.9",
     "@types/node": "^20.11.24",
     "@types/uuid": "^9.0.8",
+    "nodemon": "^3.1.14",
     "tsx": "^4.7.1",
     "typescript": "^5.3.3"
   },

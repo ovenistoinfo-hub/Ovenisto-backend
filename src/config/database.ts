@@ -24,7 +24,7 @@ if (env.NODE_ENV !== 'production') {
  * Connect to database with retry logic
  */
 export async function connectDatabase(): Promise<void> {
-  const maxRetries = 3;
+  const maxRetries = 8;
   let retries = 0;
 
   while (retries < maxRetries) {
@@ -40,8 +40,10 @@ export async function connectDatabase(): Promise<void> {
         throw error;
       }
 
-      // Wait before retrying
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      // Neon serverless can take 5-10s to wake from cold start — wait longer between retries
+      const waitMs = retries <= 2 ? 3000 : 5000;
+      console.log(`⏳ Waiting ${waitMs / 1000}s before retry...`);
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
   }
 }
@@ -52,4 +54,19 @@ export async function connectDatabase(): Promise<void> {
 export async function disconnectDatabase(): Promise<void> {
   await prisma.$disconnect();
   console.log('📴 Database disconnected');
+}
+
+/**
+ * Keep-alive ping — prevents Neon serverless cold starts by pinging every 4 minutes.
+ * Returns the interval handle so it can be cleared on shutdown.
+ */
+export function startKeepAlive(): ReturnType<typeof setInterval> {
+  const INTERVAL_MS = 4 * 60 * 1000; // 4 minutes (Neon sleeps after 5)
+  return setInterval(async () => {
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+    } catch {
+      // Silently ignore — connectDatabase retry logic handles reconnects
+    }
+  }, INTERVAL_MS);
 }

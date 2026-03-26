@@ -351,19 +351,52 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
           }
         }
 
+        // Resolve kitchen warehouse for this order's outlet
+        let kitchenWarehouseId: string | null = null;
+        if (existing.outletId) {
+          const kw = await tx.warehouse.findFirst({
+            where: { outletId: existing.outletId, type: 'KITCHEN', isActive: true },
+            select: { id: true },
+          });
+          kitchenWarehouseId = kw?.id ?? null;
+        }
+
         // Apply deductions and log StockAdjustment for each
         for (const [ingredientId, qty] of Object.entries(deductions)) {
+          // 1. Deduct global ingredient stock (backward compat)
           await tx.ingredient.update({
             where: { id: ingredientId },
             data: { currentStock: { decrement: qty } },
           });
+
+          // 2. Deduct kitchen warehouse stock (if linked)
+          if (kitchenWarehouseId) {
+            await tx.warehouseStock.upsert({
+              where: {
+                warehouseId_ingredientId: {
+                  warehouseId: kitchenWarehouseId,
+                  ingredientId,
+                },
+              },
+              update: { currentStock: { decrement: qty } },
+              create: {
+                warehouseId: kitchenWarehouseId,
+                ingredientId,
+                currentStock: -qty,   // negative = consumed before stock received (audit flag)
+                lowStockLevel: 0,
+              },
+            });
+          }
+
+          // 3. Log consumption — tagged to kitchen warehouse if available
           await tx.stockAdjustment.create({
             data: {
               ingredientId,
               type: 'deduct',
               quantity: qty,
-              reason: `Order ${existing.orderNumber} completed`,
-              adjustedById: req.user?.id || null,
+              reason: `POS consumption — Order ${existing.orderNumber}`,
+              adjustedById: req.user?.id ?? null,
+              warehouseId: kitchenWarehouseId ?? undefined,
               date: new Date(),
             },
           });
