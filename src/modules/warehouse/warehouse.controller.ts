@@ -24,7 +24,7 @@ async function generateUniqueCode(type: string): Promise<string> {
   return `${prefix}-${Date.now().toString().slice(-3)}`;
 }
 
-const ADMIN_ROLES = ['Super Admin', 'Admin'];
+const ADMIN_ROLES = ['Super Admin'];
 
 /** GET /api/warehouses */
 export const getWarehouses = asyncHandler(async (req: Request, res: Response) => {
@@ -34,7 +34,8 @@ export const getWarehouses = asyncHandler(async (req: Request, res: Response) =>
   if (type) where.type = String(type);
   if (outletId) where.outletId = String(outletId);
 
-  // W6: Non-admin users see their outlet's warehouses + MAIN (for transfers/demands reference)
+  // Only Super Admin sees ALL warehouses across all outlets
+  // Everyone else (including Admin) sees their outlet's warehouses + MAIN
   if (!ADMIN_ROLES.includes(req.user?.role || '')) {
     if (req.user?.outletId) {
       where.OR = [
