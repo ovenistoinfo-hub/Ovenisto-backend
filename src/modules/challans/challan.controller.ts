@@ -218,10 +218,11 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
 
     for (const item of items) {
       const receivedQty = itemsInput?.find((i: any) => i.id === item.id)?.receivedQty ?? item.qty;
+      const ing = await tx.ingredient.findUnique({ where: { id: item.ingredientId }, select: { lowStockLevel: true } });
       await tx.warehouseStock.upsert({
         where: { warehouseId_ingredientId: { warehouseId: challan.toWarehouseId, ingredientId: item.ingredientId } },
         update: { currentStock: { increment: Number(receivedQty) } },
-        create: { warehouseId: challan.toWarehouseId, ingredientId: item.ingredientId, currentStock: Number(receivedQty), lowStockLevel: 0 },
+        create: { warehouseId: challan.toWarehouseId, ingredientId: item.ingredientId, currentStock: Number(receivedQty), lowStockLevel: Number(ing?.lowStockLevel ?? 0) },
       });
       if (receivedQty !== item.qty) {
         await tx.stockChallanItem.update({ where: { id: item.id }, data: { receivedQty } });

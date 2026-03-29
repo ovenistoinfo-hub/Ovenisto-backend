@@ -301,6 +301,15 @@ export const updateIngredient = asyncHandler(async (req: Request, res: Response)
       unit: { select: { id: true, name: true } },
     },
   });
+
+  // Propagate lowStockLevel change to all WarehouseStock records
+  if (lowStockLevel !== undefined) {
+    await prisma.warehouseStock.updateMany({
+      where: { ingredientId: id },
+      data: { lowStockLevel },
+    });
+  }
+
   res.json(ApiResponse.success(ingredient, 'Ingredient updated'));
 });
 

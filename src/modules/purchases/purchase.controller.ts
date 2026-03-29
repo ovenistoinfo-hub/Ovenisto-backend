@@ -60,13 +60,20 @@ export const getPurchase = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const createPurchase = asyncHandler(async (req: Request, res: Response) => {
-  const { supplierId, invoiceNumber, date, items, subtotal, tax, total, paid, status, notes, warehouseId } = req.body;
+  const { supplierId, invoiceNumber, date, items, subtotal, tax, total, paid, status, notes, warehouseId, purchaseRequestId } = req.body;
 
   if (!items || !Array.isArray(items) || items.length === 0) {
     throw new ApiError('Purchase items are required', 400);
   }
   if (total == null) throw new ApiError('Total amount is required', 400);
   if (!status) throw new ApiError('Payment status is required', 400);
+
+  // Validate purchase request if provided
+  if (purchaseRequestId) {
+    const pr = await prisma.purchaseRequest.findUnique({ where: { id: purchaseRequestId } });
+    if (!pr) throw new ApiError('Purchase request not found', 404);
+    if (pr.status !== 'APPROVED') throw new ApiError('Purchase request is not approved', 400);
+  }
 
   const paidAmount = Number(paid ?? 0);
   const totalAmount = Number(total);
@@ -76,7 +83,7 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
     totalAmount - paidAmount;
 
   const purchase = await prisma.$transaction(async (tx) => {
-    // Step 1: Create purchase record — NOW includes warehouseId
+    // Step 1: Create purchase record
     const p = await tx.purchase.create({
       data: {
         supplierId: supplierId || null,
@@ -91,6 +98,7 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
         status,
         notes: notes || null,
         warehouseId: warehouseId || null,
+        purchaseRequestId: purchaseRequestId || null,
       },
       include: {
         supplier: { select: { name: true } },
@@ -102,7 +110,7 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
     for (const item of items) {
       if (item.ingredientId) {
         // Keep global ingredient stock in sync
-        await tx.ingredient.update({
+        const ing = await tx.ingredient.update({
           where: { id: item.ingredientId },
           data: {
             currentStock: { increment: Number(item.qty) },
@@ -119,7 +127,7 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
               warehouseId,
               ingredientId: item.ingredientId,
               currentStock: Number(item.qty),
-              lowStockLevel: 0,
+              lowStockLevel: Number(ing.lowStockLevel),
             },
           });
         }
@@ -137,8 +145,16 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
       });
     }
 
+    // Step 4: Mark purchase request as PURCHASED if linked
+    if (purchaseRequestId) {
+      await tx.purchaseRequest.update({
+        where: { id: purchaseRequestId },
+        data: { status: 'PURCHASED' },
+      });
+    }
+
     return p;
-  });
+  }, { timeout: 30000 });
 
   return res.status(201).json(ApiResponse.created(mapPurchase(purchase), 'Purchase created'));
 });

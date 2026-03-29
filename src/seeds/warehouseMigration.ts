@@ -78,7 +78,7 @@ async function main() {
       },
     });
 
-    // Create stock records in all other warehouses with 0 stock
+    // Create stock records in all other warehouses with 0 stock but correct lowStockLevel
     for (const warehouse of allWarehouses) {
       if (warehouse.id !== mainWarehouse.id) {
         try {
@@ -87,7 +87,7 @@ async function main() {
               warehouseId: warehouse.id,
               ingredientId: ingredient.id,
               currentStock: 0,
-              lowStockLevel: 0,
+              lowStockLevel: ingredient.lowStockLevel,
             },
           });
         } catch (e: any) {

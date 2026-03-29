@@ -383,7 +383,7 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
                 warehouseId: kitchenWarehouseId,
                 ingredientId,
                 currentStock: -qty,   // negative = consumed before stock received (audit flag)
-                lowStockLevel: 0,
+                lowStockLevel: Number((await tx.ingredient.findUnique({ where: { id: ingredientId }, select: { lowStockLevel: true } }))?.lowStockLevel ?? 0),
               },
             });
           }

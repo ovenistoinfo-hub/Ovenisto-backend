@@ -85,6 +85,8 @@ model User {
   challansCreated     StockChallan[]    @relation("ChallanCreated")
   demandsRequested    StockDemand[]     @relation("DemandRequested")
   demandsApproved     StockDemand[]     @relation("DemandApproved")
+  purchaseRequests         PurchaseRequest[] @relation("PurchaseRequestedBy")
+  purchaseRequestApprovals PurchaseRequest[] @relation("PurchaseApprovedBy")
 
   @@map("users")
 }
@@ -270,6 +272,7 @@ model Ingredient {
   warehouseStock   WarehouseStock[]
   challanItems     StockChallanItem[]
   demandItems      StockDemandItem[]
+  purchaseRequestItems PurchaseRequestItem[]
 
   @@map("ingredients")
 }
@@ -425,6 +428,7 @@ model Warehouse {
   challansTo        StockChallan[]    @relation("ChallanTo")
   demandsRequested  StockDemand[]     @relation("DemandRequesting")
   demandsToSupply   StockDemand[]     @relation("DemandSupplying")
+  purchaseRequests  PurchaseRequest[]
 
   @@map("warehouses")
 }
@@ -776,9 +780,12 @@ model Purchase {
   notes         String?
   createdAt     DateTime @default(now())
 
+  purchaseRequestId String?  @unique
+
   // Relations
-  supplier  Supplier?  @relation(fields: [supplierId], references: [id])
-  warehouse Warehouse? @relation(fields: [warehouseId], references: [id])
+  supplier         Supplier?         @relation(fields: [supplierId], references: [id])
+  warehouse        Warehouse?        @relation(fields: [warehouseId], references: [id])
+  purchaseRequest  PurchaseRequest?  @relation(fields: [purchaseRequestId], references: [id])
 
   @@map("purchases")
 }
@@ -1052,4 +1059,46 @@ model SmsHistory {
   sentAt    DateTime @default(now())
 
   @@map("sms_history")
+}
+
+// =============================================
+// PHASE 11: Purchase Requests
+// =============================================
+
+model PurchaseRequest {
+  id              String    @id @default(uuid())
+  requestNo       String    @unique @db.VarChar(30)
+  status          String    @default("PENDING") @db.VarChar(20)
+  warehouseId     String
+  notes           String?
+
+  requestedById   String
+  createdAt       DateTime  @default(now())
+
+  approvedById    String?
+  approvedAt      DateTime?
+  rejectionReason String?
+  rejectedAt      DateTime?
+
+  warehouse       Warehouse         @relation(fields: [warehouseId], references: [id])
+  requestedBy     User              @relation("PurchaseRequestedBy", fields: [requestedById], references: [id])
+  approvedBy      User?             @relation("PurchaseApprovedBy", fields: [approvedById], references: [id])
+  items           PurchaseRequestItem[]
+  purchase        Purchase?
+
+  @@map("purchase_requests")
+}
+
+model PurchaseRequestItem {
+  id              String   @id @default(uuid())
+  requestId       String
+  ingredientId    String
+  requestedQty    Decimal  @db.Decimal(10, 3)
+  approvedQty     Decimal? @db.Decimal(10, 3)
+
+  request         PurchaseRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  ingredient      Ingredient      @relation(fields: [ingredientId], references: [id])
+
+  @@unique([requestId, ingredientId])
+  @@map("purchase_request_items")
 }
