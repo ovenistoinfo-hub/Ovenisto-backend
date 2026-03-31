@@ -256,12 +256,13 @@ export const getIngredient = asyncHandler(async (req: Request, res: Response) =>
 
 /** POST /api/inventory/ingredients */
 export const createIngredient = asyncHandler(async (req: Request, res: Response) => {
-  const { name, categoryId, unitId, purchasePrice, currentStock, lowStockLevel, status } = req.body;
+  const { name, brand, categoryId, unitId, purchasePrice, currentStock, lowStockLevel, status } = req.body;
   if (!name?.trim()) throw ApiError.badRequest('Ingredient name is required');
 
   const ingredient = await prisma.ingredient.create({
     data: {
       name: name.trim(),
+      brand: brand?.trim() || null,
       categoryId: categoryId || null,
       unitId: unitId || null,
       purchasePrice: purchasePrice ?? null,
@@ -280,7 +281,7 @@ export const createIngredient = asyncHandler(async (req: Request, res: Response)
 /** PUT /api/inventory/ingredients/:id */
 export const updateIngredient = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { name, categoryId, unitId, purchasePrice, currentStock, lowStockLevel, status } = req.body;
+  const { name, brand, categoryId, unitId, purchasePrice, currentStock, lowStockLevel, status } = req.body;
 
   const existing = await prisma.ingredient.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Ingredient not found');
@@ -289,6 +290,7 @@ export const updateIngredient = asyncHandler(async (req: Request, res: Response)
     where: { id },
     data: {
       ...(name && { name: name.trim() }),
+      ...(brand !== undefined && { brand: brand?.trim() || null }),
       ...(categoryId !== undefined && { categoryId: categoryId || null }),
       ...(unitId !== undefined && { unitId: unitId || null }),
       ...(purchasePrice !== undefined && { purchasePrice: purchasePrice ?? null }),

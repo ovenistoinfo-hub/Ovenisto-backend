@@ -10,6 +10,7 @@ import {
   getWarehouse,
   getWarehouseStock,
   getWarehouseConsumption,
+  getWarehouseExpirySummary,
   createWarehouse,
   updateWarehouse,
   deleteWarehouse,
@@ -20,8 +21,9 @@ const adminRoles = ['Super Admin', 'Admin', 'Manager', 'Store Manager'];
 
 router.get('/', authenticate, getWarehouses);
 router.get('/:id', authenticate, getWarehouse);
-router.get('/:id/stock',       authenticate, getWarehouseStock);
-router.get('/:id/consumption', authenticate, getWarehouseConsumption);
+router.get('/:id/stock',          authenticate, getWarehouseStock);
+router.get('/:id/expiry-summary', authenticate, getWarehouseExpirySummary);
+router.get('/:id/consumption',    authenticate, getWarehouseConsumption);
 router.post('/', authenticate, authorize(adminRoles), createWarehouse);
 router.put('/:id', authenticate, authorize(adminRoles), updateWarehouse);
 router.delete('/:id', authenticate, authorize(['Super Admin', 'Admin']), deleteWarehouse);

@@ -127,6 +127,7 @@ export const getWarehouseStock = asyncHandler(async (req: Request, res: Response
     ingredient: {
       id: s.ingredient.id,
       name: s.ingredient.name,
+      brand: s.ingredient.brand || null,
       purchasePrice: s.ingredient.purchasePrice ? Number(s.ingredient.purchasePrice) : null,
       unit: s.ingredient.unit ? {
         id: s.ingredient.unit.id,
@@ -141,6 +142,100 @@ export const getWarehouseStock = asyncHandler(async (req: Request, res: Response
   }));
 
   res.json(ApiResponse.success(mapped));
+});
+
+/** GET /api/warehouses/:id/expiry-summary */
+export const getWarehouseExpirySummary = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const now = new Date();
+  const nearExpiryThreshold = new Date();
+  nearExpiryThreshold.setDate(now.getDate() + 7);
+
+  // Fetch all batches with expiry dates and remaining qty > 0
+  const batches = await prisma.stockBatch.findMany({
+    where: {
+      warehouseId: id,
+      remainingQty: { gt: 0 },
+      expiryDate: { not: null },
+    },
+    include: {
+      ingredient: {
+        select: {
+          id: true,
+          name: true,
+          brand: true,
+          unit: { select: { name: true, symbol: true } },
+        },
+      },
+    },
+    orderBy: { expiryDate: 'asc' },
+  });
+
+  // Fetch warehouse stock for affected ingredients to get total current stock
+  const ingredientIds = [...new Set(batches.map(b => b.ingredientId))];
+  const warehouseStocks = ingredientIds.length > 0 ? await prisma.warehouseStock.findMany({
+    where: { warehouseId: id, ingredientId: { in: ingredientIds } },
+    select: { ingredientId: true, currentStock: true },
+  }) : [];
+  const stockMap = new Map(warehouseStocks.map(s => [s.ingredientId, Number(s.currentStock)]));
+
+  const mapped = batches.map(b => ({
+    id: b.id,
+    ingredientId: b.ingredientId,
+    ingredientName: b.ingredient.name,
+    brand: b.ingredient.brand,
+    unit: b.ingredient.unit?.symbol || b.ingredient.unit?.name || '',
+    batchQty: Number(b.batchQty),
+    remainingQty: Number(b.remainingQty),
+    expiryDate: b.expiryDate!.toISOString().split('T')[0],
+    purchasedAt: b.createdAt.toISOString().split('T')[0],
+    totalCurrentStock: stockMap.get(b.ingredientId) ?? 0,
+  }));
+
+  const expired = mapped.filter(b => new Date(b.expiryDate) < now);
+  const nearExpiry = mapped.filter(b => {
+    const d = new Date(b.expiryDate);
+    return d >= now && d <= nearExpiryThreshold;
+  });
+
+  // Group by ingredient for summary
+  function groupByIngredient(items: typeof mapped) {
+    const groups: Record<string, {
+      ingredientId: string; ingredientName: string; brand: string | null; unit: string;
+      totalCurrentStock: number;
+      affectedQty: number; // sum of remainingQty of expired/near-expiry batches
+      safeQty: number; // totalCurrentStock - affectedQty
+      batches: typeof mapped;
+    }> = {};
+    for (const item of items) {
+      if (!groups[item.ingredientId]) {
+        groups[item.ingredientId] = {
+          ingredientId: item.ingredientId,
+          ingredientName: item.ingredientName,
+          brand: item.brand,
+          unit: item.unit,
+          totalCurrentStock: item.totalCurrentStock,
+          affectedQty: 0,
+          safeQty: 0,
+          batches: [],
+        };
+      }
+      groups[item.ingredientId].affectedQty += item.remainingQty;
+      groups[item.ingredientId].batches.push(item);
+    }
+    // Calculate safe qty
+    for (const g of Object.values(groups)) {
+      g.safeQty = Math.max(0, g.totalCurrentStock - g.affectedQty);
+    }
+    return Object.values(groups);
+  }
+
+  res.json(ApiResponse.success({
+    expiredCount: expired.length,
+    nearExpiryCount: nearExpiry.length,
+    expired: groupByIngredient(expired),
+    nearExpiry: groupByIngredient(nearExpiry),
+  }));
 });
 
 /** GET /api/warehouses/:id/consumption?limit=50 */

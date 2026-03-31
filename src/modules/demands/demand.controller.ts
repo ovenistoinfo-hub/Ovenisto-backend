@@ -53,6 +53,24 @@ export const getDemands = asyncHandler(async (req: Request, res: Response) => {
   if (requestingWHId)  where.requestingWHId  = requestingWHId;
   if (supplyingWHId)   where.supplyingWHId   = supplyingWHId;
 
+  // Outlet scoping: non-Super Admin sees only demands involving their outlet's warehouses
+  if (req.user?.role !== 'Super Admin') {
+    if (req.user?.outletId) {
+      // Get warehouse IDs for user's outlet + MAIN
+      const userWarehouses = await prisma.warehouse.findMany({
+        where: { OR: [{ outletId: req.user.outletId }, { type: 'MAIN' }] },
+        select: { id: true },
+      });
+      const whIds = userWarehouses.map(w => w.id);
+      if (whIds.length > 0) {
+        where.OR = [
+          { requestingWHId: { in: whIds } },
+          { supplyingWHId: { in: whIds } },
+        ];
+      }
+    }
+  }
+
   const data = await prisma.stockDemand.findMany({
     where,
     orderBy: { createdAt: 'desc' },

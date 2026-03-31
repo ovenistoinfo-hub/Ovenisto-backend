@@ -130,6 +130,18 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
               lowStockLevel: Number(ing.lowStockLevel),
             },
           });
+
+          // Create StockBatch for expiry tracking
+          await tx.stockBatch.create({
+            data: {
+              warehouseId,
+              ingredientId: item.ingredientId,
+              purchaseId: p.id,
+              batchQty: Number(item.qty),
+              remainingQty: Number(item.qty),
+              expiryDate: item.expiryDate ? new Date(item.expiryDate) : null,
+            },
+          });
         }
       }
     }
@@ -227,6 +239,13 @@ export const deletePurchase = asyncHandler(async (req: Request, res: Response) =
               data: { currentStock: { decrement: Number(item.qty) } },
             });
           }
+        }
+
+        // Reverse StockBatch records created by this purchase
+        if (existing.id) {
+          await tx.stockBatch.deleteMany({
+            where: { purchaseId: existing.id, ingredientId: item.ingredientId },
+          });
         }
       }
     }

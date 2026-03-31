@@ -256,6 +256,7 @@ model UnitConversion {
 model Ingredient {
   id            String  @id @default(uuid())
   name          String  @db.VarChar(100)
+  brand         String? @db.VarChar(100)
   categoryId    String?
   unitId        String?
   purchasePrice Decimal? @db.Decimal(10, 2)
@@ -273,6 +274,7 @@ model Ingredient {
   challanItems     StockChallanItem[]
   demandItems      StockDemandItem[]
   purchaseRequestItems PurchaseRequestItem[]
+  stockBatches         StockBatch[]
 
   @@map("ingredients")
 }
@@ -429,8 +431,26 @@ model Warehouse {
   demandsRequested  StockDemand[]     @relation("DemandRequesting")
   demandsToSupply   StockDemand[]     @relation("DemandSupplying")
   purchaseRequests  PurchaseRequest[]
+  stockBatches      StockBatch[]
 
   @@map("warehouses")
+}
+
+model StockBatch {
+  id            String    @id @default(uuid())
+  warehouseId   String
+  ingredientId  String
+  purchaseId    String?
+  batchQty      Decimal   @db.Decimal(10, 3)
+  remainingQty  Decimal   @db.Decimal(10, 3)
+  expiryDate    DateTime? @db.Date
+  createdAt     DateTime  @default(now())
+
+  warehouse  Warehouse  @relation(fields: [warehouseId], references: [id])
+  ingredient Ingredient @relation(fields: [ingredientId], references: [id])
+  purchase   Purchase?  @relation(fields: [purchaseId], references: [id])
+
+  @@map("stock_batches")
 }
 
 model WarehouseStock {
@@ -786,6 +806,7 @@ model Purchase {
   supplier         Supplier?         @relation(fields: [supplierId], references: [id])
   warehouse        Warehouse?        @relation(fields: [warehouseId], references: [id])
   purchaseRequest  PurchaseRequest?  @relation(fields: [purchaseRequestId], references: [id])
+  stockBatches     StockBatch[]
 
   @@map("purchases")
 }

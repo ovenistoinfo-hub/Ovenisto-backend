@@ -15,11 +15,21 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 
 /** GET /api/stock/adjustments */
 export const getAdjustments = asyncHandler(async (req: Request, res: Response) => {
-  const { search, page = '1', limit = '50' } = req.query;
+  const { search, warehouseId, page = '1', limit = '50' } = req.query;
   const skip = (Number(page) - 1) * Number(limit);
 
   const where: any = {};
   if (search) where.ingredient = { name: { contains: String(search), mode: 'insensitive' } };
+  if (warehouseId) where.warehouseId = String(warehouseId);
+
+  // Outlet scoping: non-Super Admin sees only their outlet's warehouse adjustments
+  if (req.user?.role !== 'Super Admin') {
+    if (req.user?.outletId) {
+      where.warehouse = {
+        OR: [{ outletId: req.user.outletId }, { type: 'MAIN' }],
+      };
+    }
+  }
 
   const [adjustments, total] = await Promise.all([
     prisma.stockAdjustment.findMany({
@@ -30,6 +40,7 @@ export const getAdjustments = asyncHandler(async (req: Request, res: Response) =
       include: {
         ingredient: { select: { id: true, name: true, unit: { select: { name: true } } } },
         adjustedBy: { select: { id: true, name: true } },
+        warehouse: { select: { id: true, name: true, type: true } },
       },
     }),
     prisma.stockAdjustment.count({ where }),
@@ -40,7 +51,7 @@ export const getAdjustments = asyncHandler(async (req: Request, res: Response) =
 
 /** POST /api/stock/adjustments */
 export const createAdjustment = asyncHandler(async (req: Request, res: Response) => {
-  const { ingredientId, type, quantity, reason } = req.body;
+  const { ingredientId, type, quantity, reason, warehouseId } = req.body;
 
   if (!ingredientId) throw ApiError.badRequest('Ingredient is required');
   if (!quantity || Number(quantity) <= 0) throw ApiError.badRequest('Quantity must be greater than 0');
@@ -53,8 +64,8 @@ export const createAdjustment = asyncHandler(async (req: Request, res: Response)
   if (!ingredient) throw ApiError.notFound('Ingredient not found');
 
   const adjustedById = req.user?.id;
+  const stockChange = ['add', 'correction'].includes(type) ? Number(quantity) : -Number(quantity);
 
-  // Run adjustment + stock update in a transaction
   const adjustment = await prisma.$transaction(async (tx) => {
     const adj = await tx.stockAdjustment.create({
       data: {
@@ -63,23 +74,35 @@ export const createAdjustment = asyncHandler(async (req: Request, res: Response)
         quantity: Number(quantity),
         reason: reason || null,
         adjustedById: adjustedById || null,
+        warehouseId: warehouseId || null,
         date: new Date(),
       },
       include: {
         ingredient: { select: { id: true, name: true, unit: { select: { name: true } } } },
         adjustedBy: { select: { id: true, name: true } },
+        warehouse: { select: { id: true, name: true, type: true } },
       },
     });
 
-    // Update ingredient stock
-    const stockChange = ['add', 'correction'].includes(type)
-      ? Number(quantity)
-      : -Number(quantity);
-
+    // Update global ingredient stock
     await tx.ingredient.update({
       where: { id: ingredientId },
       data: { currentStock: { increment: stockChange } },
     });
+
+    // Update warehouse-specific stock if warehouseId provided
+    if (warehouseId) {
+      await tx.warehouseStock.upsert({
+        where: { warehouseId_ingredientId: { warehouseId, ingredientId } },
+        update: { currentStock: { increment: stockChange } },
+        create: {
+          warehouseId,
+          ingredientId,
+          currentStock: Math.max(0, stockChange),
+          lowStockLevel: Number(ingredient.lowStockLevel),
+        },
+      });
+    }
 
     return adj;
   });

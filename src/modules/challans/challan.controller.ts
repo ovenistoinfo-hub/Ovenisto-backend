@@ -190,10 +190,29 @@ export const dispatchChallan = asyncHandler(async (req: Request, res: Response) 
           400
         );
       }
+      // Deduct from warehouse stock
       await tx.warehouseStock.update({
         where: { warehouseId_ingredientId: { warehouseId: challan.fromWarehouseId, ingredientId: item.ingredientId } },
         data: { currentStock: { decrement: Number(item.qty) } },
       });
+
+      // FIFO: Deduct from earliest-expiry batches first in source warehouse
+      const batches = await tx.stockBatch.findMany({
+        where: { warehouseId: challan.fromWarehouseId, ingredientId: item.ingredientId, remainingQty: { gt: 0 } },
+        orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }],
+      });
+
+      let qtyToDeduct = Number(item.qty);
+      for (const batch of batches) {
+        if (qtyToDeduct <= 0) break;
+        const batchRemaining = Number(batch.remainingQty);
+        const deductFromBatch = Math.min(batchRemaining, qtyToDeduct);
+        await tx.stockBatch.update({
+          where: { id: batch.id },
+          data: { remainingQty: { decrement: deductFromBatch } },
+        });
+        qtyToDeduct -= deductFromBatch;
+      }
     }
 
     return tx.stockChallan.update({
@@ -217,15 +236,57 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
     const items = await tx.stockChallanItem.findMany({ where: { challanId: challan.id } });
 
     for (const item of items) {
-      const receivedQty = itemsInput?.find((i: any) => i.id === item.id)?.receivedQty ?? item.qty;
+      const receivedQty = Number(itemsInput?.find((i: any) => i.id === item.id)?.receivedQty ?? item.qty);
       const ing = await tx.ingredient.findUnique({ where: { id: item.ingredientId }, select: { lowStockLevel: true } });
+
+      // Update destination warehouse stock
       await tx.warehouseStock.upsert({
         where: { warehouseId_ingredientId: { warehouseId: challan.toWarehouseId, ingredientId: item.ingredientId } },
-        update: { currentStock: { increment: Number(receivedQty) } },
-        create: { warehouseId: challan.toWarehouseId, ingredientId: item.ingredientId, currentStock: Number(receivedQty), lowStockLevel: Number(ing?.lowStockLevel ?? 0) },
+        update: { currentStock: { increment: receivedQty } },
+        create: { warehouseId: challan.toWarehouseId, ingredientId: item.ingredientId, currentStock: receivedQty, lowStockLevel: Number(ing?.lowStockLevel ?? 0) },
       });
-      if (receivedQty !== item.qty) {
+
+      if (receivedQty !== Number(item.qty)) {
         await tx.stockChallanItem.update({ where: { id: item.id }, data: { receivedQty } });
+      }
+
+      // Create batches in destination warehouse with earliest expiry dates from source.
+      // Find ALL source batches (including fully consumed) ordered by earliest expiry.
+      // Allocate receivedQty across them FIFO — each batch gets min(its batchQty, remaining to allocate).
+      const sourceBatches = await tx.stockBatch.findMany({
+        where: { warehouseId: challan.fromWarehouseId, ingredientId: item.ingredientId },
+        orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }],
+      });
+
+      let qtyToAllocate = receivedQty;
+      for (const srcBatch of sourceBatches) {
+        if (qtyToAllocate <= 0) break;
+        // Allocate up to this batch's original size (FIFO: earliest expiry gets filled first)
+        const allocate = Math.min(Number(srcBatch.batchQty), qtyToAllocate);
+        if (allocate <= 0) continue;
+        await tx.stockBatch.create({
+          data: {
+            warehouseId: challan.toWarehouseId,
+            ingredientId: item.ingredientId,
+            batchQty: allocate,
+            remainingQty: allocate,
+            expiryDate: srcBatch.expiryDate,
+          },
+        });
+        qtyToAllocate -= allocate;
+      }
+
+      // Leftover qty (no matching source batches) — create batch without expiry
+      if (qtyToAllocate > 0) {
+        await tx.stockBatch.create({
+          data: {
+            warehouseId: challan.toWarehouseId,
+            ingredientId: item.ingredientId,
+            batchQty: qtyToAllocate,
+            remainingQty: qtyToAllocate,
+            expiryDate: null,
+          },
+        });
       }
     }
 
@@ -250,10 +311,26 @@ export const cancelChallan = asyncHandler(async (req: Request, res: Response) =>
     if (challan.status === 'DISPATCHED') {
       const items = await tx.stockChallanItem.findMany({ where: { challanId: challan.id } });
       for (const item of items) {
+        // Restore warehouse stock
         await tx.warehouseStock.update({
           where: { warehouseId_ingredientId: { warehouseId: challan.fromWarehouseId, ingredientId: item.ingredientId } },
           data: { currentStock: { increment: Number(item.qty) } },
         });
+
+        // Restore batch remainingQty (FIFO reverse — add back to earliest expiry batches)
+        const batches = await tx.stockBatch.findMany({
+          where: { warehouseId: challan.fromWarehouseId, ingredientId: item.ingredientId },
+          orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }],
+        });
+        let qtyToRestore = Number(item.qty);
+        for (const batch of batches) {
+          if (qtyToRestore <= 0) break;
+          const canRestore = Math.min(Number(batch.batchQty) - Number(batch.remainingQty), qtyToRestore);
+          if (canRestore > 0) {
+            await tx.stockBatch.update({ where: { id: batch.id }, data: { remainingQty: { increment: canRestore } } });
+            qtyToRestore -= canRestore;
+          }
+        }
       }
     }
     return tx.stockChallan.update({
