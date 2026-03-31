@@ -12,13 +12,20 @@ function mapPurchase(p: any) {
     ...p,
     subtotal: p.subtotal != null ? Number(p.subtotal) : null,
     tax: p.tax != null ? Number(p.tax) : null,
+    shippingCost: p.shippingCost != null ? Number(p.shippingCost) : null,
+    miscAmount: p.miscAmount != null ? Number(p.miscAmount) : null,
     total: p.total != null ? Number(p.total) : null,
     paid: Number(p.paid),
     due: Number(p.due),
     supplierName: p.supplier?.name ?? null,
     warehouseName: p.warehouse?.name ?? null,
+    createdByName: p.createdBy?.name ?? null,
+    createdByRole: p.createdBy?.role ?? null,
+    createdByPhone: p.createdBy?.phone ?? null,
+    createdByEmail: p.createdBy?.email ?? null,
     supplier: undefined,
     warehouse: undefined,
+    createdBy: undefined,
   };
 }
 
@@ -39,6 +46,7 @@ export const getPurchases = asyncHandler(async (req: Request, res: Response) => 
       include: {
         supplier: { select: { name: true } },
         warehouse: { select: { name: true } },
+        createdBy: { select: { name: true, role: true, phone: true, email: true } },
       },
     }),
     prisma.purchase.count({ where }),
@@ -60,7 +68,11 @@ export const getPurchase = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const createPurchase = asyncHandler(async (req: Request, res: Response) => {
-  const { supplierId, invoiceNumber, date, items, subtotal, tax, total, paid, status, notes, warehouseId, purchaseRequestId } = req.body;
+  const {
+    supplierId, invoiceNumber, date, items, subtotal, tax,
+    shippingCost, miscAmount,
+    total, paid, status, notes, warehouseId, purchaseRequestId,
+  } = req.body;
 
   if (!items || !Array.isArray(items) || items.length === 0) {
     throw new ApiError('Purchase items are required', 400);
@@ -92,6 +104,8 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
         items,
         subtotal: subtotal != null ? subtotal : null,
         tax: tax != null ? tax : null,
+        shippingCost: shippingCost != null ? shippingCost : null,
+        miscAmount: miscAmount != null ? miscAmount : null,
         total: totalAmount,
         paid: paidAmount,
         due,
@@ -99,21 +113,26 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
         notes: notes || null,
         warehouseId: warehouseId || null,
         purchaseRequestId: purchaseRequestId || null,
+        createdById: (req as any).user?.id || null,
       },
       include: {
         supplier: { select: { name: true } },
         warehouse: { select: { name: true } },
+        createdBy: { select: { name: true, role: true, phone: true, email: true } },
       },
     });
 
     // Step 2: Update ingredient stock + purchase price AND warehouse stock
+    // receivedQty = purchased qty - waste qty (what actually enters stock)
     for (const item of items) {
       if (item.ingredientId) {
-        // Keep global ingredient stock in sync
+        const receivedQty = Number(item.qty) - Number(item.wasteQty ?? 0);
+
+        // Keep global ingredient stock in sync (only received qty goes to stock)
         const ing = await tx.ingredient.update({
           where: { id: item.ingredientId },
           data: {
-            currentStock: { increment: Number(item.qty) },
+            currentStock: { increment: receivedQty },
             purchasePrice: Number(item.unitPrice),
           },
         });
@@ -122,26 +141,28 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
         if (warehouseId) {
           await tx.warehouseStock.upsert({
             where: { warehouseId_ingredientId: { warehouseId, ingredientId: item.ingredientId } },
-            update: { currentStock: { increment: Number(item.qty) } },
+            update: { currentStock: { increment: receivedQty } },
             create: {
               warehouseId,
               ingredientId: item.ingredientId,
-              currentStock: Number(item.qty),
+              currentStock: receivedQty,
               lowStockLevel: Number(ing.lowStockLevel),
             },
           });
 
-          // Create StockBatch for expiry tracking
-          await tx.stockBatch.create({
-            data: {
-              warehouseId,
-              ingredientId: item.ingredientId,
-              purchaseId: p.id,
-              batchQty: Number(item.qty),
-              remainingQty: Number(item.qty),
-              expiryDate: item.expiryDate ? new Date(item.expiryDate) : null,
-            },
-          });
+          // Create StockBatch for expiry tracking (only received qty)
+          if (receivedQty > 0) {
+            await tx.stockBatch.create({
+              data: {
+                warehouseId,
+                ingredientId: item.ingredientId,
+                purchaseId: p.id,
+                batchQty: receivedQty,
+                remainingQty: receivedQty,
+                expiryDate: item.expiryDate ? new Date(item.expiryDate) : null,
+              },
+            });
+          }
         }
       }
     }
@@ -192,6 +213,7 @@ export const updatePurchase = asyncHandler(async (req: Request, res: Response) =
       include: {
         supplier: { select: { name: true } },
         warehouse: { select: { name: true } },
+        createdBy: { select: { name: true, role: true, phone: true, email: true } },
       },
     });
 
@@ -215,15 +237,17 @@ export const deletePurchase = asyncHandler(async (req: Request, res: Response) =
   const items = (existing.items as any[]) || [];
 
   await prisma.$transaction(async (tx) => {
-    // Reverse ingredient stock
+    // Reverse ingredient stock (use receivedQty = qty - wasteQty, same as what was added)
     for (const item of items) {
       if (item.ingredientId) {
+        const receivedQty = Number(item.qty) - Number(item.wasteQty ?? 0);
+
         const ing = await tx.ingredient.findUnique({ where: { id: item.ingredientId } });
         if (ing) {
           await tx.ingredient.update({
             where: { id: item.ingredientId },
             data: {
-              currentStock: Math.max(0, Number(ing.currentStock) - Number(item.qty)),
+              currentStock: Math.max(0, Number(ing.currentStock) - receivedQty),
             },
           });
         }
@@ -236,7 +260,7 @@ export const deletePurchase = asyncHandler(async (req: Request, res: Response) =
           if (ws) {
             await tx.warehouseStock.update({
               where: { warehouseId_ingredientId: { warehouseId: existing.warehouseId, ingredientId: item.ingredientId } },
-              data: { currentStock: { decrement: Number(item.qty) } },
+              data: { currentStock: { decrement: receivedQty } },
             });
           }
         }
