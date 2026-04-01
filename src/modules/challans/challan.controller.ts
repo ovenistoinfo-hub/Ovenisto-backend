@@ -18,9 +18,9 @@ const CHALLAN_INCLUDE = {
       ingredient: { select: { id: true, name: true, unit: { select: { symbol: true, name: true } } } },
     },
   },
-  dispatchedBy: { select: { id: true, name: true } },
-  receivedBy:   { select: { id: true, name: true } },
-  createdBy:    { select: { id: true, name: true } },
+  dispatchedBy: { select: { id: true, name: true, phone: true, role: true } },
+  receivedBy:   { select: { id: true, name: true, phone: true, role: true } },
+  createdBy:    { select: { id: true, name: true, phone: true, role: true } },
 };
 
 function mapChallan(c: any) {
@@ -29,6 +29,8 @@ function mapChallan(c: any) {
     challanNo: c.challanNo,
     status: c.status,
     notes: c.notes,
+    shippingCost: c.shippingCost !== null && c.shippingCost !== undefined ? Number(c.shippingCost) : null,
+    miscAmount:   c.miscAmount   !== null && c.miscAmount   !== undefined ? Number(c.miscAmount)   : null,
     fromWarehouse: c.fromWarehouse ? {
       id: c.fromWarehouse.id,
       name: c.fromWarehouse.name,
@@ -43,9 +45,9 @@ function mapChallan(c: any) {
     } : null,
     dispatchedAt: c.dispatchedAt,
     receivedAt: c.receivedAt,
-    dispatchedBy: c.dispatchedBy ? { id: c.dispatchedBy.id, name: c.dispatchedBy.name } : null,
-    receivedBy:   c.receivedBy   ? { id: c.receivedBy.id,   name: c.receivedBy.name   } : null,
-    createdBy:    c.createdBy    ? { id: c.createdBy.id,    name: c.createdBy.name    } : null,
+    dispatchedBy: c.dispatchedBy ? { id: c.dispatchedBy.id, name: c.dispatchedBy.name, phone: c.dispatchedBy.phone ?? null, role: c.dispatchedBy.role ?? null } : null,
+    receivedBy:   c.receivedBy   ? { id: c.receivedBy.id,   name: c.receivedBy.name,   phone: c.receivedBy.phone   ?? null, role: c.receivedBy.role   ?? null } : null,
+    createdBy:    c.createdBy    ? { id: c.createdBy.id,    name: c.createdBy.name,    phone: c.createdBy.phone    ?? null, role: c.createdBy.role    ?? null } : null,
     createdAt: c.createdAt,
     items: c.items.map((i: any) => ({
       id: i.id,
@@ -108,7 +110,7 @@ export const getChallan = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const createChallan = asyncHandler(async (req: Request, res: Response) => {
-  const { fromWarehouseId, toWarehouseId, notes, items } = req.body;
+  const { fromWarehouseId, toWarehouseId, notes, items, shippingCost, miscAmount } = req.body;
 
   if (!fromWarehouseId) throw new ApiError('From warehouse is required', 400);
   if (!toWarehouseId)   throw new ApiError('To warehouse is required', 400);
@@ -154,6 +156,8 @@ export const createChallan = asyncHandler(async (req: Request, res: Response) =>
       fromWarehouseId,
       toWarehouseId,
       notes: notes || null,
+      shippingCost: shippingCost != null ? shippingCost : null,
+      miscAmount:   miscAmount   != null ? miscAmount   : null,
       createdById: req.user?.id || null,
       items: {
         create: items.map((item: any) => ({

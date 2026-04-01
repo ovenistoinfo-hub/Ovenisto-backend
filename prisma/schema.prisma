@@ -476,6 +476,8 @@ model StockChallan {
   toWarehouseId   String
   status          ChallanStatus @default(PENDING)
   notes           String?
+  shippingCost    Decimal?      @db.Decimal(10, 2)
+  miscAmount      Decimal?      @db.Decimal(10, 2)
   dispatchedAt    DateTime?
   receivedAt      DateTime?
   dispatchedById  String?
@@ -536,11 +538,12 @@ model StockDemand {
 }
 
 model StockDemandItem {
-  id           String   @id @default(uuid())
-  demandId     String
-  ingredientId String
-  requestedQty Decimal  @db.Decimal(10, 3)
-  approvedQty  Decimal? @db.Decimal(10, 3)
+  id              String   @id @default(uuid())
+  demandId        String
+  ingredientId    String
+  requestedQty    Decimal  @db.Decimal(10, 3)
+  approvedQty     Decimal? @db.Decimal(10, 3)
+  stockAtRequest  Decimal? @db.Decimal(10, 3)
 
   demand     StockDemand @relation(fields: [demandId], references: [id], onDelete: Cascade)
   ingredient Ingredient  @relation(fields: [ingredientId], references: [id])
@@ -585,10 +588,11 @@ enum ChallanStatus {
 }
 
 enum DemandStatus {
-  PENDING   @map("pending")
-  APPROVED  @map("approved")
-  FULFILLED @map("fulfilled")
-  REJECTED  @map("rejected")
+  PENDING    @map("pending")
+  APPROVED   @map("approved")
+  FULFILLED  @map("fulfilled")
+  REJECTED   @map("rejected")
+  CANCELLED  @map("cancelled")
 }
 
 model Order {

@@ -17,8 +17,8 @@ function mapDemand(d: any) {
     challanId: d.challanId,
     requestingWH: d.requestingWH ? { id: d.requestingWH.id, name: d.requestingWH.name, type: d.requestingWH.type } : null,
     supplyingWH:  d.supplyingWH  ? { id: d.supplyingWH.id,  name: d.supplyingWH.name,  type: d.supplyingWH.type  } : null,
-    requestedBy:  d.requestedBy  ? { id: d.requestedBy.id,  name: d.requestedBy.name  } : null,
-    approvedBy:   d.approvedBy   ? { id: d.approvedBy.id,   name: d.approvedBy.name   } : null,
+    requestedBy:  d.requestedBy  ? { id: d.requestedBy.id,  name: d.requestedBy.name,  phone: d.requestedBy.phone  ?? null, role: d.requestedBy.role  ?? null } : null,
+    approvedBy:   d.approvedBy   ? { id: d.approvedBy.id,   name: d.approvedBy.name,   phone: d.approvedBy.phone   ?? null, role: d.approvedBy.role   ?? null } : null,
     approvedAt:  d.approvedAt,
     fulfilledAt: d.fulfilledAt,
     rejectedAt:  d.rejectedAt,
@@ -27,9 +27,11 @@ function mapDemand(d: any) {
       id: i.id,
       ingredientId: i.ingredientId,
       ingredientName: i.ingredient.name,
+      category: i.ingredient.category?.name ?? null,
       unit: i.ingredient.unit?.symbol || i.ingredient.unit?.name || '—',
       requestedQty: Number(i.requestedQty),
       approvedQty: i.approvedQty !== null ? Number(i.approvedQty) : null,
+      stockAtRequest: i.stockAtRequest !== null && i.stockAtRequest !== undefined ? Number(i.stockAtRequest) : null,
     })),
   };
 }
@@ -37,11 +39,11 @@ function mapDemand(d: any) {
 const INCLUDE = {
   requestingWH: { select: { id: true, name: true, type: true } },
   supplyingWH:  { select: { id: true, name: true, type: true } },
-  requestedBy:  { select: { id: true, name: true } },
-  approvedBy:   { select: { id: true, name: true } },
+  requestedBy:  { select: { id: true, name: true, phone: true, role: true } },
+  approvedBy:   { select: { id: true, name: true, phone: true, role: true } },
   items: {
     include: {
-      ingredient: { select: { id: true, name: true, unit: { select: { symbol: true, name: true } } } },
+      ingredient: { select: { id: true, name: true, unit: { select: { symbol: true, name: true } }, category: { select: { name: true } } } },
     },
   },
 };
@@ -121,6 +123,15 @@ export const createDemand = asyncHandler(async (req: Request, res: Response) => 
   const count = await prisma.stockDemand.count({ where: { demandNo: { startsWith: `DMD-${today}` } } });
   const demandNo = `DMD-${today}-${String(count + 1).padStart(4, '0')}`;
 
+  // Snapshot current stock at time of request for each ingredient
+  const ingredientIds = items.map((item: any) => item.ingredientId);
+  const stockRows = await prisma.warehouseStock.findMany({
+    where: { warehouseId: requestingWHId, ingredientId: { in: ingredientIds } },
+    select: { ingredientId: true, currentStock: true },
+  });
+  const stockSnapshot: Record<string, number> = {};
+  for (const row of stockRows) stockSnapshot[row.ingredientId] = Number(row.currentStock);
+
   const demand = await prisma.stockDemand.create({
     data: {
       demandNo,
@@ -132,6 +143,7 @@ export const createDemand = asyncHandler(async (req: Request, res: Response) => 
         create: items.map((item: any) => ({
           ingredientId: item.ingredientId,
           requestedQty: item.requestedQty,
+          stockAtRequest: stockSnapshot[item.ingredientId] ?? null,
         })),
       },
     },
@@ -220,4 +232,20 @@ export const rejectDemand = asyncHandler(async (req: Request, res: Response) => 
   });
 
   return res.json(ApiResponse.success(mapDemand(updated), 'Demand rejected'));
+});
+
+export const cancelDemand = asyncHandler(async (req: Request, res: Response) => {
+  const demand = await prisma.stockDemand.findUnique({ where: { id: req.params.id } });
+  if (!demand) throw new ApiError('Demand not found', 404);
+  if (demand.status !== 'PENDING') throw new ApiError('Only pending demands can be cancelled', 400);
+  // Only the requester can cancel their own demand
+  if (demand.requestedById !== req.user?.id) throw new ApiError('You can only cancel your own demands', 403);
+
+  const updated = await prisma.stockDemand.update({
+    where: { id: demand.id },
+    data: { status: 'CANCELLED' },
+    include: INCLUDE,
+  });
+
+  return res.json(ApiResponse.success(mapDemand(updated), 'Demand cancelled'));
 });
