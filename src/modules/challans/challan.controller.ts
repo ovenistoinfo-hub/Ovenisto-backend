@@ -6,6 +6,7 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import { USER_SELECT, mapUser } from '../../utils/userHelpers.js';
 
 const ADMIN_ROLES = ['Super Admin', 'Admin'];
 
@@ -15,12 +16,25 @@ const CHALLAN_INCLUDE = {
   toWarehouse:   { select: { id: true, name: true, type: true, outletId: true } },
   items: {
     include: {
-      ingredient: { select: { id: true, name: true, unit: { select: { symbol: true, name: true } } } },
+      ingredient: { select: { id: true, name: true, unit: { select: { symbol: true, name: true } }, category: { select: { name: true } } } },
     },
   },
-  dispatchedBy: { select: { id: true, name: true, phone: true, role: true } },
-  receivedBy:   { select: { id: true, name: true, phone: true, role: true } },
-  createdBy:    { select: { id: true, name: true, phone: true, role: true } },
+  dispatchedBy: { select: USER_SELECT },
+  receivedBy:   { select: USER_SELECT },
+  createdBy:    { select: USER_SELECT },
+  demand: {
+    include: {
+      requestingWH: { select: { id: true, name: true, type: true } },
+      supplyingWH:  { select: { id: true, name: true, type: true } },
+      requestedBy:  { select: USER_SELECT },
+      approvedBy:   { select: USER_SELECT },
+      items: {
+        include: {
+          ingredient: { select: { id: true, name: true, unit: { select: { symbol: true, name: true } }, category: { select: { name: true } } } },
+        },
+      },
+    },
+  },
 };
 
 function mapChallan(c: any) {
@@ -45,18 +59,44 @@ function mapChallan(c: any) {
     } : null,
     dispatchedAt: c.dispatchedAt,
     receivedAt: c.receivedAt,
-    dispatchedBy: c.dispatchedBy ? { id: c.dispatchedBy.id, name: c.dispatchedBy.name, phone: c.dispatchedBy.phone ?? null, role: c.dispatchedBy.role ?? null } : null,
-    receivedBy:   c.receivedBy   ? { id: c.receivedBy.id,   name: c.receivedBy.name,   phone: c.receivedBy.phone   ?? null, role: c.receivedBy.role   ?? null } : null,
-    createdBy:    c.createdBy    ? { id: c.createdBy.id,    name: c.createdBy.name,    phone: c.createdBy.phone    ?? null, role: c.createdBy.role    ?? null } : null,
+    dispatchedBy: mapUser(c.dispatchedBy),
+    receivedBy:   mapUser(c.receivedBy),
+    createdBy:    mapUser(c.createdBy),
     createdAt: c.createdAt,
     items: c.items.map((i: any) => ({
       id: i.id,
       ingredientId: i.ingredientId,
       ingredientName: i.ingredient.name,
+      category: i.ingredient.category?.name ?? null,
       unit: i.ingredient.unit?.symbol || i.ingredient.unit?.name || '—',
       qty: Number(i.qty),
-      receivedQty: i.receivedQty ? Number(i.receivedQty) : null,
+      receivedQty: i.receivedQty !== null && i.receivedQty !== undefined ? Number(i.receivedQty) : null,
+      wasteQty: i.wasteQty !== null && i.wasteQty !== undefined ? Number(i.wasteQty) : null,
+      wasteReason: i.wasteReason ?? null,
     })),
+    demand: c.demand ? {
+      id: c.demand.id,
+      demandNo: c.demand.demandNo,
+      status: c.demand.status,
+      notes: c.demand.notes ?? null,
+      rejectionReason: c.demand.rejectionReason ?? null,
+      requestingWH: c.demand.requestingWH ? { id: c.demand.requestingWH.id, name: c.demand.requestingWH.name, type: c.demand.requestingWH.type } : null,
+      supplyingWH:  c.demand.supplyingWH  ? { id: c.demand.supplyingWH.id,  name: c.demand.supplyingWH.name,  type: c.demand.supplyingWH.type  } : null,
+      requestedBy:  mapUser(c.demand.requestedBy),
+      approvedBy:   mapUser(c.demand.approvedBy),
+      approvedAt: c.demand.approvedAt ?? null,
+      createdAt:  c.demand.createdAt,
+      items: c.demand.items.map((i: any) => ({
+        id: i.id,
+        ingredientId: i.ingredientId,
+        ingredientName: i.ingredient.name,
+        category: i.ingredient.category?.name ?? null,
+        unit: i.ingredient.unit?.symbol || i.ingredient.unit?.name || '—',
+        requestedQty: Number(i.requestedQty),
+        approvedQty: i.approvedQty !== null ? Number(i.approvedQty) : null,
+        stockAtRequest: i.stockAtRequest !== null && i.stockAtRequest !== undefined ? Number(i.stockAtRequest) : null,
+      })),
+    } : null,
   };
 }
 
@@ -177,27 +217,40 @@ export const dispatchChallan = asyncHandler(async (req: Request, res: Response) 
   if (!challan) throw new ApiError('Challan not found', 404);
   if (challan.status !== 'PENDING') throw new ApiError('Only pending challans can be dispatched', 400);
 
-  const updated = await prisma.$transaction(async (tx) => {
-    const items = await tx.stockChallanItem.findMany({
-      where: { challanId: challan.id },
-      include: { ingredient: true },
-    });
+  // Pre-transaction: load items and validate stock availability (avoids transaction timeout on Neon)
+  const items = await prisma.stockChallanItem.findMany({
+    where: { challanId: challan.id },
+    include: { ingredient: true },
+  });
 
+  // Batch stock validation
+  const dispatchIngIds = items.filter(i => Number(i.qty) > 0).map(i => i.ingredientId);
+  const stockRecords = await prisma.warehouseStock.findMany({
+    where: { warehouseId: challan.fromWarehouseId, ingredientId: { in: dispatchIngIds } },
+  });
+  const stockMap = new Map(stockRecords.map(ws => [ws.ingredientId, Number(ws.currentStock)]));
+  for (const item of items) {
+    const qty = Number(item.qty);
+    if (qty <= 0) continue;
+    const availableStock = stockMap.get(item.ingredientId) ?? 0;
+    if (availableStock < qty) {
+      throw new ApiError(
+        `Insufficient stock: ${item.ingredient.name} (available: ${availableStock}, required: ${qty})`,
+        400
+      );
+    }
+  }
+
+  // Transaction: deduct stock + update batches + mark dispatched
+  const updated = await prisma.$transaction(async (tx) => {
     for (const item of items) {
-      const ws = await tx.warehouseStock.findUnique({
-        where: { warehouseId_ingredientId: { warehouseId: challan.fromWarehouseId, ingredientId: item.ingredientId } },
-      });
-      const availableStock = ws ? Number(ws.currentStock) : 0;
-      if (availableStock < Number(item.qty)) {
-        throw new ApiError(
-          `Insufficient stock: ${item.ingredient.name} (available: ${availableStock}, required: ${Number(item.qty)})`,
-          400
-        );
-      }
+      const qty = Number(item.qty);
+      if (qty <= 0) continue;
+
       // Deduct from warehouse stock
       await tx.warehouseStock.update({
         where: { warehouseId_ingredientId: { warehouseId: challan.fromWarehouseId, ingredientId: item.ingredientId } },
-        data: { currentStock: { decrement: Number(item.qty) } },
+        data: { currentStock: { decrement: qty } },
       });
 
       // FIFO: Deduct from earliest-expiry batches first in source warehouse
@@ -206,7 +259,7 @@ export const dispatchChallan = asyncHandler(async (req: Request, res: Response) 
         orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }],
       });
 
-      let qtyToDeduct = Number(item.qty);
+      let qtyToDeduct = qty;
       for (const batch of batches) {
         if (qtyToDeduct <= 0) break;
         const batchRemaining = Number(batch.remainingQty);
@@ -224,82 +277,125 @@ export const dispatchChallan = asyncHandler(async (req: Request, res: Response) 
       data: { status: 'DISPATCHED', dispatchedAt: new Date(), dispatchedById: req.user?.id || null },
       include: CHALLAN_INCLUDE,
     });
-  }, { timeout: 30000 });
+  }, { timeout: 60000 });
 
   return res.json(ApiResponse.success(mapChallan(updated), 'Challan dispatched'));
 });
 
 export const receiveChallan = asyncHandler(async (req: Request, res: Response) => {
-  const challan = await prisma.stockChallan.findUnique({ where: { id: req.params.id } });
+  const challan = await prisma.stockChallan.findUnique({
+    where: { id: req.params.id },
+    include: { toWarehouse: { select: { outletId: true, type: true } } },
+  });
   if (!challan) throw new ApiError('Challan not found', 404);
   if (challan.status !== 'DISPATCHED') throw new ApiError('Only dispatched challans can be received', 400);
 
-  const { items: itemsInput } = req.body || {};
+  // Super Admin dispatches, does not receive
+  if (req.user?.role === 'Super Admin') {
+    throw new ApiError('Super Admin cannot receive challans — branch/kitchen staff must confirm receipt', 403);
+  }
+
+  // Non-admin users must belong to the destination warehouse's outlet
+  const destOutlet = (challan as any).toWarehouse?.outletId;
+  if (!ADMIN_ROLES.includes(req.user?.role ?? '') && req.user?.outletId && destOutlet && req.user.outletId !== destOutlet) {
+    throw new ApiError('You can only receive challans destined to your outlet', 403);
+  }
+
+  const { items: itemsInput, shippingCost: shipIn, miscAmount: miscIn } = req.body || {};
+
+  // Pre-transaction: load items with ingredient names for validation
+  const items = await prisma.stockChallanItem.findMany({
+    where: { challanId: challan.id },
+    include: { ingredient: { select: { name: true } } },
+  });
+
+  // Validate waste quantities
+  for (const item of items) {
+    const input = itemsInput?.find((i: any) => i.id === item.id);
+    if (input) {
+      const receivedQty = Number(input.receivedQty ?? item.qty);
+      const wasteQty = Number(input.wasteQty ?? 0);
+      if (wasteQty > receivedQty) {
+        throw new ApiError(`Waste quantity cannot exceed received quantity for "${item.ingredient.name}"`, 400);
+      }
+    }
+  }
 
   const updated = await prisma.$transaction(async (tx) => {
-    const items = await tx.stockChallanItem.findMany({ where: { challanId: challan.id } });
-
     for (const item of items) {
-      const receivedQty = Number(itemsInput?.find((i: any) => i.id === item.id)?.receivedQty ?? item.qty);
+      const input = itemsInput?.find((i: any) => i.id === item.id);
+      const receivedQty = Number(input?.receivedQty ?? item.qty);
+      const wasteQty = Number(input?.wasteQty ?? 0);
+      const wasteReason = input?.wasteReason ?? null;
+      const actualReceived = receivedQty - wasteQty; // net qty added to stock
+
       const ing = await tx.ingredient.findUnique({ where: { id: item.ingredientId }, select: { lowStockLevel: true } });
 
-      // Update destination warehouse stock
-      await tx.warehouseStock.upsert({
-        where: { warehouseId_ingredientId: { warehouseId: challan.toWarehouseId, ingredientId: item.ingredientId } },
-        update: { currentStock: { increment: receivedQty } },
-        create: { warehouseId: challan.toWarehouseId, ingredientId: item.ingredientId, currentStock: receivedQty, lowStockLevel: Number(ing?.lowStockLevel ?? 0) },
-      });
-
-      if (receivedQty !== Number(item.qty)) {
-        await tx.stockChallanItem.update({ where: { id: item.id }, data: { receivedQty } });
+      // Update destination warehouse stock with net received (minus waste)
+      if (actualReceived > 0) {
+        await tx.warehouseStock.upsert({
+          where: { warehouseId_ingredientId: { warehouseId: challan.toWarehouseId, ingredientId: item.ingredientId } },
+          update: { currentStock: { increment: actualReceived } },
+          create: { warehouseId: challan.toWarehouseId, ingredientId: item.ingredientId, currentStock: actualReceived, lowStockLevel: Number(ing?.lowStockLevel ?? 0) },
+        });
       }
 
-      // Create batches in destination warehouse with earliest expiry dates from source.
-      // Find ALL source batches (including fully consumed) ordered by earliest expiry.
-      // Allocate receivedQty across them FIFO — each batch gets min(its batchQty, remaining to allocate).
-      const sourceBatches = await tx.stockBatch.findMany({
-        where: { warehouseId: challan.fromWarehouseId, ingredientId: item.ingredientId },
-        orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }],
+      // Update challan item with received qty, waste qty, waste reason
+      await tx.stockChallanItem.update({
+        where: { id: item.id },
+        data: { receivedQty, wasteQty: wasteQty || null, wasteReason },
       });
 
-      let qtyToAllocate = receivedQty;
-      for (const srcBatch of sourceBatches) {
-        if (qtyToAllocate <= 0) break;
-        // Allocate up to this batch's original size (FIFO: earliest expiry gets filled first)
-        const allocate = Math.min(Number(srcBatch.batchQty), qtyToAllocate);
-        if (allocate <= 0) continue;
-        await tx.stockBatch.create({
-          data: {
-            warehouseId: challan.toWarehouseId,
-            ingredientId: item.ingredientId,
-            batchQty: allocate,
-            remainingQty: allocate,
-            expiryDate: srcBatch.expiryDate,
-          },
+      // Create batches in destination warehouse (FIFO from source, using actualReceived not full receivedQty)
+      if (actualReceived > 0) {
+        const sourceBatches = await tx.stockBatch.findMany({
+          where: { warehouseId: challan.fromWarehouseId, ingredientId: item.ingredientId },
+          orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }],
         });
-        qtyToAllocate -= allocate;
-      }
 
-      // Leftover qty (no matching source batches) — create batch without expiry
-      if (qtyToAllocate > 0) {
-        await tx.stockBatch.create({
-          data: {
-            warehouseId: challan.toWarehouseId,
-            ingredientId: item.ingredientId,
-            batchQty: qtyToAllocate,
-            remainingQty: qtyToAllocate,
-            expiryDate: null,
-          },
-        });
+        let qtyToAllocate = actualReceived;
+        for (const srcBatch of sourceBatches) {
+          if (qtyToAllocate <= 0) break;
+          const allocate = Math.min(Number(srcBatch.batchQty), qtyToAllocate);
+          if (allocate <= 0) continue;
+          await tx.stockBatch.create({
+            data: {
+              warehouseId: challan.toWarehouseId,
+              ingredientId: item.ingredientId,
+              batchQty: allocate,
+              remainingQty: allocate,
+              expiryDate: srcBatch.expiryDate,
+            },
+          });
+          qtyToAllocate -= allocate;
+        }
+
+        if (qtyToAllocate > 0) {
+          await tx.stockBatch.create({
+            data: {
+              warehouseId: challan.toWarehouseId,
+              ingredientId: item.ingredientId,
+              batchQty: qtyToAllocate,
+              remainingQty: qtyToAllocate,
+              expiryDate: null,
+            },
+          });
+        }
       }
     }
 
     return tx.stockChallan.update({
       where: { id: challan.id },
-      data: { status: 'RECEIVED', receivedAt: new Date(), receivedById: req.user?.id || null },
+      data: {
+        status: 'RECEIVED',
+        receivedAt: new Date(),
+        receivedById: req.user?.id || null,
+        ...(shipIn !== undefined && { shippingCost: Number(shipIn) || null }),
+        ...(miscIn !== undefined && { miscAmount: Number(miscIn) || null }),
+      },
       include: CHALLAN_INCLUDE,
     });
-  }, { timeout: 30000 });
+  }, { timeout: 60000 });
 
   return res.json(ApiResponse.success(mapChallan(updated), 'Challan received'));
 });
@@ -342,7 +438,7 @@ export const cancelChallan = asyncHandler(async (req: Request, res: Response) =>
       data: { status: 'CANCELLED' },
       include: CHALLAN_INCLUDE,
     });
-  }, { timeout: 30000 });
+  }, { timeout: 60000 });
 
   return res.json(ApiResponse.success(mapChallan(updated), 'Challan cancelled'));
 });

@@ -503,6 +503,8 @@ model StockChallanItem {
   ingredientId String
   qty          Decimal  @db.Decimal(10, 3)
   receivedQty  Decimal? @db.Decimal(10, 3)
+  wasteQty     Decimal? @db.Decimal(10, 3)
+  wasteReason  String?
 
   challan    StockChallan @relation(fields: [challanId], references: [id], onDelete: Cascade)
   ingredient Ingredient   @relation(fields: [ingredientId], references: [id])

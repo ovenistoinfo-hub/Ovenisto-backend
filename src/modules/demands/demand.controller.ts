@@ -6,6 +6,7 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import { USER_SELECT, mapUser } from '../../utils/userHelpers.js';
 
 function mapDemand(d: any) {
   return {
@@ -17,8 +18,8 @@ function mapDemand(d: any) {
     challanId: d.challanId,
     requestingWH: d.requestingWH ? { id: d.requestingWH.id, name: d.requestingWH.name, type: d.requestingWH.type } : null,
     supplyingWH:  d.supplyingWH  ? { id: d.supplyingWH.id,  name: d.supplyingWH.name,  type: d.supplyingWH.type  } : null,
-    requestedBy:  d.requestedBy  ? { id: d.requestedBy.id,  name: d.requestedBy.name,  phone: d.requestedBy.phone  ?? null, role: d.requestedBy.role  ?? null } : null,
-    approvedBy:   d.approvedBy   ? { id: d.approvedBy.id,   name: d.approvedBy.name,   phone: d.approvedBy.phone   ?? null, role: d.approvedBy.role   ?? null } : null,
+    requestedBy:  mapUser(d.requestedBy),
+    approvedBy:   mapUser(d.approvedBy),
     approvedAt:  d.approvedAt,
     fulfilledAt: d.fulfilledAt,
     rejectedAt:  d.rejectedAt,
@@ -39,8 +40,8 @@ function mapDemand(d: any) {
 const INCLUDE = {
   requestingWH: { select: { id: true, name: true, type: true } },
   supplyingWH:  { select: { id: true, name: true, type: true } },
-  requestedBy:  { select: { id: true, name: true, phone: true, role: true } },
-  approvedBy:   { select: { id: true, name: true, phone: true, role: true } },
+  requestedBy:  { select: USER_SELECT },
+  approvedBy:   { select: USER_SELECT },
   items: {
     include: {
       ingredient: { select: { id: true, name: true, unit: { select: { symbol: true, name: true } }, category: { select: { name: true } } } },
@@ -55,21 +56,29 @@ export const getDemands = asyncHandler(async (req: Request, res: Response) => {
   if (requestingWHId)  where.requestingWHId  = requestingWHId;
   if (supplyingWHId)   where.supplyingWHId   = supplyingWHId;
 
-  // Outlet scoping: non-Super Admin sees only demands involving their outlet's warehouses
-  if (req.user?.role !== 'Super Admin') {
-    if (req.user?.outletId) {
-      // Get warehouse IDs for user's outlet + MAIN
-      const userWarehouses = await prisma.warehouse.findMany({
-        where: { OR: [{ outletId: req.user.outletId }, { type: 'MAIN' }] },
-        select: { id: true },
-      });
-      const whIds = userWarehouses.map(w => w.id);
-      if (whIds.length > 0) {
-        where.OR = [
-          { requestingWHId: { in: whIds } },
-          { supplyingWHId: { in: whIds } },
-        ];
-      }
+  // Outlet scoping
+  if (req.user?.role === 'Super Admin') {
+    // Super Admin only sees BRANCH→MAIN demands (not KITCHEN→BRANCH)
+    const mainWarehouses = await prisma.warehouse.findMany({
+      where: { type: 'MAIN' },
+      select: { id: true },
+    });
+    const mainIds = mainWarehouses.map(w => w.id);
+    if (mainIds.length > 0) {
+      where.supplyingWHId = { in: mainIds };
+    }
+  } else if (req.user?.outletId) {
+    // Non-Super Admin sees only demands involving their outlet's warehouses
+    const userWarehouses = await prisma.warehouse.findMany({
+      where: { OR: [{ outletId: req.user.outletId }, { type: 'MAIN' }] },
+      select: { id: true },
+    });
+    const whIds = userWarehouses.map(w => w.id);
+    if (whIds.length > 0) {
+      where.OR = [
+        { requestingWHId: { in: whIds } },
+        { supplyingWHId: { in: whIds } },
+      ];
     }
   }
 
@@ -154,9 +163,21 @@ export const createDemand = asyncHandler(async (req: Request, res: Response) => 
 });
 
 export const approveDemand = asyncHandler(async (req: Request, res: Response) => {
-  const demand = await prisma.stockDemand.findUnique({ where: { id: req.params.id }, include: { items: true } });
+  const demand = await prisma.stockDemand.findUnique({
+    where: { id: req.params.id },
+    include: { items: true, requestingWH: { select: { type: true } } },
+  });
   if (!demand) throw new ApiError('Demand not found', 404);
   if (demand.status !== 'PENDING') throw new ApiError('Only pending demands can be approved', 400);
+
+  // BRANCH→MAIN demands: only Super Admin can approve
+  if (demand.requestingWH?.type === 'BRANCH' && req.user?.role !== 'Super Admin') {
+    throw new ApiError('Only Super Admin can approve branch-to-main demands', 403);
+  }
+  // KITCHEN→BRANCH demands: Super Admin cannot approve (Manager/Admin handle these)
+  if (demand.requestingWH?.type === 'KITCHEN' && req.user?.role === 'Super Admin') {
+    throw new ApiError('Kitchen demands are handled by branch Manager/Admin, not Super Admin', 403);
+  }
 
   const { items: itemsInput } = req.body || {};
 
@@ -165,16 +186,34 @@ export const approveDemand = asyncHandler(async (req: Request, res: Response) =>
   const count = await prisma.stockChallan.count({ where: { challanNo: { startsWith: `CHN-${today}` } } });
   const challanNo = `CHN-${today}-${String(count + 1).padStart(4, '0')}`;
 
+  // Build challan items from approvedQty or requestedQty (pre-transaction)
+  const challanItems = demand.items.map((i) => {
+    const override = itemsInput?.find((x: any) => x.id === i.id);
+    const qty = override?.approvedQty ?? Number(i.requestedQty);
+    return { ingredientId: i.ingredientId, qty };
+  }).filter((i) => Number(i.qty) > 0);
+
+  if (challanItems.length === 0) throw new ApiError('At least one item must have approved qty > 0', 400);
+
+  // Validate approved qty does not exceed available stock in supplying warehouse (batch query)
+  const ingredientIds = challanItems.map(ci => ci.ingredientId);
+  const stockRecords = await prisma.warehouseStock.findMany({
+    where: { warehouseId: demand.supplyingWHId, ingredientId: { in: ingredientIds } },
+    include: { ingredient: { select: { name: true } } },
+  });
+  const stockMap = new Map(stockRecords.map(ws => [ws.ingredientId, ws]));
+  for (const ci of challanItems) {
+    const ws = stockMap.get(ci.ingredientId);
+    const available = ws ? Number(ws.currentStock) : 0;
+    if (Number(ci.qty) > available) {
+      throw new ApiError(
+        `Cannot approve ${Number(ci.qty)} of ${ws?.ingredient?.name ?? 'item'} — only ${available} available in supplying warehouse`,
+        400
+      );
+    }
+  }
+
   const updated = await prisma.$transaction(async (tx) => {
-    // Build challan items from approvedQty or requestedQty
-    const challanItems = demand.items.map((i) => {
-      const override = itemsInput?.find((x: any) => x.id === i.id);
-      const qty = override?.approvedQty ?? Number(i.requestedQty);
-      return { ingredientId: i.ingredientId, qty };
-    }).filter((i) => Number(i.qty) > 0);
-
-    if (challanItems.length === 0) throw new ApiError('At least one item must have approved qty > 0', 400);
-
     // Create challan (supplying WH → requesting WH)
     const challan = await tx.stockChallan.create({
       data: {
@@ -207,7 +246,7 @@ export const approveDemand = asyncHandler(async (req: Request, res: Response) =>
     });
 
     return { d, challanNo };
-  }, { timeout: 30000 });
+  }, { timeout: 60000 });
 
   return res.json(ApiResponse.success(
     { ...mapDemand(updated.d), challanNo: updated.challanNo },
@@ -216,9 +255,20 @@ export const approveDemand = asyncHandler(async (req: Request, res: Response) =>
 });
 
 export const rejectDemand = asyncHandler(async (req: Request, res: Response) => {
-  const demand = await prisma.stockDemand.findUnique({ where: { id: req.params.id } });
+  const demand = await prisma.stockDemand.findUnique({
+    where: { id: req.params.id },
+    include: { requestingWH: { select: { type: true } } },
+  });
   if (!demand) throw new ApiError('Demand not found', 404);
   if (demand.status !== 'PENDING') throw new ApiError('Only pending demands can be rejected', 400);
+
+  // Same approval-level permission for rejection
+  if (demand.requestingWH?.type === 'BRANCH' && req.user?.role !== 'Super Admin') {
+    throw new ApiError('Only Super Admin can reject branch-to-main demands', 403);
+  }
+  if (demand.requestingWH?.type === 'KITCHEN' && req.user?.role === 'Super Admin') {
+    throw new ApiError('Kitchen demands are handled by branch Manager/Admin, not Super Admin', 403);
+  }
 
   const { reason } = req.body;
   const updated = await prisma.stockDemand.update({
