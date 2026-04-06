@@ -20,15 +20,13 @@ export const getAdjustments = asyncHandler(async (req: Request, res: Response) =
 
   const where: any = {};
   if (search) where.ingredient = { name: { contains: String(search), mode: 'insensitive' } };
-  if (warehouseId) where.warehouseId = String(warehouseId);
-
-  // Outlet scoping: non-Super Admin sees only their outlet's warehouse adjustments
-  if (req.user?.role !== 'Super Admin') {
-    if (req.user?.outletId) {
-      where.warehouse = {
-        OR: [{ outletId: req.user.outletId }, { type: 'MAIN' }],
-      };
-    }
+  if (warehouseId) {
+    where.warehouseId = String(warehouseId);
+  } else if (req.user?.role !== 'Super Admin' && req.user?.outletId) {
+    // Outlet scoping: non-Super Admin sees only their outlet's warehouse adjustments
+    where.warehouse = {
+      OR: [{ outletId: req.user.outletId }, { type: 'MAIN' }],
+    };
   }
 
   const [adjustments, total] = await Promise.all([
@@ -38,8 +36,8 @@ export const getAdjustments = asyncHandler(async (req: Request, res: Response) =
       take: Number(limit),
       orderBy: { date: 'desc' },
       include: {
-        ingredient: { select: { id: true, name: true, unit: { select: { name: true } } } },
-        adjustedBy: { select: { id: true, name: true } },
+        ingredient: { select: { id: true, name: true, unit: { select: { name: true, symbol: true } }, category: { select: { name: true } } } },
+        adjustedBy: { select: { id: true, name: true, phone: true, role: true, outlet: { select: { name: true } } } },
         warehouse: { select: { id: true, name: true, type: true } },
       },
     }),
@@ -78,8 +76,8 @@ export const createAdjustment = asyncHandler(async (req: Request, res: Response)
         date: new Date(),
       },
       include: {
-        ingredient: { select: { id: true, name: true, unit: { select: { name: true } } } },
-        adjustedBy: { select: { id: true, name: true } },
+        ingredient: { select: { id: true, name: true, unit: { select: { name: true, symbol: true } }, category: { select: { name: true } } } },
+        adjustedBy: { select: { id: true, name: true, phone: true, role: true, outlet: { select: { name: true } } } },
         warehouse: { select: { id: true, name: true, type: true } },
       },
     });
@@ -105,7 +103,7 @@ export const createAdjustment = asyncHandler(async (req: Request, res: Response)
     }
 
     return adj;
-  });
+  }, { timeout: 60000 });
 
   res.status(201).json(ApiResponse.created(adjustment, 'Stock adjustment recorded'));
 });
@@ -219,7 +217,7 @@ export const completeStockTake = asyncHandler(async (req: Request, res: Response
       },
       include: { items: { include: { ingredient: { select: { id: true, name: true, unit: { select: { name: true } } } } } } },
     });
-  });
+  }, { timeout: 60000 });
 
   res.json(ApiResponse.success(result, 'Stock take completed'));
 });
@@ -280,7 +278,7 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
     }
 
     return prod;
-  });
+  }, { timeout: 60000 });
 
   res.status(201).json(ApiResponse.created(production, 'Production recorded'));
 });
@@ -412,7 +410,7 @@ export const createWasteRecord = asyncHandler(async (req: Request, res: Response
     }
 
     return waste;
-  });
+  }, { timeout: 60000 });
 
   res.status(201).json(ApiResponse.created(record, 'Waste record saved'));
 });
