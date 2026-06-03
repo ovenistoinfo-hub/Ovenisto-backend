@@ -80,6 +80,26 @@ async function getWarehouseStockMap(warehouseId: string, ingredientIds: string[]
   return map;
 }
 
+// Helper: fetch warehouse stock for many (warehouseId, ingredientId) pairs in ONE query.
+// Returns a map keyed by `${warehouseId}:${ingredientId}` → currentStock. Avoids the
+// N+1 of running getWarehouseStockMap once per purchase-request row in a list.
+async function getWarehouseStockMapBatch(
+  pairs: { warehouseId: string; ingredientId: string }[]
+): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  if (pairs.length === 0) return map;
+  const warehouseIds = [...new Set(pairs.map((p) => p.warehouseId))];
+  const ingredientIds = [...new Set(pairs.map((p) => p.ingredientId))];
+  const stocks = await prisma.warehouseStock.findMany({
+    where: { warehouseId: { in: warehouseIds }, ingredientId: { in: ingredientIds } },
+    select: { warehouseId: true, ingredientId: true, currentStock: true },
+  });
+  for (const s of stocks) {
+    map.set(`${s.warehouseId}:${s.ingredientId}`, Number(s.currentStock));
+  }
+  return map;
+}
+
 /** GET /api/purchase-requests */
 export const getPurchaseRequests = asyncHandler(async (req: Request, res: Response) => {
   const { status, warehouseId, page = '1', limit = '50' } = req.query;
@@ -120,12 +140,21 @@ export const getPurchaseRequests = asyncHandler(async (req: Request, res: Respon
     prisma.purchaseRequest.count({ where }),
   ]);
 
-  // Fetch warehouse stock for each request's items
-  const mapped = await Promise.all(data.map(async (pr) => {
-    const ingredientIds = pr.items.map((i: any) => i.ingredientId);
-    const stockMap = ingredientIds.length > 0 ? await getWarehouseStockMap(pr.warehouseId, ingredientIds) : new Map();
+  // Fetch warehouse stock for ALL requests' items in ONE query (was N+1: one query per PR row).
+  const allPairs = data.flatMap((pr) =>
+    pr.items.map((i: any) => ({ warehouseId: pr.warehouseId, ingredientId: i.ingredientId }))
+  );
+  const combinedStock = await getWarehouseStockMapBatch(allPairs);
+
+  const mapped = data.map((pr) => {
+    // Build the per-request map (keyed by ingredientId) that mapRequest expects,
+    // sliced from the combined batch result. Missing pairs default to 0.
+    const stockMap = new Map<string, number>();
+    for (const i of pr.items as any[]) {
+      stockMap.set(i.ingredientId, combinedStock.get(`${pr.warehouseId}:${i.ingredientId}`) ?? 0);
+    }
     return mapRequest(pr, stockMap);
-  }));
+  });
 
   res.json(ApiResponse.paginated(mapped, p, l, total));
 });

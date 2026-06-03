@@ -56,17 +56,7 @@ export async function disconnectDatabase(): Promise<void> {
   console.log('📴 Database disconnected');
 }
 
-/**
- * Keep-alive ping — prevents Neon serverless cold starts by pinging every 4 minutes.
- * Returns the interval handle so it can be cleared on shutdown.
- */
-export function startKeepAlive(): ReturnType<typeof setInterval> {
-  const INTERVAL_MS = 4 * 60 * 1000; // 4 minutes (Neon sleeps after 5)
-  return setInterval(async () => {
-    try {
-      await prisma.$queryRaw`SELECT 1`;
-    } catch {
-      // Silently ignore — connectDatabase retry logic handles reconnects
-    }
-  }, INTERVAL_MS);
-}
+// NOTE: A keep-alive ping was intentionally REMOVED here. Pinging the DB on an
+// interval defeats Neon's scale-to-zero and pins compute awake 24/7 (~180 CU-hrs/mo).
+// We accept an occasional cold-start (~3-10s) on the first request after idle;
+// connectDatabase()'s retry loop above handles wake-from-suspend transparently.

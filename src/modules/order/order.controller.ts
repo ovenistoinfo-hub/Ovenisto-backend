@@ -8,6 +8,7 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import { emitOrderEvent } from '../../socket.js';
 
 // ── Enum conversion helpers ──
 
@@ -227,7 +228,9 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
     },
   });
 
-  res.status(201).json(ApiResponse.created(mapOrderOut(order), 'Order created'));
+  const created = mapOrderOut(order);
+  emitOrderEvent('order:created', created);
+  res.status(201).json(ApiResponse.created(created, 'Order created'));
 });
 
 /** PUT /api/orders/:id */
@@ -292,7 +295,9 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
     });
   });
 
-  res.json(ApiResponse.success(mapOrderOut(order), 'Order updated'));
+  const updatedOrder = mapOrderOut(order);
+  emitOrderEvent('order:updated', updatedOrder);
+  res.json(ApiResponse.success(updatedOrder, 'Order updated'));
 });
 
 /** PUT /api/orders/:id/status */
@@ -361,8 +366,21 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
           kitchenWarehouseId = kw?.id ?? null;
         }
 
-        // Apply deductions and log StockAdjustment for each
-        for (const [ingredientId, qty] of Object.entries(deductions)) {
+        const deductionEntries = Object.entries(deductions);
+
+        // Pre-fetch lowStockLevel for all deducted ingredients in ONE query
+        // (avoids an N+1 findUnique inside the loop on every sale).
+        const lowStockById = new Map<string, number>();
+        if (kitchenWarehouseId && deductionEntries.length > 0) {
+          const ings = await tx.ingredient.findMany({
+            where: { id: { in: deductionEntries.map(([id]) => id) } },
+            select: { id: true, lowStockLevel: true },
+          });
+          for (const ing of ings) lowStockById.set(ing.id, Number(ing.lowStockLevel ?? 0));
+        }
+
+        // Apply per-ingredient stock decrements (values differ per row, so these stay individual)
+        for (const [ingredientId, qty] of deductionEntries) {
           // 1. Deduct global ingredient stock (backward compat)
           await tx.ingredient.update({
             where: { id: ingredientId },
@@ -383,14 +401,16 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
                 warehouseId: kitchenWarehouseId,
                 ingredientId,
                 currentStock: -qty,   // negative = consumed before stock received (audit flag)
-                lowStockLevel: Number((await tx.ingredient.findUnique({ where: { id: ingredientId }, select: { lowStockLevel: true } }))?.lowStockLevel ?? 0),
+                lowStockLevel: lowStockById.get(ingredientId) ?? 0,
               },
             });
           }
+        }
 
-          // 3. Log consumption — tagged to kitchen warehouse if available
-          await tx.stockAdjustment.create({
-            data: {
+        // 3. Log all consumption adjustments in ONE batched insert
+        if (deductionEntries.length > 0) {
+          await tx.stockAdjustment.createMany({
+            data: deductionEntries.map(([ingredientId, qty]) => ({
               ingredientId,
               type: 'deduct',
               quantity: qty,
@@ -398,7 +418,7 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
               adjustedById: req.user?.id ?? null,
               warehouseId: kitchenWarehouseId ?? undefined,
               date: new Date(),
-            },
+            })),
           });
         }
       }
@@ -407,7 +427,9 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
     return updated;
   });
 
-  res.json(ApiResponse.success(mapOrderOut(order), 'Order status updated'));
+  const statusUpdated = mapOrderOut(order);
+  emitOrderEvent('order:updated', statusUpdated);
+  res.json(ApiResponse.success(statusUpdated, 'Order status updated'));
 });
 
 /** DELETE /api/orders/:id */
@@ -415,6 +437,7 @@ export const deleteOrder = asyncHandler(async (req: Request, res: Response) => {
   const existing = await prisma.order.findUnique({ where: { id: req.params.id } });
   if (!existing) throw ApiError.notFound('Order not found');
   await prisma.order.delete({ where: { id: req.params.id } });
+  emitOrderEvent('order:deleted', { id: req.params.id });
   res.json(ApiResponse.success(null, 'Order deleted'));
 });
 

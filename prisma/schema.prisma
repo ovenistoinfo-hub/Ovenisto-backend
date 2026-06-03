@@ -28,13 +28,13 @@ model Outlet {
   createdAt DateTime @default(now())
 
   // Relations
-  users              User[]
-  settings           Settings[]
-  loyaltySettings    LoyaltySettings[]
-  transfersFrom      Transfer[]         @relation("TransferFrom")
-  transfersTo        Transfer[]         @relation("TransferTo")
-  warehouses         Warehouse[]
-  orders             Order[]            @relation("OrderOutlet")
+  users           User[]
+  settings        Settings[]
+  loyaltySettings LoyaltySettings[]
+  transfersFrom   Transfer[]        @relation("TransferFrom")
+  transfersTo     Transfer[]        @relation("TransferTo")
+  warehouses      Warehouse[]
+  orders          Order[]           @relation("OrderOutlet")
 
   @@map("outlets")
 }
@@ -70,21 +70,21 @@ model User {
   createdAt    DateTime  @default(now())
 
   // Relations
-  outlet              Outlet?           @relation(fields: [outletId], references: [id])
-  orders              Order[]
-  stockAdjustments    StockAdjustment[]
-  attendance          Attendance[]
-  shifts              Shift[]
-  staffSchedules      StaffSchedule[]
-  leaveRequests       LeaveRequest[]
-  leaveBalance        LeaveBalance?
-  riderProfile        DeliveryRider?
-  managedWarehouses   Warehouse[]       @relation("WarehouseManager")
-  challansDispatched  StockChallan[]    @relation("ChallanDispatched")
-  challansReceived    StockChallan[]    @relation("ChallanReceived")
-  challansCreated     StockChallan[]    @relation("ChallanCreated")
-  demandsRequested    StockDemand[]     @relation("DemandRequested")
-  demandsApproved     StockDemand[]     @relation("DemandApproved")
+  outlet                   Outlet?           @relation(fields: [outletId], references: [id])
+  orders                   Order[]
+  stockAdjustments         StockAdjustment[]
+  attendance               Attendance[]
+  shifts                   Shift[]
+  staffSchedules           StaffSchedule[]
+  leaveRequests            LeaveRequest[]
+  leaveBalance             LeaveBalance?
+  riderProfile             DeliveryRider?
+  managedWarehouses        Warehouse[]       @relation("WarehouseManager")
+  challansDispatched       StockChallan[]    @relation("ChallanDispatched")
+  challansReceived         StockChallan[]    @relation("ChallanReceived")
+  challansCreated          StockChallan[]    @relation("ChallanCreated")
+  demandsRequested         StockDemand[]     @relation("DemandRequested")
+  demandsApproved          StockDemand[]     @relation("DemandApproved")
   purchaseRequests         PurchaseRequest[] @relation("PurchaseRequestedBy")
   purchaseRequestApprovals PurchaseRequest[] @relation("PurchaseApprovedBy")
   purchasesCreated         Purchase[]        @relation("PurchaseCreatedBy")
@@ -127,10 +127,10 @@ model Settings {
 // =============================================
 
 model FoodCategory {
-  id           String   @id @default(uuid())
-  name         String   @db.VarChar(100)
-  displayOrder Int      @default(0)
-  status       String   @default("active") @db.VarChar(20)
+  id           String @id @default(uuid())
+  name         String @db.VarChar(100)
+  displayOrder Int    @default(0)
+  status       String @default("active") @db.VarChar(20)
 
   // Relations
   menuItems FoodMenuItem[]
@@ -166,15 +166,15 @@ model FoodMenuItem {
 }
 
 model FoodMenuVariant {
-  id             String  @id @default(uuid())
+  id             String   @id @default(uuid())
   menuItemId     String
-  name           String  @db.VarChar(100)
-  price          Decimal @db.Decimal(10, 2)
+  name           String   @db.VarChar(100)
+  price          Decimal  @db.Decimal(10, 2)
   dineInPrice    Decimal? @db.Decimal(10, 2)
   takeAwayPrice  Decimal? @db.Decimal(10, 2)
   deliveryPrice  Decimal? @db.Decimal(10, 2)
   foodpandaPrice Decimal? @db.Decimal(10, 2)
-  displayOrder   Int     @default(0)
+  displayOrder   Int      @default(0)
 
   // Relations
   menuItem FoodMenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
@@ -255,25 +255,25 @@ model UnitConversion {
 }
 
 model Ingredient {
-  id            String  @id @default(uuid())
-  name          String  @db.VarChar(100)
-  brand         String? @db.VarChar(100)
+  id            String   @id @default(uuid())
+  name          String   @db.VarChar(100)
+  brand         String?  @db.VarChar(100)
   categoryId    String?
   unitId        String?
   purchasePrice Decimal? @db.Decimal(10, 2)
-  currentStock  Decimal @default(0) @db.Decimal(10, 3)
-  lowStockLevel Decimal @default(0) @db.Decimal(10, 3)
-  status        String  @default("active") @db.VarChar(20)
+  currentStock  Decimal  @default(0) @db.Decimal(10, 3)
+  lowStockLevel Decimal  @default(0) @db.Decimal(10, 3)
+  status        String   @default("active") @db.VarChar(20)
 
   // Relations
-  category         IngredientCategory? @relation(fields: [categoryId], references: [id])
-  unit             IngredientUnit?     @relation(fields: [unitId], references: [id])
-  recipes          FoodRecipe[]
-  stockAdjustments StockAdjustment[]
-  stockTakeItems   StockTakeItem[]
-  warehouseStock   WarehouseStock[]
-  challanItems     StockChallanItem[]
-  demandItems      StockDemandItem[]
+  category             IngredientCategory?   @relation(fields: [categoryId], references: [id])
+  unit                 IngredientUnit?       @relation(fields: [unitId], references: [id])
+  recipes              FoodRecipe[]
+  stockAdjustments     StockAdjustment[]
+  stockTakeItems       StockTakeItem[]
+  warehouseStock       WarehouseStock[]
+  challanItems         StockChallanItem[]
+  demandItems          StockDemandItem[]
   purchaseRequestItems PurchaseRequestItem[]
   stockBatches         StockBatch[]
 
@@ -298,13 +298,13 @@ model FoodRecipe {
 }
 
 model PreMadeFood {
-  id            String  @id @default(uuid())
-  name          String  @db.VarChar(100)
-  unit          String? @db.VarChar(20)
-  currentStock  Decimal @default(0) @db.Decimal(10, 3)
-  lowStockLevel Decimal @default(0) @db.Decimal(10, 3)
+  id            String   @id @default(uuid())
+  name          String   @db.VarChar(100)
+  unit          String?  @db.VarChar(20)
+  currentStock  Decimal  @default(0) @db.Decimal(10, 3)
+  lowStockLevel Decimal  @default(0) @db.Decimal(10, 3)
   costPerUnit   Decimal? @db.Decimal(10, 2)
-  status        String  @default("active") @db.VarChar(20)
+  status        String   @default("active") @db.VarChar(20)
 
   @@map("pre_made_food")
 }
@@ -324,6 +324,8 @@ model StockAdjustment {
   adjustedBy User?      @relation(fields: [adjustedById], references: [id])
   warehouse  Warehouse? @relation(fields: [warehouseId], references: [id])
 
+  @@index([ingredientId])
+  @@index([warehouseId, type, date])
   @@map("stock_adjustments")
 }
 
@@ -340,14 +342,14 @@ model StockTake {
   createdAt          DateTime  @default(now())
 
   // Relations
-  items      StockTakeItem[]
-  warehouse  Warehouse?      @relation(fields: [warehouseId], references: [id])
+  items     StockTakeItem[]
+  warehouse Warehouse?      @relation(fields: [warehouseId], references: [id])
 
   @@map("stock_takes")
 }
 
 model StockTakeItem {
-  id            String  @id @default(uuid())
+  id            String   @id @default(uuid())
   stockTakeId   String
   ingredientId  String
   systemQty     Decimal? @db.Decimal(10, 3)
@@ -421,36 +423,41 @@ model Warehouse {
   createdAt DateTime      @default(now())
 
   // Relations
-  outlet           Outlet?          @relation(fields: [outletId], references: [id])
-  manager          User?            @relation("WarehouseManager", fields: [managerId], references: [id])
+  outlet           Outlet?           @relation(fields: [outletId], references: [id])
+  manager          User?             @relation("WarehouseManager", fields: [managerId], references: [id])
   warehouseStock   WarehouseStock[]
   purchases        Purchase[]
   stockAdjustments StockAdjustment[]
   stockTakes       StockTake[]
-  challansFrom      StockChallan[]    @relation("ChallanFrom")
-  challansTo        StockChallan[]    @relation("ChallanTo")
-  demandsRequested  StockDemand[]     @relation("DemandRequesting")
-  demandsToSupply   StockDemand[]     @relation("DemandSupplying")
-  purchaseRequests  PurchaseRequest[]
-  stockBatches      StockBatch[]
+  challansFrom     StockChallan[]    @relation("ChallanFrom")
+  challansTo       StockChallan[]    @relation("ChallanTo")
+  demandsRequested StockDemand[]     @relation("DemandRequesting")
+  demandsToSupply  StockDemand[]     @relation("DemandSupplying")
+  purchaseRequests PurchaseRequest[]
+  stockBatches     StockBatch[]
 
+  @@index([outletId, type])
   @@map("warehouses")
 }
 
 model StockBatch {
-  id            String    @id @default(uuid())
-  warehouseId   String
-  ingredientId  String
-  purchaseId    String?
-  batchQty      Decimal   @db.Decimal(10, 3)
-  remainingQty  Decimal   @db.Decimal(10, 3)
-  expiryDate    DateTime? @db.Date
-  createdAt     DateTime  @default(now())
+  id           String    @id @default(uuid())
+  warehouseId  String
+  ingredientId String
+  purchaseId   String?
+  batchQty     Decimal   @db.Decimal(10, 3)
+  remainingQty Decimal   @db.Decimal(10, 3)
+  expiryDate   DateTime? @db.Date
+  createdAt    DateTime  @default(now())
 
   warehouse  Warehouse  @relation(fields: [warehouseId], references: [id])
   ingredient Ingredient @relation(fields: [ingredientId], references: [id])
   purchase   Purchase?  @relation(fields: [purchaseId], references: [id])
 
+  @@index([warehouseId, ingredientId])
+  @@index([ingredientId])
+  @@index([expiryDate])
+  @@index([purchaseId])
   @@map("stock_batches")
 }
 
@@ -486,14 +493,18 @@ model StockChallan {
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
-  fromWarehouse  Warehouse         @relation("ChallanFrom", fields: [fromWarehouseId], references: [id])
-  toWarehouse    Warehouse         @relation("ChallanTo",   fields: [toWarehouseId],   references: [id])
-  dispatchedBy   User?             @relation("ChallanDispatched", fields: [dispatchedById], references: [id])
-  receivedBy     User?             @relation("ChallanReceived",   fields: [receivedById],   references: [id])
-  createdBy      User?             @relation("ChallanCreated",    fields: [createdById],    references: [id])
-  items          StockChallanItem[]
-  demand         StockDemand?
+  fromWarehouse Warehouse          @relation("ChallanFrom", fields: [fromWarehouseId], references: [id])
+  toWarehouse   Warehouse          @relation("ChallanTo", fields: [toWarehouseId], references: [id])
+  dispatchedBy  User?              @relation("ChallanDispatched", fields: [dispatchedById], references: [id])
+  receivedBy    User?              @relation("ChallanReceived", fields: [receivedById], references: [id])
+  createdBy     User?              @relation("ChallanCreated", fields: [createdById], references: [id])
+  items         StockChallanItem[]
+  demand        StockDemand?
 
+  @@index([fromWarehouseId])
+  @@index([toWarehouseId])
+  @@index([status])
+  @@index([createdAt])
   @@map("stock_challans")
 }
 
@@ -513,39 +524,43 @@ model StockChallanItem {
 }
 
 model StockDemand {
-  id               String        @id @default(uuid())
-  demandNo         String        @unique @db.VarChar(30)
-  requestingWHId   String
-  supplyingWHId    String
-  status           DemandStatus  @default(PENDING)
-  notes            String?
-  rejectionReason  String?
-  challanId        String?       @unique
-  approvedAt       DateTime?
-  fulfilledAt      DateTime?
-  rejectedAt       DateTime?
-  requestedById    String?
-  approvedById     String?
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  id              String       @id @default(uuid())
+  demandNo        String       @unique @db.VarChar(30)
+  requestingWHId  String
+  supplyingWHId   String
+  status          DemandStatus @default(PENDING)
+  notes           String?
+  rejectionReason String?
+  challanId       String?      @unique
+  approvedAt      DateTime?
+  fulfilledAt     DateTime?
+  rejectedAt      DateTime?
+  requestedById   String?
+  approvedById    String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
 
-  requestingWH  Warehouse         @relation("DemandRequesting", fields: [requestingWHId], references: [id])
-  supplyingWH   Warehouse         @relation("DemandSupplying",  fields: [supplyingWHId],  references: [id])
-  requestedBy   User?             @relation("DemandRequested",  fields: [requestedById],  references: [id])
-  approvedBy    User?             @relation("DemandApproved",   fields: [approvedById],   references: [id])
-  challan       StockChallan?     @relation(fields: [challanId], references: [id])
-  items         StockDemandItem[]
+  requestingWH Warehouse         @relation("DemandRequesting", fields: [requestingWHId], references: [id])
+  supplyingWH  Warehouse         @relation("DemandSupplying", fields: [supplyingWHId], references: [id])
+  requestedBy  User?             @relation("DemandRequested", fields: [requestedById], references: [id])
+  approvedBy   User?             @relation("DemandApproved", fields: [approvedById], references: [id])
+  challan      StockChallan?     @relation(fields: [challanId], references: [id])
+  items        StockDemandItem[]
 
+  @@index([requestingWHId])
+  @@index([supplyingWHId])
+  @@index([status])
+  @@index([createdAt])
   @@map("stock_demands")
 }
 
 model StockDemandItem {
-  id              String   @id @default(uuid())
-  demandId        String
-  ingredientId    String
-  requestedQty    Decimal  @db.Decimal(10, 3)
-  approvedQty     Decimal? @db.Decimal(10, 3)
-  stockAtRequest  Decimal? @db.Decimal(10, 3)
+  id             String   @id @default(uuid())
+  demandId       String
+  ingredientId   String
+  requestedQty   Decimal  @db.Decimal(10, 3)
+  approvedQty    Decimal? @db.Decimal(10, 3)
+  stockAtRequest Decimal? @db.Decimal(10, 3)
 
   demand     StockDemand @relation(fields: [demandId], references: [id], onDelete: Cascade)
   ingredient Ingredient  @relation(fields: [ingredientId], references: [id])
@@ -568,12 +583,12 @@ enum OrderType {
 }
 
 enum OrderStatus {
-  PENDING    @map("pending")
-  PREPARING  @map("preparing")
-  READY      @map("ready")
-  COMPLETED  @map("completed")
-  CANCELLED  @map("cancelled")
-  SCHEDULED  @map("scheduled")
+  PENDING   @map("pending")
+  PREPARING @map("preparing")
+  READY     @map("ready")
+  COMPLETED @map("completed")
+  CANCELLED @map("cancelled")
+  SCHEDULED @map("scheduled")
 }
 
 enum WarehouseType {
@@ -590,57 +605,64 @@ enum ChallanStatus {
 }
 
 enum DemandStatus {
-  PENDING    @map("pending")
-  APPROVED   @map("approved")
-  FULFILLED  @map("fulfilled")
-  REJECTED   @map("rejected")
-  CANCELLED  @map("cancelled")
+  PENDING   @map("pending")
+  APPROVED  @map("approved")
+  FULFILLED @map("fulfilled")
+  REJECTED  @map("rejected")
+  CANCELLED @map("cancelled")
 }
 
 model Order {
-  id              String       @id @default(uuid())
-  orderNumber     String       @unique @db.VarChar(20)
+  id              String      @id @default(uuid())
+  orderNumber     String      @unique @db.VarChar(20)
   customerId      String?
-  customerName    String?      @db.VarChar(100)
-  phone           String?      @db.VarChar(20)
-  type            OrderType    @default(WALKIN)
-  subtotal        Decimal      @db.Decimal(10, 2)
-  discount        Decimal      @default(0) @db.Decimal(10, 2)
-  tax             Decimal      @default(0) @db.Decimal(10, 2)
-  total           Decimal      @db.Decimal(10, 2)
-  status          OrderStatus  @default(PENDING)
+  customerName    String?     @db.VarChar(100)
+  phone           String?     @db.VarChar(20)
+  type            OrderType   @default(WALKIN)
+  subtotal        Decimal     @db.Decimal(10, 2)
+  discount        Decimal     @default(0) @db.Decimal(10, 2)
+  tax             Decimal     @default(0) @db.Decimal(10, 2)
+  total           Decimal     @db.Decimal(10, 2)
+  status          OrderStatus @default(PENDING)
   paymentMethod   String?
-  date            DateTime     @db.Date
-  time            String?      @db.VarChar(20)
+  date            DateTime    @db.Date
+  time            String?     @db.VarChar(20)
   staffId         String?
-  staffName       String?      @db.VarChar(100)
+  staffName       String?     @db.VarChar(100)
   tableNumber     Int?
   deliveryAddress String?
   riderId         String?
   outletId        String?
   // Future Sale fields
-  isFutureSale    Boolean      @default(false)
-  scheduledDate   DateTime?    @db.Date
-  scheduledTime   String?      @db.VarChar(20)
+  isFutureSale    Boolean     @default(false)
+  scheduledDate   DateTime?   @db.Date
+  scheduledTime   String?     @db.VarChar(20)
   futureNotes     String?
-  advancePayment  Decimal      @default(0) @db.Decimal(10, 2)
+  advancePayment  Decimal     @default(0) @db.Decimal(10, 2)
   // Enhanced POS fields
-  isUrgent        Boolean      @default(false)
-  customerType    String?      @db.VarChar(20) // walk-in, regular, corporate, vip
-  orderSource     String?      @db.VarChar(20) // pos, self-order, website, foodpanda, phone
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  isUrgent        Boolean     @default(false)
+  customerType    String?     @db.VarChar(20) // walk-in, regular, corporate, vip
+  orderSource     String?     @db.VarChar(20) // pos, self-order, website, foodpanda, phone
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
 
   // Relations
-  customer      Customer?               @relation(fields: [customerId], references: [id])
-  staff         User?                   @relation(fields: [staffId], references: [id])
-  rider         DeliveryRider?          @relation(fields: [riderId], references: [id])
-  outlet        Outlet?                 @relation("OrderOutlet", fields: [outletId], references: [id])
+  customer      Customer?              @relation(fields: [customerId], references: [id])
+  staff         User?                  @relation(fields: [staffId], references: [id])
+  rider         DeliveryRider?         @relation(fields: [riderId], references: [id])
+  outlet        Outlet?                @relation("OrderOutlet", fields: [outletId], references: [id])
   items         OrderItem[]
   modifications OrderModificationLog[]
   deliveries    DeliveryAssignment[]
   loyaltyTx     LoyaltyTransaction[]
 
+  @@index([createdAt])
+  @@index([status])
+  @@index([type])
+  @@index([date])
+  @@index([customerId])
+  @@index([riderId])
+  @@index([outletId, createdAt])
   @@map("orders")
 }
 
@@ -661,6 +683,8 @@ model OrderItem {
   order    Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
   menuItem FoodMenuItem? @relation(fields: [menuItemId], references: [id])
 
+  @@index([orderId])
+  @@index([menuItemId])
   @@map("order_items")
 }
 
@@ -692,19 +716,19 @@ model Kitchen {
 // =============================================
 
 model Customer {
-  id              String   @id @default(uuid())
-  name            String   @db.VarChar(100)
-  phone           String?  @db.VarChar(20)
-  email           String?  @db.VarChar(100)
+  id              String    @id @default(uuid())
+  name            String    @db.VarChar(100)
+  phone           String?   @db.VarChar(20)
+  email           String?   @db.VarChar(100)
   address         String?
-  customerType    String   @default("walk-in") @db.VarChar(20) // walk-in, regular, corporate, vip
-  loyaltyPoints   Int      @default(0)
-  customPriceList String?  @db.VarChar(50)
-  totalOrders     Int      @default(0)
-  totalSpent      Decimal  @default(0) @db.Decimal(12, 2)
-  outstandingDue  Decimal  @default(0) @db.Decimal(10, 2)
+  customerType    String    @default("walk-in") @db.VarChar(20) // walk-in, regular, corporate, vip
+  loyaltyPoints   Int       @default(0)
+  customPriceList String?   @db.VarChar(50)
+  totalOrders     Int       @default(0)
+  totalSpent      Decimal   @default(0) @db.Decimal(12, 2)
+  outstandingDue  Decimal   @default(0) @db.Decimal(10, 2)
   lastOrder       DateTime? @db.Date
-  createdAt       DateTime @default(now())
+  createdAt       DateTime  @default(now())
 
   // Relations
   orders        Order[]
@@ -714,13 +738,13 @@ model Customer {
 }
 
 model LoyaltySettings {
-  id             String  @id @default(uuid())
-  outletId       String?
-  pointsPerAmount Int    @default(1)
-  amountPerPoint Decimal @default(100) @db.Decimal(10, 2)
-  signupBonus    Int     @default(100)
-  birthdayBonus  Int     @default(50)
-  tiers          Json    @default("[]")
+  id              String  @id @default(uuid())
+  outletId        String?
+  pointsPerAmount Int     @default(1)
+  amountPerPoint  Decimal @default(100) @db.Decimal(10, 2)
+  signupBonus     Int     @default(100)
+  birthdayBonus   Int     @default(50)
+  tiers           Json    @default("[]")
 
   // Relations
   outlet Outlet? @relation(fields: [outletId], references: [id])
@@ -796,7 +820,7 @@ model Purchase {
   supplierId    String?
   warehouseId   String?
   invoiceNumber String?  @db.VarChar(30)
-  items         Json     // [{name, qty, unit, price, total}]
+  items         Json // [{name, qty, unit, price, total}]
   subtotal      Decimal? @db.Decimal(10, 2)
   tax           Decimal? @db.Decimal(10, 2)
   shippingCost  Decimal? @db.Decimal(10, 2)
@@ -809,15 +833,15 @@ model Purchase {
   notes         String?
   createdAt     DateTime @default(now())
 
-  purchaseRequestId String?  @unique
+  purchaseRequestId String? @unique
   createdById       String?
 
   // Relations
-  supplier         Supplier?         @relation(fields: [supplierId], references: [id])
-  warehouse        Warehouse?        @relation(fields: [warehouseId], references: [id])
-  purchaseRequest  PurchaseRequest?  @relation(fields: [purchaseRequestId], references: [id])
-  createdBy        User?             @relation("PurchaseCreatedBy", fields: [createdById], references: [id])
-  stockBatches     StockBatch[]
+  supplier        Supplier?        @relation(fields: [supplierId], references: [id])
+  warehouse       Warehouse?       @relation(fields: [warehouseId], references: [id])
+  purchaseRequest PurchaseRequest? @relation(fields: [purchaseRequestId], references: [id])
+  createdBy       User?            @relation("PurchaseCreatedBy", fields: [createdById], references: [id])
+  stockBatches    StockBatch[]
 
   @@map("purchases")
 }
@@ -843,7 +867,7 @@ model Expense {
 
 model DeliveryRider {
   id               String  @id @default(uuid())
-  userId           String? @unique  // links to User account (role=Rider)
+  userId           String? @unique // links to User account (role=Rider)
   name             String  @db.VarChar(100)
   phone            String? @db.VarChar(20)
   isAvailable      Boolean @default(true)
@@ -851,7 +875,7 @@ model DeliveryRider {
   status           String  @default("available") @db.VarChar(20) // available, on_delivery, offline
 
   // Relations
-  user       User?               @relation(fields: [userId], references: [id])
+  user       User?                @relation(fields: [userId], references: [id])
   orders     Order[]
   deliveries DeliveryAssignment[]
 
@@ -866,19 +890,22 @@ model DeliveryAssignment {
   assignedAt      DateTime  @default(now())
   acceptedAt      DateTime?
   deliveredAt     DateTime?
-  estimatedTime   Int?      // minutes
+  estimatedTime   Int? // minutes
   customerAddress String?
   customerPhone   String?   @db.VarChar(20)
   notes           String?
   // Amount collection
-  amountToCollect Decimal?  @db.Decimal(10, 2)  // order total (cash on delivery)
-  collectedAt     DateTime?                       // when manager collected cash from rider
-  collectedBy     String?   @db.VarChar(100)     // name of manager who collected
+  amountToCollect Decimal?  @db.Decimal(10, 2) // order total (cash on delivery)
+  collectedAt     DateTime? // when manager collected cash from rider
+  collectedBy     String?   @db.VarChar(100) // name of manager who collected
 
   // Relations
   order Order         @relation(fields: [orderId], references: [id])
   rider DeliveryRider @relation(fields: [riderId], references: [id])
 
+  @@index([riderId, status, deliveredAt])
+  @@index([orderId])
+  @@index([status])
   @@map("delivery_assignments")
 }
 
@@ -915,7 +942,7 @@ model StaffSchedule {
   id         String   @id @default(uuid())
   employeeId String
   weekStart  DateTime @db.Date
-  shifts     Json     // [{day, templateId, templateName, startTime, endTime}]
+  shifts     Json // [{day, templateId, templateName, startTime, endTime}]
   status     String   @default("draft") @db.VarChar(20)
   createdBy  String?  @db.VarChar(100)
   createdAt  DateTime @default(now())
@@ -927,18 +954,18 @@ model StaffSchedule {
 }
 
 model LeaveRequest {
-  id          String    @id @default(uuid())
-  employeeId  String
-  leaveType   String    @db.VarChar(20) // sick, casual, annual, emergency
-  startDate   DateTime  @db.Date
-  endDate     DateTime  @db.Date
-  totalDays   Int?
-  reason      String?
-  status      String    @default("pending") @db.VarChar(20)
-  appliedOn   DateTime  @default(now()) @db.Date
-  reviewedBy  String?   @db.VarChar(100)
-  reviewedOn  DateTime? @db.Date
-  reviewNote  String?
+  id         String    @id @default(uuid())
+  employeeId String
+  leaveType  String    @db.VarChar(20) // sick, casual, annual, emergency
+  startDate  DateTime  @db.Date
+  endDate    DateTime  @db.Date
+  totalDays  Int?
+  reason     String?
+  status     String    @default("pending") @db.VarChar(20)
+  appliedOn  DateTime  @default(now()) @db.Date
+  reviewedBy String?   @db.VarChar(100)
+  reviewedOn DateTime? @db.Date
+  reviewNote String?
 
   // Relations
   employee User @relation(fields: [employeeId], references: [id])
@@ -994,28 +1021,28 @@ model Shift {
 // =============================================
 
 model Deal {
-  id                  String    @id @default(uuid())
-  name                String    @db.VarChar(100)
-  description         String?
-  type                String    @db.VarChar(30) // percentage, combo, buyXgetY, timeBased, optionCombo
-  discountPercent     Decimal?  @db.Decimal(5, 2)
-  applicableItems     String[]
+  id                   String    @id @default(uuid())
+  name                 String    @db.VarChar(100)
+  description          String?
+  type                 String    @db.VarChar(30) // percentage, combo, buyXgetY, timeBased, optionCombo
+  discountPercent      Decimal?  @db.Decimal(5, 2)
+  applicableItems      String[]
   applicableCategories String[]
-  comboItems          Json?     // [{itemId, qty}]
-  comboPrice          Decimal?  @db.Decimal(10, 2)
-  buyQty              Int?
-  getQty              Int?
-  buyItemId           String?
-  getItemId           String?
-  startTime           String?   @db.VarChar(10)
-  endTime             String?   @db.VarChar(10)
-  timeDiscountPercent Decimal?  @db.Decimal(5, 2)
-  optionGroups        Json?     // [{id, label, allowedItems[], maxSelections}]
-  dealPrice           Decimal?  @db.Decimal(10, 2)
-  validFrom           DateTime? @db.Date
-  validTo             String?   @db.VarChar(20) // 'always' or date string
-  isActive            Boolean   @default(true)
-  createdAt           DateTime  @default(now())
+  comboItems           Json? // [{itemId, qty}]
+  comboPrice           Decimal?  @db.Decimal(10, 2)
+  buyQty               Int?
+  getQty               Int?
+  buyItemId            String?
+  getItemId            String?
+  startTime            String?   @db.VarChar(10)
+  endTime              String?   @db.VarChar(10)
+  timeDiscountPercent  Decimal?  @db.Decimal(5, 2)
+  optionGroups         Json? // [{id, label, allowedItems[], maxSelections}]
+  dealPrice            Decimal?  @db.Decimal(10, 2)
+  validFrom            DateTime? @db.Date
+  validTo              String?   @db.VarChar(20) // 'always' or date string
+  isActive             Boolean   @default(true)
+  createdAt            DateTime  @default(now())
 
   @@map("deals")
 }
@@ -1059,14 +1086,14 @@ model Reservation {
 }
 
 model RestaurantTable {
-  id               String   @id @default(uuid())
-  number           String   @unique @db.VarChar(10)
-  capacity         Int      @default(4)
-  floor            String?  @db.VarChar(50)
-  shape            String?  @db.VarChar(20) // square, round, rectangle
-  status           String   @default("available") @db.VarChar(20)
-  currentOrderId   String?
-  reservationId    String?
+  id             String  @id @default(uuid())
+  number         String  @unique @db.VarChar(10)
+  capacity       Int     @default(4)
+  floor          String? @db.VarChar(50)
+  shape          String? @db.VarChar(20) // square, round, rectangle
+  status         String  @default("available") @db.VarChar(20)
+  currentOrderId String?
+  reservationId  String?
 
   // Relations
   reservations Reservation[]
@@ -1098,38 +1125,38 @@ model SmsHistory {
 // =============================================
 
 model PurchaseRequest {
-  id              String    @id @default(uuid())
-  requestNo       String    @unique @db.VarChar(30)
-  status          String    @default("PENDING") @db.VarChar(20)
-  warehouseId     String
-  notes           String?
+  id          String  @id @default(uuid())
+  requestNo   String  @unique @db.VarChar(30)
+  status      String  @default("PENDING") @db.VarChar(20)
+  warehouseId String
+  notes       String?
 
-  requestedById   String
-  createdAt       DateTime  @default(now())
+  requestedById String
+  createdAt     DateTime @default(now())
 
   approvedById    String?
   approvedAt      DateTime?
   rejectionReason String?
   rejectedAt      DateTime?
 
-  warehouse       Warehouse         @relation(fields: [warehouseId], references: [id])
-  requestedBy     User              @relation("PurchaseRequestedBy", fields: [requestedById], references: [id])
-  approvedBy      User?             @relation("PurchaseApprovedBy", fields: [approvedById], references: [id])
-  items           PurchaseRequestItem[]
-  purchase        Purchase?
+  warehouse   Warehouse             @relation(fields: [warehouseId], references: [id])
+  requestedBy User                  @relation("PurchaseRequestedBy", fields: [requestedById], references: [id])
+  approvedBy  User?                 @relation("PurchaseApprovedBy", fields: [approvedById], references: [id])
+  items       PurchaseRequestItem[]
+  purchase    Purchase?
 
   @@map("purchase_requests")
 }
 
 model PurchaseRequestItem {
-  id              String   @id @default(uuid())
-  requestId       String
-  ingredientId    String
-  requestedQty    Decimal  @db.Decimal(10, 3)
-  approvedQty     Decimal? @db.Decimal(10, 3)
+  id           String   @id @default(uuid())
+  requestId    String
+  ingredientId String
+  requestedQty Decimal  @db.Decimal(10, 3)
+  approvedQty  Decimal? @db.Decimal(10, 3)
 
-  request         PurchaseRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
-  ingredient      Ingredient      @relation(fields: [ingredientId], references: [id])
+  request    PurchaseRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  ingredient Ingredient      @relation(fields: [ingredientId], references: [id])
 
   @@unique([requestId, ingredientId])
   @@map("purchase_request_items")

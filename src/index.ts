@@ -7,12 +7,13 @@ import http from 'http';
 import { Server as SocketServer } from 'socket.io';
 import app from './app.js';
 import { env } from './config/env.js';
-import { connectDatabase, disconnectDatabase, startKeepAlive } from './config/database.js';
+import { connectDatabase, disconnectDatabase } from './config/database.js';
+import { registerIO } from './socket.js';
 
 // Create HTTP server
 const server = http.createServer(app);
 
-// Initialize Socket.IO (for real-time features in later phases)
+// Initialize Socket.IO for real-time order push (KDS / POS / status boards).
 const io = new SocketServer(server, {
   cors: {
     origin: env.CORS_ORIGIN.split(',').map((origin) => origin.trim()),
@@ -21,7 +22,10 @@ const io = new SocketServer(server, {
   },
 });
 
-// Socket.IO connection handler (placeholder for Phase 5+)
+// Make io available to controllers via socket.ts (emitOrderEvent), no circular import.
+registerIO(io);
+
+// Socket.IO connection handler
 io.on('connection', (socket) => {
   console.log(`🔌 Client connected: ${socket.id}`);
 
@@ -33,15 +37,9 @@ io.on('connection', (socket) => {
 // Export io for use in other modules
 export { io };
 
-// Keep-alive interval handle (cleared on shutdown)
-let keepAliveHandle: ReturnType<typeof setInterval> | undefined;
-
 // Graceful shutdown handler
 async function gracefulShutdown(signal: string): Promise<void> {
   console.log(`\n${signal} received. Starting graceful shutdown...`);
-
-  // Stop keep-alive ping
-  if (keepAliveHandle) clearInterval(keepAliveHandle);
 
   // Close server first (stop accepting new connections)
   server.close(() => {
@@ -76,8 +74,9 @@ async function startServer(): Promise<void> {
     // Connect to database
     await connectDatabase();
 
-    // Start keep-alive ping to prevent Neon cold starts
-    keepAliveHandle = startKeepAlive();
+    // NOTE: No keep-alive ping — we WANT Neon to scale-to-zero when idle to save
+    // compute-hours. Cold-start wake (~3-10s) on the first request after idle is
+    // handled transparently by connectDatabase()'s retry logic.
 
     // Start listening
     server.listen(env.PORT, () => {
