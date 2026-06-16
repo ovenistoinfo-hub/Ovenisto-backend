@@ -16,7 +16,9 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:seed-warehouses": "tsx src/seeds/warehouseMigration.ts",
     "lint": "eslint src --ext .ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@prisma/client": "^5.10.0",
@@ -44,7 +46,8 @@
     "@types/uuid": "^9.0.8",
     "nodemon": "^3.1.14",
     "tsx": "^4.7.1",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^2.1.9"
   },
   "engines": {
     "node": ">=20.0.0"
