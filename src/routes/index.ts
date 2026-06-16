@@ -26,6 +26,7 @@ import { expensesRouter }  from '../modules/expenses/expense.routes.js';
 import { challansRouter } from '../modules/challans/challan.routes.js';
 import { demandsRouter }  from '../modules/demands/demand.routes.js';
 import { purchaseRequestsRouter } from '../modules/purchase-requests/purchase-request.routes.js';
+import { reportsRouter } from '../modules/reports/reports.routes.js';
 
 const router = Router();
 
@@ -153,7 +154,7 @@ router.use('/shifts', shiftsRouter);
 // router.use('/coupons', couponRoutes);
 // router.use('/reservations', reservationRoutes);
 router.use('/tables', tableRoutes);
-// router.use('/reports', reportRoutes);
+router.use('/reports', reportsRouter);
 // router.use('/analytics', analyticsRoutes);
 // router.use('/sms', smsRoutes);
 // router.use('/self-order', selfOrderRoutes);
