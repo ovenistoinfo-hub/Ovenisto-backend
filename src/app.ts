@@ -4,6 +4,7 @@
 
 import express, { type Application, type Request, type Response } from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import morgan from 'morgan';
 import { env } from './config/env.js';
 import { errorHandler } from './middleware/errorHandler.js';
@@ -25,6 +26,10 @@ app.use(
     allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
+
+// gzip-compress all responses — shrinks large JSON list payloads (POS menu, orders)
+// by ~70-85%, which matters most on slow restaurant tablet WiFi/4G.
+app.use(compression());
 
 // Request logging
 if (env.NODE_ENV !== 'test') {
