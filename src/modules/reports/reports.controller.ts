@@ -6,7 +6,10 @@ import type { Request, Response } from 'express';
 import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { parseDateRange, buildOrderWhere, computeCogs } from './reports.helpers.js';
+import {
+  parseDateRange, buildOrderWhere, computeCogs,
+  dayBoundaries, monthBoundaries, classifyChannel, growthPct, fillChannels, groupPayments,
+} from './reports.helpers.js';
 
 const COMPLETED = 'COMPLETED'; // Prisma OrderStatus enum value for completed orders
 
@@ -199,4 +202,145 @@ export const getStockReport = asyncHandler(async (req: Request, res: Response) =
       stockByCategory,
     })
   );
+});
+
+const EXCLUDED_STATUSES = ['Cancelled', 'cancelled', 'Scheduled', 'scheduled', 'CANCELLED', 'SCHEDULED'];
+
+/** GET /api/reports/dashboard?outletId=<id|all> */
+export const getDashboard = asyncHandler(async (req: Request, res: Response) => {
+  const outletId = req.query.outletId as string | undefined;
+  const now = new Date();
+  const day = dayBoundaries(now);
+  const mb = monthBoundaries(now);
+
+  const outletFilter = outletId && outletId !== 'all' ? { outletId } : {};
+  const notExcluded = { status: { notIn: EXCLUDED_STATUSES as any } };
+
+  // --- TODAY: orders by channel ---
+  const todayOrders = await prisma.order.findMany({
+    where: { ...outletFilter, ...notExcluded, createdAt: { gte: day.gte, lte: day.lte } },
+    select: { type: true, total: true },
+  });
+  const channelMap = new Map<string, { type: string; sales: number; orders: number }>();
+  let onlineSales = 0, onlineOrders = 0, offlineSales = 0, offlineOrders = 0;
+  for (const o of todayOrders) {
+    const type = String(o.type);
+    const amt = Number(o.total);
+    const cur = channelMap.get(type) ?? { type, sales: 0, orders: 0 };
+    cur.sales += amt; cur.orders += 1;
+    channelMap.set(type, cur);
+    if (classifyChannel(type) === 'online') { onlineSales += amt; onlineOrders += 1; }
+    else { offlineSales += amt; offlineOrders += 1; }
+  }
+  const channels = fillChannels([...channelMap.values()]).map((c) => ({ ...c, sales: Math.round(c.sales) }));
+  const todayTotalSales = Math.round(todayOrders.reduce((s, o) => s + Number(o.total), 0));
+
+  // --- THIS MONTH: financials, payments, online/offline totals (for growth) ---
+  const monthOrders = await prisma.order.findMany({
+    where: { ...outletFilter, ...notExcluded, createdAt: { gte: mb.thisStart, lte: mb.thisEnd } },
+    select: { type: true, total: true, subtotal: true, discount: true, paymentMethod: true },
+  });
+  const grossSale = monthOrders.reduce((s, o) => s + Number(o.subtotal), 0);
+  const discounts = monthOrders.reduce((s, o) => s + Number(o.discount), 0);
+  const revenue = monthOrders.reduce((s, o) => s + Number(o.total), 0);
+  const paymentBreakdown = groupPayments(monthOrders.map((o) => ({ method: o.paymentMethod, amount: Number(o.total) })));
+  let monthOnline = 0, monthOffline = 0;
+  for (const o of monthOrders) {
+    if (classifyChannel(String(o.type)) === 'online') monthOnline += Number(o.total);
+    else monthOffline += Number(o.total);
+  }
+
+  // --- LAST MONTH: online/offline + overall totals (for growth %) ---
+  const lastOrders = await prisma.order.findMany({
+    where: { ...outletFilter, ...notExcluded, createdAt: { gte: mb.lastStart, lte: mb.lastEnd } },
+    select: { type: true, total: true },
+  });
+  let lastOnline = 0, lastOffline = 0, lastTotal = 0;
+  for (const o of lastOrders) {
+    const amt = Number(o.total); lastTotal += amt;
+    if (classifyChannel(String(o.type)) === 'online') lastOnline += amt; else lastOffline += amt;
+  }
+
+  // --- expenses + waste this month (restaurant-wide; Expense has no outletId) ---
+  const [expenseRows, wasteRows] = await Promise.all([
+    prisma.expense.findMany({ where: { date: { gte: mb.thisStart, lte: mb.thisEnd } }, select: { amount: true } }),
+    prisma.wasteRecord.findMany({ where: { date: { gte: mb.thisStart, lte: mb.thisEnd } }, select: { cost: true } }),
+  ]);
+  const expenses = expenseRows.reduce((s, e) => s + Number(e.amount), 0);
+  const foodLoss = wasteRows.reduce((s, w) => s + Number(w.cost ?? 0), 0);
+  const netProfit = revenue - expenses - foodLoss;
+
+  // --- day-wise (current week Mon..Sun) ---
+  const weekStart = new Date(day.gte);
+  const dow = (weekStart.getUTCDay() + 6) % 7; // Mon=0
+  weekStart.setUTCDate(weekStart.getUTCDate() - dow);
+  const weekEnd = new Date(weekStart); weekEnd.setUTCDate(weekStart.getUTCDate() + 6); weekEnd.setUTCHours(23, 59, 59, 999);
+  const weekOrders = await prisma.order.findMany({
+    where: { ...outletFilter, ...notExcluded, createdAt: { gte: weekStart, lte: weekEnd } },
+    select: { total: true, createdAt: true },
+  });
+  const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const dayTotals = [0, 0, 0, 0, 0, 0, 0];
+  for (const o of weekOrders) {
+    const idx = (new Date(o.createdAt).getUTCDay() + 6) % 7;
+    dayTotals[idx] += Number(o.total);
+  }
+  const daywiseSales = labels.map((label, i) => ({ label, sales: Math.round(dayTotals[i]) }));
+
+  // --- payable / receivable / settings / top customers ---
+  const [suppliers, customers, settings] = await Promise.all([
+    prisma.supplier.findMany({ select: { totalDue: true } }),
+    prisma.customer.findMany({ select: { name: true, totalOrders: true, totalSpent: true, outstandingDue: true } }),
+    prisma.settings.findFirst({ select: { restaurantName: true } }),
+  ]);
+  const payable = Math.round(suppliers.reduce((s, x) => s + Number(x.totalDue), 0));
+  const receivable = Math.round(customers.reduce((s, c) => s + Number(c.outstandingDue), 0));
+  const topCustomers = [...customers]
+    .sort((a, b) => Number(b.totalSpent) - Number(a.totalSpent))
+    .slice(0, 10)
+    .map((c) => ({ name: c.name, totalOrders: c.totalOrders, totalSpent: Number(c.totalSpent) }));
+
+  // --- top items this month ---
+  const monthItems = await prisma.orderItem.findMany({
+    where: { order: { is: { ...outletFilter, ...notExcluded, createdAt: { gte: mb.thisStart, lte: mb.thisEnd } } } },
+    select: { name: true, qty: true, price: true },
+  });
+  const itemMap = new Map<string, { qty: number; revenue: number }>();
+  for (const it of monthItems) {
+    const cur = itemMap.get(it.name) ?? { qty: 0, revenue: 0 };
+    cur.qty += it.qty; cur.revenue += Number(it.price) * it.qty;
+    itemMap.set(it.name, cur);
+  }
+  const topItems = [...itemMap.entries()]
+    .map(([name, v]) => ({ name, qty: v.qty, revenue: Math.round(v.revenue) }))
+    .sort((a, b) => b.revenue - a.revenue)
+    .slice(0, 10);
+
+  res.json(ApiResponse.success({
+    branchName: settings?.restaurantName ?? 'Ovenisto',
+    today: {
+      totalSales: todayTotalSales,
+      totalOrders: todayOrders.length,
+      channels,
+      online: { sales: Math.round(onlineSales), orders: onlineOrders },
+      offline: { sales: Math.round(offlineSales), orders: offlineOrders },
+    },
+    month: {
+      grossSale: Math.round(grossSale),
+      discounts: Math.round(discounts),
+      revenue: Math.round(revenue),
+      expenses: Math.round(expenses),
+      foodLoss: Math.round(foodLoss),
+      netProfit: Math.round(netProfit),
+      paymentBreakdown,
+      growthOnlinePct: growthPct(monthOnline, lastOnline),
+      growthOfflinePct: growthPct(monthOffline, lastOffline),
+      overallGrowthPct: growthPct(revenue, lastTotal),
+    },
+    daywiseSales,
+    payable,
+    receivable,
+    topItems,
+    topCustomers,
+  }));
 });
