@@ -50,7 +50,7 @@ const INCLUDE = {
 };
 
 export const getDemands = asyncHandler(async (req: Request, res: Response) => {
-  const { status, requestingWHId, supplyingWHId } = req.query as Record<string, string>;
+  const { status, requestingWHId, supplyingWHId, page, limit } = req.query as Record<string, string>;
   const where: any = {};
   if (status)          where.status          = status;
   if (requestingWHId)  where.requestingWHId  = requestingWHId;
@@ -80,6 +80,28 @@ export const getDemands = asyncHandler(async (req: Request, res: Response) => {
         { supplyingWHId: { in: whIds } },
       ];
     }
+  }
+
+  // OPT-IN pagination (perf #8): paginate only when `limit` is explicitly present.
+  // Without `limit` the response is byte-identical to before — a top-level `data`
+  // array of mapped demands — so the Demands page (which reads the full list and
+  // relies on each row's `items`) is unaffected. The deep `items.ingredient`
+  // include is kept because the list view renders item counts and detail.
+  const limitNum = limit !== undefined ? Math.max(1, Number(limit)) : undefined;
+  const pageNum = page !== undefined ? Math.max(1, Number(page)) : 1;
+
+  if (limitNum !== undefined) {
+    const [data, total] = await Promise.all([
+      prisma.stockDemand.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        include: INCLUDE,
+        skip: (pageNum - 1) * limitNum,
+        take: limitNum,
+      }),
+      prisma.stockDemand.count({ where }),
+    ]);
+    return res.json(ApiResponse.paginated(data.map(mapDemand), pageNum, limitNum, total));
   }
 
   const data = await prisma.stockDemand.findMany({

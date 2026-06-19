@@ -216,13 +216,40 @@ export const deleteIngredientCategory = asyncHandler(async (req: Request, res: R
 
 /** GET /api/inventory/ingredients */
 export const getIngredients = asyncHandler(async (req: Request, res: Response) => {
-  const { search, categoryId, status, lowStock } = req.query;
+  const { search, categoryId, status, lowStock, page, limit } = req.query;
 
   const where: any = {};
   if (search) where.name = { contains: String(search), mode: 'insensitive' };
   if (categoryId) where.categoryId = String(categoryId);
   if (status) where.status = String(status);
   if (lowStock === 'true') where.AND = [{ currentStock: { lte: prisma.ingredient.fields.lowStockLevel } }];
+
+  // OPT-IN pagination (perf #8): only paginate when `limit` is explicitly provided.
+  // Without `limit` the response stays byte-identical to before — a top-level
+  // `data` array — so existing callers (Dashboard, POS, Ingredients, etc.) are
+  // unaffected. NOTE: lowStock filtering happens in JS below, so pagination is
+  // intentionally NOT applied together with lowStock to avoid returning a short
+  // page (the lowStock path is a small low-volume list anyway).
+  const limitNum = limit !== undefined ? Math.max(1, Number(limit)) : undefined;
+  const pageNum = page !== undefined ? Math.max(1, Number(page)) : 1;
+  const paginate = limitNum !== undefined && lowStock !== 'true';
+
+  if (paginate) {
+    const [ingredients, total] = await Promise.all([
+      prisma.ingredient.findMany({
+        where,
+        orderBy: [{ category: { name: 'asc' } }, { name: 'asc' }],
+        include: {
+          category: { select: { id: true, name: true } },
+          unit: { select: { id: true, name: true } },
+        },
+        skip: (pageNum - 1) * limitNum!,
+        take: limitNum!,
+      }),
+      prisma.ingredient.count({ where }),
+    ]);
+    return res.json(ApiResponse.paginated(ingredients, pageNum, limitNum!, total));
+  }
 
   const ingredients = await prisma.ingredient.findMany({
     where,
@@ -238,7 +265,7 @@ export const getIngredients = asyncHandler(async (req: Request, res: Response) =
     ? ingredients.filter(i => Number(i.currentStock) <= Number(i.lowStockLevel))
     : ingredients;
 
-  res.json(ApiResponse.success(result));
+  return res.json(ApiResponse.success(result));
 });
 
 /** GET /api/inventory/ingredients/:id */

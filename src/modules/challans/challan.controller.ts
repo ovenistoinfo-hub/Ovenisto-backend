@@ -112,7 +112,7 @@ async function getUserScopeWhIds(outletId: string | null | undefined): Promise<s
 }
 
 export const getChallans = asyncHandler(async (req: Request, res: Response) => {
-  const { status, fromWarehouseId, toWarehouseId } = req.query as Record<string, string>;
+  const { status, fromWarehouseId, toWarehouseId, page, limit } = req.query as Record<string, string>;
 
   const where: any = {};
   if (status)           where.status           = status;
@@ -129,6 +129,34 @@ export const getChallans = asyncHandler(async (req: Request, res: Response) => {
       { fromWarehouseId: { in: whIds } },
       { toWarehouseId:   { in: whIds } },
     ];
+  }
+
+  // OPT-IN pagination (perf #8): paginate only when `limit` is explicitly present.
+  // Without `limit` the response is byte-identical to before — a top-level `data`
+  // array of mapped challans.
+  //
+  // NOTE on the include: the perf audit suggested trimming the nested
+  // `demand.items` graph from the LIST include. We deliberately did NOT do that.
+  // The frontend Transfers page opens the detail dialog and the print/document
+  // view directly from the list row object (`setShowDetail(c)` — no per-id
+  // re-fetch), and that dialog renders `demand.items` (item table, item count,
+  // print). Dropping `demand.items` here would break those views, so we keep the
+  // full CHALLAN_INCLUDE for the list. Pagination alone bounds the payload safely.
+  const limitNum = limit !== undefined ? Math.max(1, Number(limit)) : undefined;
+  const pageNum = page !== undefined ? Math.max(1, Number(page)) : 1;
+
+  if (limitNum !== undefined) {
+    const [data, total] = await Promise.all([
+      prisma.stockChallan.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        include: CHALLAN_INCLUDE,
+        skip: (pageNum - 1) * limitNum,
+        take: limitNum,
+      }),
+      prisma.stockChallan.count({ where }),
+    ]);
+    return res.json(ApiResponse.paginated(data.map(mapChallan), pageNum, limitNum, total));
   }
 
   const data = await prisma.stockChallan.findMany({
