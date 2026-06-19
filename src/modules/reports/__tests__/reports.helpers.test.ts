@@ -64,3 +64,75 @@ describe('computeCogs', () => {
     expect(computeCogs(items, recipes, new Map())).toBe(0);
   });
 });
+
+import {
+  monthBoundaries, dayBoundaries, classifyChannel, growthPct, fillChannels, groupPayments,
+  CHANNEL_ORDER,
+} from '../reports.helpers.js';
+
+describe('monthBoundaries', () => {
+  it('returns this-month and last-month UTC ranges', () => {
+    const b = monthBoundaries(new Date('2026-06-19T10:00:00.000Z'));
+    expect(b.thisStart.toISOString()).toBe('2026-06-01T00:00:00.000Z');
+    expect(b.thisEnd.toISOString()).toBe('2026-06-30T23:59:59.999Z');
+    expect(b.lastStart.toISOString()).toBe('2026-05-01T00:00:00.000Z');
+    expect(b.lastEnd.toISOString()).toBe('2026-05-31T23:59:59.999Z');
+  });
+  it('handles January (last month = previous December)', () => {
+    const b = monthBoundaries(new Date('2026-01-15T10:00:00.000Z'));
+    expect(b.lastStart.toISOString()).toBe('2025-12-01T00:00:00.000Z');
+    expect(b.lastEnd.toISOString()).toBe('2025-12-31T23:59:59.999Z');
+  });
+});
+
+describe('dayBoundaries', () => {
+  it('returns the UTC start and end of the given day', () => {
+    const d = dayBoundaries(new Date('2026-06-19T14:30:00.000Z'));
+    expect(d.gte.toISOString()).toBe('2026-06-19T00:00:00.000Z');
+    expect(d.lte.toISOString()).toBe('2026-06-19T23:59:59.999Z');
+  });
+});
+
+describe('classifyChannel', () => {
+  it('classifies online types', () => {
+    expect(classifyChannel('Foodpanda')).toBe('online');
+    expect(classifyChannel('Online')).toBe('online');
+    expect(classifyChannel('Self Order')).toBe('online');
+  });
+  it('classifies offline types (incl. unknown -> offline)', () => {
+    expect(classifyChannel('Dine In')).toBe('offline');
+    expect(classifyChannel('Take Away')).toBe('offline');
+    expect(classifyChannel('Walk-in')).toBe('offline');
+    expect(classifyChannel('Whatever')).toBe('offline');
+  });
+});
+
+describe('growthPct', () => {
+  it('computes percentage change', () => {
+    expect(growthPct(120, 100)).toBe(20);
+    expect(growthPct(80, 100)).toBe(-20);
+  });
+  it('returns 0 when previous is 0 (no divide-by-zero)', () => {
+    expect(growthPct(500, 0)).toBe(0);
+    expect(growthPct(0, 0)).toBe(0);
+  });
+});
+
+describe('fillChannels', () => {
+  it('zero-fills every channel in CHANNEL_ORDER and preserves provided values', () => {
+    const out = fillChannels([{ type: 'Dine In', sales: 2867, orders: 5 }]);
+    expect(out.map(c => c.type)).toEqual(CHANNEL_ORDER);
+    expect(out.find(c => c.type === 'Dine In')).toEqual({ type: 'Dine In', sales: 2867, orders: 5 });
+    expect(out.find(c => c.type === 'Delivery')).toEqual({ type: 'Delivery', sales: 0, orders: 0 });
+  });
+});
+
+describe('groupPayments', () => {
+  it('sums by method, ignores null methods, sorts desc, rounds', () => {
+    const out = groupPayments([
+      { method: 'Cash', amount: 100 }, { method: 'Card', amount: 50 },
+      { method: 'Cash', amount: 22.4 }, { method: null, amount: 999 },
+    ]);
+    expect(out).toEqual([{ method: 'Cash', amount: 122 }, { method: 'Card', amount: 50 }]);
+  });
+});

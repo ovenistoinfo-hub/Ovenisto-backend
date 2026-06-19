@@ -65,3 +65,60 @@ export function computeCogs(
   }
   return Math.round(total);
 }
+
+export const ONLINE_TYPES = ['Foodpanda', 'Online', 'Self Order'];
+export const OFFLINE_TYPES = ['Dine In', 'Take Away', 'Walk-in'];
+// Channels shown as cards (mockup order). Walk-in is counted in offline totals but has no own card.
+export const CHANNEL_ORDER = ['Dine In', 'Take Away', 'Delivery', 'Foodpanda', 'Self Order', 'Online'];
+
+/** UTC start/end of the given calendar day. */
+export function dayBoundaries(now: Date): { gte: Date; lte: Date } {
+  const y = now.getUTCFullYear(), m = now.getUTCMonth(), d = now.getUTCDate();
+  return {
+    gte: new Date(Date.UTC(y, m, d, 0, 0, 0, 0)),
+    lte: new Date(Date.UTC(y, m, d, 23, 59, 59, 999)),
+  };
+}
+
+/** UTC ranges for this month and last month, from `now`. */
+export function monthBoundaries(now: Date): { thisStart: Date; thisEnd: Date; lastStart: Date; lastEnd: Date } {
+  const y = now.getUTCFullYear(), m = now.getUTCMonth();
+  const thisStart = new Date(Date.UTC(y, m, 1, 0, 0, 0, 0));
+  const thisEnd = new Date(Date.UTC(y, m + 1, 0, 23, 59, 59, 999)); // day 0 of next month = last day of this
+  const lastStart = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0, 0));
+  const lastEnd = new Date(Date.UTC(y, m, 0, 23, 59, 59, 999));
+  return { thisStart, thisEnd, lastStart, lastEnd };
+}
+
+/** Online vs offline by order type. Unknown types default to offline. */
+export function classifyChannel(type: string): 'online' | 'offline' {
+  return ONLINE_TYPES.includes(type) ? 'online' : 'offline';
+}
+
+/** Percentage change current vs previous; 0 when previous is 0 (avoids divide-by-zero). */
+export function growthPct(current: number, previous: number): number {
+  if (!previous) return 0;
+  return Math.round(((current - previous) / previous) * 100);
+}
+
+/** Zero-fill every channel in CHANNEL_ORDER, merging provided rows. */
+export function fillChannels(
+  rows: { type: string; sales: number; orders: number }[]
+): { type: string; sales: number; orders: number }[] {
+  const byType = new Map(rows.map((r) => [r.type, r]));
+  return CHANNEL_ORDER.map((type) => byType.get(type) ?? { type, sales: 0, orders: 0 });
+}
+
+/** Sum amounts by payment method, ignoring null methods; sorted desc, rounded. */
+export function groupPayments(
+  rows: { method: string | null; amount: number }[]
+): { method: string; amount: number }[] {
+  const map = new Map<string, number>();
+  for (const r of rows) {
+    if (!r.method) continue;
+    map.set(r.method, (map.get(r.method) ?? 0) + r.amount);
+  }
+  return [...map.entries()]
+    .map(([method, amount]) => ({ method, amount: Math.round(amount) }))
+    .sort((a, b) => b.amount - a.amount);
+}
