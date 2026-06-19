@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseDateRange, buildOrderWhere, computeCogs } from '../reports.helpers.js';
+import { parseDateRange, buildOrderWhere, computeCogs, displayOrderType } from '../reports.helpers.js';
 
 describe('parseDateRange', () => {
   it('parses valid from/to into inclusive day boundaries', () => {
@@ -105,6 +105,11 @@ describe('classifyChannel', () => {
     expect(classifyChannel('Walk-in')).toBe('offline');
     expect(classifyChannel('Whatever')).toBe('offline');
   });
+  it('online types still classify when passed through displayOrderType', () => {
+    expect(classifyChannel(displayOrderType('FOODPANDA'))).toBe('online');
+    expect(classifyChannel(displayOrderType('SELF_ORDER'))).toBe('online');
+    expect(classifyChannel(displayOrderType('DINE_IN'))).toBe('offline');
+  });
 });
 
 describe('growthPct', () => {
@@ -164,5 +169,18 @@ describe('normalizePaymentMethod', () => {
   it('returns null for empty/null', () => {
     expect(normalizePaymentMethod(null)).toBe(null);
     expect(normalizePaymentMethod('')).toBe(null);
+  });
+});
+
+describe('displayOrderType', () => {
+  it('maps enum member names to display strings', () => {
+    expect(displayOrderType('DINE_IN')).toBe('Dine In');
+    expect(displayOrderType('FOODPANDA')).toBe('Foodpanda');
+    expect(displayOrderType('SELF_ORDER')).toBe('Self Order');
+    expect(displayOrderType('TAKE_AWAY')).toBe('Take Away');
+  });
+  it('passes through already-display or unknown values', () => {
+    expect(displayOrderType('Dine In')).toBe('Dine In');
+    expect(displayOrderType('Whatever')).toBe('Whatever');
   });
 });

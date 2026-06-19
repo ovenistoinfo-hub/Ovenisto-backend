@@ -1,5 +1,16 @@
 import { ApiError } from '../../utils/ApiError.js';
 
+const TYPE_TO_DISPLAY: Record<string, string> = {
+  DINE_IN: 'Dine In', TAKE_AWAY: 'Take Away', DELIVERY: 'Delivery',
+  ONLINE: 'Online', SELF_ORDER: 'Self Order', FOODPANDA: 'Foodpanda', WALKIN: 'Walk-in',
+};
+
+/** Convert a Prisma OrderType enum member name (e.g. "DINE_IN") to its display string
+ *  ("Dine In"). Passes through values that are already display strings or unknown. */
+export function displayOrderType(type: string): string {
+  return TYPE_TO_DISPLAY[type] ?? type;
+}
+
 export interface DateRange {
   gte: Date;
   lte: Date;

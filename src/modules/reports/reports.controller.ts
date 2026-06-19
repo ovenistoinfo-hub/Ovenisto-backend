@@ -9,6 +9,7 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import {
   parseDateRange, buildOrderWhere, computeCogs,
   dayBoundaries, monthBoundaries, classifyChannel, growthPct, fillChannels, groupPayments,
+  displayOrderType,
 } from './reports.helpers.js';
 
 const COMPLETED = 'COMPLETED'; // Prisma OrderStatus enum value for completed orders
@@ -225,7 +226,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
   const channelMap = new Map<string, { type: string; sales: number; orders: number }>();
   let onlineSales = 0, onlineOrders = 0, offlineSales = 0, offlineOrders = 0;
   for (const o of todayOrders) {
-    const type = String(o.type);
+    const type = displayOrderType(String(o.type));
     const amt = Number(o.total);
     const cur = channelMap.get(type) ?? { type, sales: 0, orders: 0 };
     cur.sales += amt; cur.orders += 1;
@@ -247,7 +248,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
   const paymentBreakdown = groupPayments(monthOrders.map((o) => ({ method: o.paymentMethod, amount: Number(o.total) })));
   let monthOnline = 0, monthOffline = 0;
   for (const o of monthOrders) {
-    if (classifyChannel(String(o.type)) === 'online') monthOnline += Number(o.total);
+    if (classifyChannel(displayOrderType(String(o.type))) === 'online') monthOnline += Number(o.total);
     else monthOffline += Number(o.total);
   }
 
@@ -259,7 +260,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
   let lastOnline = 0, lastOffline = 0, lastTotal = 0;
   for (const o of lastOrders) {
     const amt = Number(o.total); lastTotal += amt;
-    if (classifyChannel(String(o.type)) === 'online') lastOnline += amt; else lastOffline += amt;
+    if (classifyChannel(displayOrderType(String(o.type))) === 'online') lastOnline += amt; else lastOffline += amt;
   }
 
   // --- expenses + waste this month (restaurant-wide; Expense has no outletId) ---
@@ -289,17 +290,19 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
   const daywiseSales = labels.map((label, i) => ({ label, sales: Math.round(dayTotals[i]) }));
 
   // --- payable / receivable / settings / top customers ---
-  const [suppliers, customers, settings] = await Promise.all([
-    prisma.supplier.findMany({ select: { totalDue: true } }),
-    prisma.customer.findMany({ select: { name: true, totalOrders: true, totalSpent: true, outstandingDue: true } }),
+  const [supplierAgg, customerAgg, topCustomers, settings] = await Promise.all([
+    prisma.supplier.aggregate({ _sum: { totalDue: true } }),
+    prisma.customer.aggregate({ _sum: { outstandingDue: true } }),
+    prisma.customer.findMany({
+      orderBy: { totalSpent: 'desc' },
+      take: 10,
+      select: { name: true, totalOrders: true, totalSpent: true },
+    }),
     prisma.settings.findFirst({ select: { restaurantName: true } }),
   ]);
-  const payable = Math.round(suppliers.reduce((s, x) => s + Number(x.totalDue), 0));
-  const receivable = Math.round(customers.reduce((s, c) => s + Number(c.outstandingDue), 0));
-  const topCustomers = [...customers]
-    .sort((a, b) => Number(b.totalSpent) - Number(a.totalSpent))
-    .slice(0, 10)
-    .map((c) => ({ name: c.name, totalOrders: c.totalOrders, totalSpent: Number(c.totalSpent) }));
+  const payable = Math.round(Number(supplierAgg._sum.totalDue ?? 0));
+  const receivable = Math.round(Number(customerAgg._sum.outstandingDue ?? 0));
+  const topCustomersMapped = topCustomers.map((c) => ({ name: c.name, totalOrders: c.totalOrders, totalSpent: Number(c.totalSpent) }));
 
   // --- top items this month ---
   const monthItems = await prisma.orderItem.findMany({
@@ -342,6 +345,6 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
     payable,
     receivable,
     topItems,
-    topCustomers,
+    topCustomers: topCustomersMapped,
   }));
 });
