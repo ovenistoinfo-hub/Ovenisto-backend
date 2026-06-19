@@ -66,7 +66,7 @@ describe('computeCogs', () => {
 });
 
 import {
-  monthBoundaries, dayBoundaries, classifyChannel, growthPct, fillChannels, groupPayments,
+  monthBoundaries, dayBoundaries, classifyChannel, growthPct, fillChannels, groupPayments, normalizePaymentMethod,
   CHANNEL_ORDER,
 } from '../reports.helpers.js';
 
@@ -134,5 +134,35 @@ describe('groupPayments', () => {
       { method: 'Cash', amount: 22.4 }, { method: null, amount: 999 },
     ]);
     expect(out).toEqual([{ method: 'Cash', amount: 122 }, { method: 'Card', amount: 50 }]);
+  });
+
+  it('normalizes messy POS payment strings to a clean method name', () => {
+    // Real POS data stores method+amount in one string, sometimes split payments.
+    const out = groupPayments([
+      { method: 'Cash: Rs.400', amount: 400 },
+      { method: 'Cash: Rs.8700', amount: 8700 },
+      { method: 'Advance (Cash): Rs.1500', amount: 1500 },
+      { method: 'Cash: Rs.1000, JazzCash: Rs.980', amount: 1980 }, // split -> first method
+      { method: 'JazzCash', amount: 500 },
+    ]);
+    // Cash bucket = 400+8700+1500+1980 = 12580 ; JazzCash = 500
+    expect(out).toEqual([
+      { method: 'Cash', amount: 12580 },
+      { method: 'JazzCash', amount: 500 },
+    ]);
+  });
+});
+
+describe('normalizePaymentMethod', () => {
+  it('extracts the method name from messy strings', () => {
+    expect(normalizePaymentMethod('Cash: Rs.400')).toBe('Cash');
+    expect(normalizePaymentMethod('Advance (Cash): Rs.1500')).toBe('Cash');
+    expect(normalizePaymentMethod('Cash: Rs.1000, JazzCash: Rs.980')).toBe('Cash');
+    expect(normalizePaymentMethod('JazzCash')).toBe('JazzCash');
+    expect(normalizePaymentMethod('  Card  ')).toBe('Card');
+  });
+  it('returns null for empty/null', () => {
+    expect(normalizePaymentMethod(null)).toBe(null);
+    expect(normalizePaymentMethod('')).toBe(null);
   });
 });

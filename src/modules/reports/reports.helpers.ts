@@ -109,14 +109,35 @@ export function fillChannels(
   return CHANNEL_ORDER.map((type) => byType.get(type) ?? { type, sales: 0, orders: 0 });
 }
 
-/** Sum amounts by payment method, ignoring null methods; sorted desc, rounded. */
+/**
+ * Reduce a messy POS payment string to a clean method name.
+ * Real data looks like "Cash: Rs.400", "Advance (Cash): Rs.1500",
+ * "Cash: Rs.1000, JazzCash: Rs.980" (split). We take the first segment (before a
+ * comma), drop the amount (before a colon), and unwrap an "Advance (X)" wrapper.
+ * Returns null for empty/null.
+ */
+export function normalizePaymentMethod(raw: string | null): string | null {
+  if (!raw) return null;
+  // first payment segment of a possible split ("Cash: x, JazzCash: y" -> "Cash: x")
+  let s = raw.split(',')[0];
+  // drop amount ("Cash: Rs.400" -> "Cash")
+  s = s.split(':')[0];
+  // unwrap "Advance (Cash)" -> "Cash"
+  const m = s.match(/\(([^)]+)\)/);
+  if (m) s = m[1];
+  s = s.trim();
+  return s.length ? s : null;
+}
+
+/** Sum amounts by payment method (normalized), ignoring empty methods; sorted desc, rounded. */
 export function groupPayments(
   rows: { method: string | null; amount: number }[]
 ): { method: string; amount: number }[] {
   const map = new Map<string, number>();
   for (const r of rows) {
-    if (!r.method) continue;
-    map.set(r.method, (map.get(r.method) ?? 0) + r.amount);
+    const method = normalizePaymentMethod(r.method);
+    if (!method) continue;
+    map.set(method, (map.get(method) ?? 0) + r.amount);
   }
   return [...map.entries()]
     .map(([method, amount]) => ({ method, amount: Math.round(amount) }))

@@ -204,7 +204,8 @@ export const getStockReport = asyncHandler(async (req: Request, res: Response) =
   );
 });
 
-const EXCLUDED_STATUSES = ['Cancelled', 'cancelled', 'Scheduled', 'scheduled', 'CANCELLED', 'SCHEDULED'];
+// Prisma OrderStatus enum MEMBER names (not the @map db strings). Exclude cancelled + scheduled.
+const EXCLUDED_STATUSES = ['CANCELLED', 'SCHEDULED'] as const;
 
 /** GET /api/reports/dashboard?outletId=<id|all> */
 export const getDashboard = asyncHandler(async (req: Request, res: Response) => {
@@ -214,7 +215,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
   const mb = monthBoundaries(now);
 
   const outletFilter = outletId && outletId !== 'all' ? { outletId } : {};
-  const notExcluded = { status: { notIn: EXCLUDED_STATUSES as any } };
+  const notExcluded = { status: { notIn: EXCLUDED_STATUSES as unknown as never } };
 
   // --- TODAY: orders by channel ---
   const todayOrders = await prisma.order.findMany({
