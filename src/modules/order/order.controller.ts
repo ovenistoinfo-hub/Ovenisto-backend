@@ -9,6 +9,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { emitOrderEvent } from '../../socket.js';
+import { fifoDrawdown } from '../stock/dough.helpers.js';
 
 // ── Enum conversion helpers ──
 
@@ -404,6 +405,31 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
                 lowStockLevel: lowStockById.get(ingredientId) ?? 0,
               },
             });
+          }
+        }
+
+        // For short-life ingredients (dough), keep their StockBatch.remainingQty in sync
+        // by drawing the sold qty down FIFO (oldest batch first). Sale is never blocked.
+        if (deductionEntries.length > 0) {
+          const shortLife = await tx.ingredient.findMany({
+            where: { id: { in: deductionEntries.map(([id]) => id) }, shelfLifeHours: { not: null } },
+            select: { id: true },
+          });
+          const shortLifeIds = new Set(shortLife.map((i) => i.id));
+          for (const [ingredientId, qty] of deductionEntries) {
+            if (!shortLifeIds.has(ingredientId)) continue;
+            const batches = await tx.stockBatch.findMany({
+              where: { ingredientId, remainingQty: { gt: 0 } },
+              select: { id: true, remainingQty: true },
+              orderBy: { createdAt: 'asc' },
+            });
+            const draws = fifoDrawdown(
+              batches.map((b) => ({ id: b.id, remainingQty: Number(b.remainingQty) })),
+              qty
+            );
+            for (const d of draws) {
+              await tx.stockBatch.update({ where: { id: d.id }, data: { remainingQty: d.newRemaining } });
+            }
           }
         }
 
