@@ -8,6 +8,7 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import { computeExpiry, minutesRemaining, batchStatus } from './dough.helpers.js';
 
 // ============================================================
 // STOCK ADJUSTMENTS
@@ -463,4 +464,83 @@ export const createWasteRecord = asyncHandler(async (req: Request, res: Response
   }, { timeout: 60000 });
 
   res.status(201).json(ApiResponse.created(record, 'Waste record saved'));
+});
+
+// ============================================================
+// DOUGH / SHORT-LIFE BATCHES
+// ============================================================
+
+/** GET /api/stock/dough-batches?outletId=<id|all> */
+export const getDoughBatches = asyncHandler(async (req: Request, res: Response) => {
+  const outletId = req.query.outletId as string | undefined;
+  const now = new Date();
+
+  const batches = await prisma.stockBatch.findMany({
+    where: {
+      remainingQty: { gt: 0 },
+      ingredient: { shelfLifeHours: { not: null } },
+      ...(outletId && outletId !== 'all' ? { warehouse: { outletId } } : {}),
+    },
+    select: {
+      id: true, ingredientId: true, remainingQty: true, createdAt: true,
+      ingredient: { select: { name: true, shelfLifeHours: true, unit: { select: { name: true } } } },
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  const rows = batches.map((b) => {
+    const expiresAt = computeExpiry(b.createdAt, b.ingredient.shelfLifeHours as number);
+    return {
+      id: b.id,
+      ingredientId: b.ingredientId,
+      ingredientName: b.ingredient.name,
+      unit: b.ingredient.unit?.name ?? null,
+      remainingQty: Number(b.remainingQty),
+      madeAt: b.createdAt.toISOString(),
+      expiresAt: expiresAt.toISOString(),
+      minutesRemaining: minutesRemaining(expiresAt, now),
+      status: batchStatus(expiresAt, now),
+    };
+  });
+  rows.sort((a, b) => new Date(a.expiresAt).getTime() - new Date(b.expiresAt).getTime());
+
+  res.json(ApiResponse.success(rows));
+});
+
+/** POST /api/stock/dough-batches/:id/waste */
+export const wasteDoughBatch = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const waste = await prisma.$transaction(async (tx) => {
+    const batch = await tx.stockBatch.findUnique({
+      where: { id },
+      select: {
+        remainingQty: true, ingredientId: true,
+        ingredient: { select: { name: true, purchasePrice: true, unit: { select: { name: true } } } },
+      },
+    });
+    if (!batch) throw ApiError.notFound('Batch not found');
+    const remaining = Number(batch.remainingQty);
+    if (remaining <= 0) throw ApiError.badRequest('Batch already empty');
+
+    await tx.ingredient.update({
+      where: { id: batch.ingredientId },
+      data: { currentStock: { decrement: remaining } },
+    });
+    await tx.stockBatch.update({ where: { id }, data: { remainingQty: 0 } });
+
+    return tx.wasteRecord.create({
+      data: {
+        itemName: batch.ingredient.name,
+        quantity: remaining,
+        unit: batch.ingredient.unit?.name ?? null,
+        cost: Number(batch.ingredient.purchasePrice ?? 0) * remaining,
+        reason: 'Expired (short shelf life)',
+        recordedBy: req.user?.name ?? null,
+        date: new Date(),
+      },
+    });
+  });
+
+  res.status(201).json(ApiResponse.created(waste, 'Batch wasted'));
 });
