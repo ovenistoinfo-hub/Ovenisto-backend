@@ -255,15 +255,16 @@ model UnitConversion {
 }
 
 model Ingredient {
-  id            String   @id @default(uuid())
-  name          String   @db.VarChar(100)
-  brand         String?  @db.VarChar(100)
-  categoryId    String?
-  unitId        String?
-  purchasePrice Decimal? @db.Decimal(10, 2)
-  currentStock  Decimal  @default(0) @db.Decimal(10, 3)
-  lowStockLevel Decimal  @default(0) @db.Decimal(10, 3)
-  status        String   @default("active") @db.VarChar(20)
+  id             String   @id @default(uuid())
+  name           String   @db.VarChar(100)
+  brand          String?  @db.VarChar(100)
+  categoryId     String?
+  unitId         String?
+  purchasePrice  Decimal? @db.Decimal(10, 2)
+  currentStock   Decimal  @default(0) @db.Decimal(10, 3)
+  lowStockLevel  Decimal  @default(0) @db.Decimal(10, 3)
+  status         String   @default("active") @db.VarChar(20)
+  shelfLifeHours Int? // null = normal; set (e.g. 8) = short-life ingredient (dough) with batch + countdown tracking
 
   // Relations
   category             IngredientCategory?   @relation(fields: [categoryId], references: [id])
