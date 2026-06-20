@@ -244,7 +244,10 @@ export const getProductions = asyncHandler(async (req: Request, res: Response) =
 
 /** POST /api/stock/productions */
 export const createProduction = asyncHandler(async (req: Request, res: Response) => {
-  const { itemName, quantity, unit, notes, menuItemId, deductIngredients } = req.body;
+  const {
+    itemName, quantity, unit, notes, menuItemId, deductIngredients,
+    producedIngredientId, consumedIngredients, warehouseId,
+  } = req.body;
 
   if (!itemName?.trim()) throw ApiError.badRequest('Item name is required');
   if (!quantity || Number(quantity) <= 0) throw ApiError.badRequest('Quantity must be greater than 0');
@@ -261,13 +264,12 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
       },
     });
 
-    // If menuItemId provided and deductIngredients=true, deduct recipe ingredients
+    // Path A (existing): deduct a menu item's recipe ingredients.
     if (menuItemId && deductIngredients) {
       const recipes = await tx.foodRecipe.findMany({
         where: { menuItemId },
         include: { ingredient: true },
       });
-
       for (const recipe of recipes) {
         const required = Number(recipe.qtyPerUnit) * Number(quantity);
         await tx.ingredient.update({
@@ -275,6 +277,54 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
           data: { currentStock: { increment: -required } },
         });
       }
+    }
+
+    // Path B (new): produce a short-life ingredient (dough). Consume picked ingredients,
+    // add the produced stock, and create a time-stamped StockBatch (the 8-hr clock starts now).
+    if (producedIngredientId) {
+      let whId: string | null = warehouseId || null;
+      if (!whId) {
+        const kw = await tx.warehouse.findFirst({ where: { type: 'KITCHEN' as never, isActive: true }, select: { id: true } });
+        whId = kw?.id ?? null;
+      }
+      if (!whId) throw ApiError.badRequest('No kitchen warehouse found to store the produced batch');
+
+      if (Array.isArray(consumedIngredients)) {
+        for (const c of consumedIngredients) {
+          if (!c?.ingredientId || !c?.qty) continue;
+          await tx.ingredient.update({
+            where: { id: c.ingredientId },
+            data: { currentStock: { decrement: Number(c.qty) } },
+          });
+        }
+      }
+
+      await tx.ingredient.update({
+        where: { id: producedIngredientId },
+        data: { currentStock: { increment: Number(quantity) } },
+      });
+
+      await tx.stockBatch.create({
+        data: {
+          warehouseId: whId,
+          ingredientId: producedIngredientId,
+          batchQty: Number(quantity),
+          remainingQty: Number(quantity),
+          expiryDate: null, // derived from shelfLifeHours, not stored
+        },
+      });
+
+      await tx.stockAdjustment.create({
+        data: {
+          ingredientId: producedIngredientId,
+          type: 'produce',
+          quantity: Number(quantity),
+          reason: `Produced ${itemName.trim()}`,
+          adjustedById: req.user?.id ?? null,
+          warehouseId: whId,
+          date: new Date(),
+        },
+      });
     }
 
     return prod;
