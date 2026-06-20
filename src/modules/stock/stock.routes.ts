@@ -12,10 +12,11 @@ import {
   getProductions, createProduction,
   getTransfers, createTransfer, updateTransferStatus,
   getWasteRecords, createWasteRecord,
+  getDoughBatches, wasteDoughBatch,
 } from './stock.controller.js';
 
 const router = Router();
-const stockRoles = ['Super Admin', 'Admin', 'Manager', 'Store Manager'];
+const stockRoles = ['Super Admin', 'Admin', 'Manager', 'Store Manager', 'Kitchen Manager'];
 
 // ── Stock Adjustments ──
 router.get('/adjustments', authenticate, getAdjustments);
@@ -39,5 +40,9 @@ router.put('/transfers/:id', authenticate, authorize(stockRoles), updateTransfer
 // ── Waste Records ──
 router.get('/waste', authenticate, getWasteRecords);
 router.post('/waste', authenticate, authorize(stockRoles), createWasteRecord);
+
+// ── Dough / Short-Life Batches ──
+router.get('/dough-batches', authenticate, authorize(stockRoles), getDoughBatches);
+router.post('/dough-batches/:id/waste', authenticate, authorize(stockRoles), wasteDoughBatch);
 
 export default router;
