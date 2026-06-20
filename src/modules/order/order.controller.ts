@@ -419,7 +419,7 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
           for (const [ingredientId, qty] of deductionEntries) {
             if (!shortLifeIds.has(ingredientId)) continue;
             const batches = await tx.stockBatch.findMany({
-              where: { ingredientId, remainingQty: { gt: 0 } },
+              where: { ingredientId, remainingQty: { gt: 0 }, ...(kitchenWarehouseId ? { warehouseId: kitchenWarehouseId } : {}) },
               select: { id: true, remainingQty: true },
               orderBy: { createdAt: 'asc' },
             });

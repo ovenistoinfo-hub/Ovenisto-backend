@@ -285,7 +285,13 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
     if (producedIngredientId) {
       let whId: string | null = warehouseId || null;
       if (!whId) {
-        const kw = await tx.warehouse.findFirst({ where: { type: 'KITCHEN' as never, isActive: true }, select: { id: true } });
+        // Prefer the kitchen warehouse of the user's own outlet (multi-branch correctness),
+        // fall back to any active kitchen only if the user has no outlet.
+        const outletId = req.user?.outletId ?? null;
+        const kw = await tx.warehouse.findFirst({
+          where: { type: 'KITCHEN' as never, isActive: true, ...(outletId ? { outletId } : {}) },
+          select: { id: true },
+        });
         whId = kw?.id ?? null;
       }
       if (!whId) throw ApiError.badRequest('No kitchen warehouse found to store the produced batch');
@@ -523,11 +529,18 @@ export const wasteDoughBatch = asyncHandler(async (req: Request, res: Response) 
     const remaining = Number(batch.remainingQty);
     if (remaining <= 0) throw ApiError.badRequest('Batch already empty');
 
+    // Atomic zero: only the call that actually flips remainingQty>0 -> 0 proceeds.
+    // Prevents a double-waste race under Read Committed (two concurrent calls).
+    const zeroed = await tx.stockBatch.updateMany({
+      where: { id, remainingQty: { gt: 0 } },
+      data: { remainingQty: 0 },
+    });
+    if (zeroed.count === 0) throw ApiError.badRequest('Batch already empty');
+
     await tx.ingredient.update({
       where: { id: batch.ingredientId },
       data: { currentStock: { decrement: remaining } },
     });
-    await tx.stockBatch.update({ where: { id }, data: { remainingQty: 0 } });
 
     return tx.wasteRecord.create({
       data: {
@@ -540,7 +553,7 @@ export const wasteDoughBatch = asyncHandler(async (req: Request, res: Response) 
         date: new Date(),
       },
     });
-  });
+  }, { timeout: 60000 });
 
   res.status(201).json(ApiResponse.created(waste, 'Batch wasted'));
 });
