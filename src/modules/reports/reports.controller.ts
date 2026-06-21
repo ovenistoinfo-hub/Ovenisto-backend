@@ -11,13 +11,17 @@ import {
   dayBoundaries, monthBoundaries, classifyChannel, growthPct, fillChannels, groupPayments,
   displayOrderType,
 } from './reports.helpers.js';
+import { resolveOutletScope } from '../../middleware/outletScope.js';
 
 const COMPLETED = 'COMPLETED'; // Prisma OrderStatus enum value for completed orders
 
 function getParams(req: Request) {
   const from = req.query.from as string | undefined;
   const to = req.query.to as string | undefined;
-  const outletId = req.query.outletId as string | undefined;
+  // Enforce outlet scope: non-super-admins are pinned to their own outlet.
+  // resolveOutletScope returns null for "All" (Super Admin) → undefined keeps the
+  // existing "no outlet filter" behavior downstream.
+  const outletId = resolveOutletScope(req) ?? undefined;
   const { gte, lte } = parseDateRange(from, to);
   return { gte, lte, outletId };
 }
@@ -210,7 +214,7 @@ const EXCLUDED_STATUSES = ['CANCELLED', 'SCHEDULED'] as const;
 
 /** GET /api/reports/dashboard?outletId=<id|all> */
 export const getDashboard = asyncHandler(async (req: Request, res: Response) => {
-  const outletId = req.query.outletId as string | undefined;
+  const outletId = resolveOutletScope(req) ?? undefined;
   const now = new Date();
   const day = dayBoundaries(now);
   const mb = monthBoundaries(now);

@@ -8,6 +8,7 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import { resolveOutletScope } from '../../middleware/outletScope.js';
 
 // ── Auto-generate warehouse code ──
 async function generateUniqueCode(type: string): Promise<string> {
@@ -28,11 +29,12 @@ const ADMIN_ROLES = ['Super Admin'];
 
 /** GET /api/warehouses */
 export const getWarehouses = asyncHandler(async (req: Request, res: Response) => {
-  const { type, outletId, isActive = 'true' } = req.query;
+  const { type, isActive = 'true' } = req.query;
   const where: any = { isActive: isActive === 'true' };
 
   if (type) where.type = String(type);
-  if (outletId) where.outletId = String(outletId);
+  const scope = resolveOutletScope(req);
+  if (scope) where.outletId = scope;
 
   // Only Super Admin sees ALL warehouses across all outlets
   // Everyone else (including Admin) sees their outlet's warehouses + MAIN
