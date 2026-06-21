@@ -10,6 +10,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { emitOrderEvent } from '../../socket.js';
 import { fifoDrawdown } from '../stock/dough.helpers.js';
+import { resolveOutletScope } from '../../middleware/outletScope.js';
 
 // ── Enum conversion helpers ──
 
@@ -96,6 +97,9 @@ export const getOrders = asyncHandler(async (req: Request, res: Response) => {
   const skip = (Number(page) - 1) * Number(limit);
 
   const where: any = {};
+  // Outlet scope: Super Admin on "All" → no filter; otherwise restrict to the resolved outlet.
+  const scope = resolveOutletScope(req);
+  if (scope) where.outletId = scope;
   if (search) {
     where.OR = [
       { orderNumber: { contains: String(search), mode: 'insensitive' } },
@@ -176,9 +180,17 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   const prismaType = TYPE_TO_PRISMA[type] ?? 'WALKIN';
   const prismaStatus = isFutureSale ? 'SCHEDULED' : 'PENDING';
 
+  // Outlet scope: stamp the order's outlet. Block only a Super Admin sitting on
+  // "All Outlets" (scope === null) — they must pick a specific outlet to create.
+  const scope = resolveOutletScope(req);
+  if (scope === null && req.user?.role === 'Super Admin') {
+    throw ApiError.badRequest('Select a specific outlet before creating');
+  }
+
   const order = await prisma.order.create({
     data: {
       orderNumber,
+      outletId: scope,
       customerId: customerId || null,
       customerName: customerName || null,
       phone: phone || null,
