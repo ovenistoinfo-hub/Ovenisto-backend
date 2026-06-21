@@ -161,6 +161,8 @@ export const getOrder = asyncHandler(async (req: Request, res: Response) => {
     },
   });
   if (!order) throw ApiError.notFound('Order not found');
+  const scope = resolveOutletScope(req);
+  if (scope && order.outletId !== scope) throw ApiError.notFound('Order not found');
   res.json(ApiResponse.success(mapOrderOut(order)));
 });
 
@@ -251,6 +253,8 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   const existing = await prisma.order.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Order not found');
+  const scope = resolveOutletScope(req);
+  if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
 
   const {
     customerName, phone, type, status, subtotal, discount, tax, total,
@@ -324,6 +328,8 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
     include: { items: true },
   });
   if (!existing) throw ApiError.notFound('Order not found');
+  const scope = resolveOutletScope(req);
+  if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
 
   const prismaStatus = STATUS_TO_PRISMA[status] ?? status.toUpperCase();
 
@@ -474,6 +480,8 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
 export const deleteOrder = asyncHandler(async (req: Request, res: Response) => {
   const existing = await prisma.order.findUnique({ where: { id: req.params.id } });
   if (!existing) throw ApiError.notFound('Order not found');
+  const scope = resolveOutletScope(req);
+  if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
   await prisma.order.delete({ where: { id: req.params.id } });
   emitOrderEvent('order:deleted', { id: req.params.id });
   res.json(ApiResponse.success(null, 'Order deleted'));

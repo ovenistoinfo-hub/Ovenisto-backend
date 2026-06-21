@@ -219,7 +219,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
   const day = dayBoundaries(now);
   const mb = monthBoundaries(now);
 
-  const outletFilter = outletId && outletId !== 'all' ? { outletId } : {};
+  const outletFilter = outletId ? { outletId } : {};
   const notExcluded = { status: { notIn: EXCLUDED_STATUSES as unknown as never } };
 
   // --- TODAY: orders by channel ---
