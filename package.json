@@ -16,6 +16,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:seed-warehouses": "tsx src/seeds/warehouseMigration.ts",
     "db:seed-outlet-stock": "tsx src/seeds/outletStockBackfill.ts",
+    "db:seed-outlet-shifttable": "tsx src/seeds/outletShiftTableBackfill.ts",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
