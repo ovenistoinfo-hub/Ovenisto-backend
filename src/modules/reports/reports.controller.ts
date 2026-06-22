@@ -107,9 +107,9 @@ export const getPnlReport = asyncHandler(async (req: Request, res: Response) => 
     cogs = computeCogs(allItems, recipesForCogs, priceById);
   }
 
-  // Expenses: Expense has NO outletId column, so it is always restaurant-wide.
+  // Expenses are now outlet-scoped (Phase B3); outletId is the resolved scope (undefined = all).
   const expenseRows = await prisma.expense.findMany({
-    where: { date: { gte, lte } },
+    where: { ...(outletId ? { outletId } : {}), date: { gte, lte } },
     select: { amount: true, category: true },
   });
   const expenses = expenseRows.reduce((s, e) => s + Number(e.amount), 0);
@@ -123,7 +123,7 @@ export const getPnlReport = asyncHandler(async (req: Request, res: Response) => 
     value: Math.round(value),
   }));
 
-  const expensesAreRestaurantWide = !!outletId && outletId !== 'all';
+  const expensesAreRestaurantWide = false;   // expenses are now outlet-scoped (Phase B3)
 
   res.json(
     ApiResponse.success({
@@ -267,9 +267,9 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
     if (classifyChannel(displayOrderType(String(o.type))) === 'online') lastOnline += amt; else lastOffline += amt;
   }
 
-  // --- expenses + waste this month (waste is outlet-scoped; Expense has no outletId yet → restaurant-wide) ---
+  // --- expenses + waste this month (both outlet-scoped) ---
   const [expenseRows, wasteRows] = await Promise.all([
-    prisma.expense.findMany({ where: { date: { gte: mb.thisStart, lte: mb.thisEnd } }, select: { amount: true } }),
+    prisma.expense.findMany({ where: { ...outletFilter, date: { gte: mb.thisStart, lte: mb.thisEnd } }, select: { amount: true } }),
     prisma.wasteRecord.findMany({ where: { ...outletFilter, date: { gte: mb.thisStart, lte: mb.thisEnd } }, select: { cost: true } }),
   ]);
   const expenses = expenseRows.reduce((s, e) => s + Number(e.amount), 0);
