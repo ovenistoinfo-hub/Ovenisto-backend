@@ -39,6 +39,8 @@ model Outlet {
   stockTakes       StockTake[]
   productions      Production[]
   wasteRecords     WasteRecord[]
+  shifts           Shift[]
+  restaurantTables RestaurantTable[]
 
   @@map("outlets")
 }
@@ -1015,6 +1017,7 @@ model Shift {
   shiftNumber      String?   @unique @db.VarChar(20)
   cashierId        String?
   cashierName      String?   @db.VarChar(100)
+  outletId         String?
   openedAt         DateTime
   closedAt         DateTime?
   openingCash      Decimal?  @db.Decimal(10, 2)
@@ -1032,8 +1035,10 @@ model Shift {
   notes            String?
 
   // Relations
-  cashier User? @relation(fields: [cashierId], references: [id])
+  cashier User?   @relation(fields: [cashierId], references: [id])
+  outlet  Outlet? @relation(fields: [outletId], references: [id])
 
+  @@index([outletId])
   @@map("shifts")
 }
 
@@ -1108,17 +1113,21 @@ model Reservation {
 
 model RestaurantTable {
   id             String  @id @default(uuid())
-  number         String  @unique @db.VarChar(10)
+  number         String  @db.VarChar(10)
   capacity       Int     @default(4)
   floor          String? @db.VarChar(50)
   shape          String? @db.VarChar(20) // square, round, rectangle
   status         String  @default("available") @db.VarChar(20)
   currentOrderId String?
   reservationId  String?
+  outletId       String?
 
   // Relations
   reservations Reservation[]
+  outlet       Outlet?       @relation(fields: [outletId], references: [id])
 
+  @@unique([outletId, number])
+  @@index([outletId])
   @@map("restaurant_tables")
 }
 
