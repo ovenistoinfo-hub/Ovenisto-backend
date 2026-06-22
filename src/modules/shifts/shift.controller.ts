@@ -6,6 +6,7 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import { resolveOutletScope, resolveCreateOutlet } from '../../middleware/outletScope.js';
 
 function mapShift(s: any) {
   if (!s) return s;
@@ -36,8 +37,9 @@ async function generateShiftNumber(): Promise<string> {
 }
 
 /** GET /api/shifts/active — public */
-export const getActiveShift = asyncHandler(async (_req: Request, res: Response) => {
-  const shift = await prisma.shift.findFirst({ where: { status: 'open' } });
+export const getActiveShift = asyncHandler(async (req: Request, res: Response) => {
+  const scope = resolveOutletScope(req);
+  const shift = await prisma.shift.findFirst({ where: { status: 'open', ...(scope ? { outletId: scope } : {}) } });
   res.json(ApiResponse.success(shift ? mapShift(shift) : null));
 });
 
@@ -47,6 +49,8 @@ export const getShifts = asyncHandler(async (req: Request, res: Response) => {
   const skip = (Number(page) - 1) * Number(limit);
   const where: any = {};
   if (status) where.status = status;
+  const scope = resolveOutletScope(req);
+  if (scope) where.outletId = scope;
 
   const [shifts, total] = await Promise.all([
     prisma.shift.findMany({ where, skip, take: Number(limit), orderBy: { openedAt: 'desc' } }),
@@ -60,7 +64,8 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
   const { openingCash, notes } = req.body;
   if (openingCash === undefined || openingCash === null) throw ApiError.badRequest('Opening cash is required');
 
-  const existing = await prisma.shift.findFirst({ where: { status: 'open' } });
+  const outletId = resolveCreateOutlet(req);
+  const existing = await prisma.shift.findFirst({ where: { status: 'open', outletId } });
   if (existing) throw ApiError.badRequest('A shift is already open. Close it before opening a new one.');
 
   const shiftNumber = await generateShiftNumber();
@@ -69,6 +74,7 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
       shiftNumber,
       cashierId:   req.user?.id || null,
       cashierName: req.user?.name || null,
+      outletId,
       openedAt:    new Date(),
       openingCash,
       expectedCash: openingCash,
@@ -90,6 +96,8 @@ export const closeShift = asyncHandler(async (req: Request, res: Response) => {
 
   const shift = await prisma.shift.findUnique({ where: { id } });
   if (!shift) throw ApiError.notFound('Shift not found');
+  const scope = resolveOutletScope(req);
+  if (scope && shift.outletId !== scope) throw ApiError.notFound('Shift not found');
   if (shift.status === 'closed') throw ApiError.badRequest('Shift is already closed');
 
   const expectedCash = Number(shift.openingCash ?? 0) + Number(totalCashSales);
