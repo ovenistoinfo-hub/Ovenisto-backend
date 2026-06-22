@@ -6,6 +6,7 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import { resolveOutletScope, resolveCreateOutlet } from '../../middleware/outletScope.js';
 
 function mapExpense(e: any) {
   return {
@@ -23,6 +24,9 @@ export const getExpenses = asyncHandler(async (req: Request, res: Response) => {
   if (search) {
     where.description = { contains: search, mode: 'insensitive' };
   }
+
+  const scope = resolveOutletScope(req);
+  if (scope) where.outletId = scope;
 
   const [data, total, aggregate] = await Promise.all([
     prisma.expense.findMany({
@@ -42,6 +46,8 @@ export const getExpenses = asyncHandler(async (req: Request, res: Response) => {
 export const getExpense = asyncHandler(async (req: Request, res: Response) => {
   const e = await prisma.expense.findUnique({ where: { id: req.params.id } });
   if (!e) throw new ApiError('Expense not found', 404);
+  const scope = resolveOutletScope(req);
+  if (scope && e.outletId !== scope) throw new ApiError('Expense not found', 404);
   return res.json(ApiResponse.success(mapExpense(e)));
 });
 
@@ -51,6 +57,7 @@ export const createExpense = asyncHandler(async (req: Request, res: Response) =>
   if (amount == null) throw new ApiError('Amount is required', 400);
 
   const recordedBy = req.user?.name || req.user?.email || null;
+  const outletId = resolveCreateOutlet(req);
 
   const e = await prisma.expense.create({
     data: {
@@ -62,6 +69,7 @@ export const createExpense = asyncHandler(async (req: Request, res: Response) =>
       receipt: receipt ?? false,
       date: date ? new Date(date) : new Date(),
       recordedBy,
+      outletId,
     },
   });
 
@@ -71,6 +79,8 @@ export const createExpense = asyncHandler(async (req: Request, res: Response) =>
 export const updateExpense = asyncHandler(async (req: Request, res: Response) => {
   const existing = await prisma.expense.findUnique({ where: { id: req.params.id } });
   if (!existing) throw new ApiError('Expense not found', 404);
+  const scope = resolveOutletScope(req);
+  if (scope && existing.outletId !== scope) throw new ApiError('Expense not found', 404);
 
   const { category, description, amount, paymentMethod, reference, receipt, date } = req.body;
 
@@ -93,6 +103,8 @@ export const updateExpense = asyncHandler(async (req: Request, res: Response) =>
 export const deleteExpense = asyncHandler(async (req: Request, res: Response) => {
   const existing = await prisma.expense.findUnique({ where: { id: req.params.id } });
   if (!existing) throw new ApiError('Expense not found', 404);
+  const scope = resolveOutletScope(req);
+  if (scope && existing.outletId !== scope) throw new ApiError('Expense not found', 404);
   await prisma.expense.delete({ where: { id: req.params.id } });
   return res.json(ApiResponse.success(null, 'Expense deleted'));
 });
