@@ -294,8 +294,8 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
   const daywiseSales = labels.map((label, i) => ({ label, sales: Math.round(dayTotals[i]) }));
 
   // --- payable / receivable / settings / top customers ---
-  const [supplierAgg, customerAgg, topCustomers, settings] = await Promise.all([
-    prisma.supplier.aggregate({ _sum: { totalDue: true } }),
+  const [purchaseAgg, customerAgg, topCustomers, settings] = await Promise.all([
+    prisma.purchase.aggregate({ where: { ...outletFilter }, _sum: { due: true } }),
     prisma.customer.aggregate({ _sum: { outstandingDue: true } }),
     prisma.customer.findMany({
       orderBy: { totalSpent: 'desc' },
@@ -304,7 +304,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
     }),
     prisma.settings.findFirst({ select: { restaurantName: true } }),
   ]);
-  const payable = Math.round(Number(supplierAgg._sum.totalDue ?? 0));
+  const payable = Math.round(Number(purchaseAgg._sum.due ?? 0));
   const receivable = Math.round(Number(customerAgg._sum.outstandingDue ?? 0));
   const topCustomersMapped = topCustomers.map((c) => ({ name: c.name, totalOrders: c.totalOrders, totalSpent: Number(c.totalSpent) }));
 
