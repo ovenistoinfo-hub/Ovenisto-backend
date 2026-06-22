@@ -6,6 +6,7 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import { resolveOutletScope } from '../../middleware/outletScope.js';
 
 function mapRider(r: any) {
   return { ...r, activeDeliveries: Number(r.activeDeliveries ?? 0) };
@@ -29,10 +30,11 @@ function mapAssignment(a: any) {
 // ─── Rider CRUD ──────────────────────────────────────────────────────────────
 
 /** GET /api/delivery/riders — derived from Users with role=Rider */
-export const getRiders = asyncHandler(async (_req: Request, res: Response) => {
+export const getRiders = asyncHandler(async (req: Request, res: Response) => {
   // Pull users with Rider role and join their DeliveryRider profile
+  const scope = resolveOutletScope(req);
   const riderUsers = await prisma.user.findMany({
-    where: { role: 'RIDER' as any, status: 'active' },
+    where: { role: 'RIDER' as any, status: 'active', ...(scope ? { outletId: scope } : {}) },
     include: { riderProfile: true },
     orderBy: { name: 'asc' },
   });
@@ -61,6 +63,8 @@ export const createRider = asyncHandler(async (req: Request, res: Response) => {
   if (userId) {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw ApiError.notFound('User not found');
+    const scope = resolveOutletScope(req);
+    if (scope && user.outletId !== scope) throw ApiError.badRequest('Rider user is not in your outlet');
     const existing = await prisma.deliveryRider.findUnique({ where: { userId } });
     if (existing) throw ApiError.badRequest('This user already has a rider profile');
   }
@@ -73,8 +77,10 @@ export const createRider = asyncHandler(async (req: Request, res: Response) => {
 export const updateRider = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   const { name, phone, isAvailable, status, userId } = req.body;
-  const rider = await prisma.deliveryRider.findUnique({ where: { id } });
+  const rider = await prisma.deliveryRider.findUnique({ where: { id }, include: { user: { select: { outletId: true } } } });
   if (!rider) throw ApiError.notFound('Rider not found');
+  const scope = resolveOutletScope(req);
+  if (scope && rider.user?.outletId !== scope) throw ApiError.notFound('Rider not found');
 
   const updated = await prisma.deliveryRider.update({
     where: { id },
@@ -102,6 +108,9 @@ export const getAssignments = asyncHandler(async (req: Request, res: Response) =
     const end   = new Date(date); end.setHours(23, 59, 59, 999);
     where.assignedAt = { gte: start, lte: end };
   }
+
+  const scope = resolveOutletScope(req);
+  if (scope) where.order = { outletId: scope };
 
   const assignments = await prisma.deliveryAssignment.findMany({
     where,
@@ -165,10 +174,13 @@ export const assignRider = asyncHandler(async (req: Request, res: Response) => {
 
   const [order, rider] = await Promise.all([
     prisma.order.findUnique({ where: { id: orderId } }),
-    prisma.deliveryRider.findUnique({ where: { id: riderId } }),
+    prisma.deliveryRider.findUnique({ where: { id: riderId }, include: { user: { select: { outletId: true } } } }),
   ]);
   if (!order)  throw ApiError.notFound('Order not found');
   if (!rider)  throw ApiError.notFound('Rider not found');
+  const scope = resolveOutletScope(req);
+  if (scope && order.outletId !== scope) throw ApiError.notFound('Order not found');
+  if (scope && rider.user?.outletId !== scope) throw ApiError.badRequest('Rider is not in your outlet');
   if (!rider.isAvailable) throw ApiError.badRequest('Rider is not available');
 
   const existing = await prisma.deliveryAssignment.findFirst({ where: { orderId, status: { notIn: ['returned'] } } });
@@ -205,8 +217,10 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
   const allowed = ['accepted', 'dispatched', 'delivered', 'returned'];
   if (!allowed.includes(status)) throw ApiError.badRequest(`Status must be one of: ${allowed.join(', ')}`);
 
-  const assignment = await prisma.deliveryAssignment.findUnique({ where: { id }, include: { rider: true } });
+  const assignment = await prisma.deliveryAssignment.findUnique({ where: { id }, include: { rider: true, order: { select: { outletId: true } } } });
   if (!assignment) throw ApiError.notFound('Assignment not found');
+  const scope = resolveOutletScope(req);
+  if (scope && assignment.order?.outletId !== scope) throw ApiError.notFound('Assignment not found');
 
   const data: any = { status };
   if (status === 'accepted')   data.acceptedAt   = new Date();
@@ -240,8 +254,10 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
 /** PUT /api/delivery/assignments/:id/collect — manager collects cash from rider */
 export const collectAmount = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const assignment = await prisma.deliveryAssignment.findUnique({ where: { id } });
+  const assignment = await prisma.deliveryAssignment.findUnique({ where: { id }, include: { order: { select: { outletId: true } } } });
   if (!assignment) throw ApiError.notFound('Assignment not found');
+  const scope = resolveOutletScope(req);
+  if (scope && assignment.order?.outletId !== scope) throw ApiError.notFound('Assignment not found');
   if (assignment.status !== 'delivered') throw ApiError.badRequest('Can only collect from delivered orders');
   if (assignment.collectedAt) throw ApiError.badRequest('Amount already collected');
 
@@ -258,8 +274,10 @@ export const getRiderStats = asyncHandler(async (req: Request, res: Response) =>
   const { id } = req.params;
   const { date } = req.query as { date?: string };
 
-  const rider = await prisma.deliveryRider.findUnique({ where: { id } });
+  const rider = await prisma.deliveryRider.findUnique({ where: { id }, include: { user: { select: { outletId: true } } } });
   if (!rider) throw ApiError.notFound('Rider not found');
+  const scope = resolveOutletScope(req);
+  if (scope && rider.user?.outletId !== scope) throw ApiError.notFound('Rider not found');
 
   const day = date ? new Date(date) : new Date();
   day.setHours(0, 0, 0, 0);
@@ -284,18 +302,19 @@ export const getRiderStats = asyncHandler(async (req: Request, res: Response) =>
 });
 
 /** GET /api/delivery/dashboard — all riders summary for manager */
-export const getDeliveryDashboard = asyncHandler(async (_req: Request, res: Response) => {
+export const getDeliveryDashboard = asyncHandler(async (req: Request, res: Response) => {
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const todayEnd = new Date(today); todayEnd.setHours(23, 59, 59, 999);
 
+  const scope = resolveOutletScope(req);
   const [riders, todayDeliveries, activeAssignments] = await Promise.all([
-    prisma.deliveryRider.findMany({ orderBy: { name: 'asc' } }),
+    prisma.deliveryRider.findMany({ where: scope ? { user: { outletId: scope } } : {}, orderBy: { name: 'asc' } }),
     prisma.deliveryAssignment.findMany({
-      where: { status: 'delivered', deliveredAt: { gte: today, lte: todayEnd } },
+      where: { status: 'delivered', deliveredAt: { gte: today, lte: todayEnd }, ...(scope ? { order: { outletId: scope } } : {}) },
       include: { order: { select: { total: true } } },
     }),
     prisma.deliveryAssignment.findMany({
-      where: { status: { in: ['pending', 'accepted', 'dispatched'] } },
+      where: { status: { in: ['pending', 'accepted', 'dispatched'] }, ...(scope ? { order: { outletId: scope } } : {}) },
       include: { order: { select: { id: true, orderNumber: true, total: true, customer: true, deliveryAddress: true } }, rider: true },
       orderBy: { assignedAt: 'desc' },
     }),
