@@ -9,8 +9,8 @@ import { getTables, createTable, updateTable, deleteTable } from './table.contro
 
 const router = Router();
 
-// Public — used by self-order kiosk (no auth required)
-router.get('/', getTables);
+// Staff floor management (the self-order kiosk reads its table number from the URL, not this endpoint)
+router.get('/', authenticate, getTables);
 
 // Protected — Admin/Manager only
 router.post('/', authenticate, authorize(['Super Admin', 'Admin', 'Manager']), createTable);
