@@ -7,6 +7,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { USER_SELECT, mapUser } from '../../utils/userHelpers.js';
+import { resolveOutletScope } from '../../middleware/outletScope.js';
 
 function mapDemand(d: any) {
   return {
@@ -38,8 +39,8 @@ function mapDemand(d: any) {
 }
 
 const INCLUDE = {
-  requestingWH: { select: { id: true, name: true, type: true } },
-  supplyingWH:  { select: { id: true, name: true, type: true } },
+  requestingWH: { select: { id: true, name: true, type: true, outletId: true } },
+  supplyingWH:  { select: { id: true, name: true, type: true, outletId: true } },
   requestedBy:  { select: USER_SELECT },
   approvedBy:   { select: USER_SELECT },
   items: {
@@ -49,6 +50,19 @@ const INCLUDE = {
   },
 };
 
+// B4b: throw 404 if the acting outlet owns neither warehouse of this demand.
+// scope === null (admins, central main-warehouse staff) → no restriction.
+function assertDemandInScope(
+  req: Request,
+  reqOutletId: string | null | undefined,
+  supOutletId: string | null | undefined,
+): void {
+  const scope = resolveOutletScope(req);
+  if (scope && reqOutletId !== scope && supOutletId !== scope) {
+    throw new ApiError('Demand not found', 404);
+  }
+}
+
 export const getDemands = asyncHandler(async (req: Request, res: Response) => {
   const { status, requestingWHId, supplyingWHId, page, limit } = req.query as Record<string, string>;
   const where: any = {};
@@ -56,30 +70,14 @@ export const getDemands = asyncHandler(async (req: Request, res: Response) => {
   if (requestingWHId)  where.requestingWHId  = requestingWHId;
   if (supplyingWHId)   where.supplyingWHId   = supplyingWHId;
 
-  // Outlet scoping
-  if (req.user?.role === 'Super Admin') {
-    // Super Admin only sees BRANCH→MAIN demands (not KITCHEN→BRANCH)
-    const mainWarehouses = await prisma.warehouse.findMany({
-      where: { type: 'MAIN' },
-      select: { id: true },
-    });
-    const mainIds = mainWarehouses.map(w => w.id);
-    if (mainIds.length > 0) {
-      where.supplyingWHId = { in: mainIds };
-    }
-  } else if (req.user?.outletId) {
-    // Non-Super Admin sees only demands involving their outlet's warehouses
-    const userWarehouses = await prisma.warehouse.findMany({
-      where: { OR: [{ outletId: req.user.outletId }, { type: 'MAIN' }] },
-      select: { id: true },
-    });
-    const whIds = userWarehouses.map(w => w.id);
-    if (whIds.length > 0) {
-      where.OR = [
-        { requestingWHId: { in: whIds } },
-        { supplyingWHId: { in: whIds } },
-      ];
-    }
+  // B4b: strict-endpoint outlet scoping. Super Admin on "All" (scope===null)
+  // now sees BOTH demand directions; on a selected outlet, only that outlet's.
+  const scope = resolveOutletScope(req);
+  if (scope) {
+    where.OR = [
+      { requestingWH: { outletId: scope } },
+      { supplyingWH:  { outletId: scope } },
+    ];
   }
 
   // OPT-IN pagination (perf #8): paginate only when `limit` is explicitly present.
@@ -115,6 +113,7 @@ export const getDemands = asyncHandler(async (req: Request, res: Response) => {
 export const getDemand = asyncHandler(async (req: Request, res: Response) => {
   const d = await prisma.stockDemand.findUnique({ where: { id: req.params.id }, include: INCLUDE });
   if (!d) throw new ApiError('Demand not found', 404);
+  assertDemandInScope(req, d.requestingWH?.outletId, d.supplyingWH?.outletId);
   return res.json(ApiResponse.success(mapDemand(d)));
 });
 
@@ -136,6 +135,13 @@ export const createDemand = asyncHandler(async (req: Request, res: Response) => 
   ]);
   if (!reqWH) throw new ApiError('Requesting warehouse not found', 404);
   if (!supWH) throw new ApiError('Supplying warehouse not found', 404);
+
+  // B4b: a scoped (non-admin) user may only raise a demand for their own
+  // outlet's requesting warehouse. scope null (admins / central staff) → no check.
+  const scope = resolveOutletScope(req);
+  if (scope && reqWH.outletId !== scope) {
+    throw new ApiError('Requesting warehouse is not in your outlet', 403);
+  }
 
   const VALID_DEMAND_PAIRS: Record<string, string> = { KITCHEN: 'BRANCH', BRANCH: 'MAIN' };
   const expectedSupplyType = VALID_DEMAND_PAIRS[reqWH.type];
@@ -187,9 +193,14 @@ export const createDemand = asyncHandler(async (req: Request, res: Response) => 
 export const approveDemand = asyncHandler(async (req: Request, res: Response) => {
   const demand = await prisma.stockDemand.findUnique({
     where: { id: req.params.id },
-    include: { items: true, requestingWH: { select: { type: true } } },
+    include: {
+      items: true,
+      requestingWH: { select: { type: true, outletId: true } },
+      supplyingWH:  { select: { outletId: true } },
+    },
   });
   if (!demand) throw new ApiError('Demand not found', 404);
+  assertDemandInScope(req, demand.requestingWH?.outletId, demand.supplyingWH?.outletId);
   if (demand.status !== 'PENDING') throw new ApiError('Only pending demands can be approved', 400);
 
   // BRANCH→MAIN demands: only Super Admin can approve
@@ -279,9 +290,13 @@ export const approveDemand = asyncHandler(async (req: Request, res: Response) =>
 export const rejectDemand = asyncHandler(async (req: Request, res: Response) => {
   const demand = await prisma.stockDemand.findUnique({
     where: { id: req.params.id },
-    include: { requestingWH: { select: { type: true } } },
+    include: {
+      requestingWH: { select: { type: true, outletId: true } },
+      supplyingWH:  { select: { outletId: true } },
+    },
   });
   if (!demand) throw new ApiError('Demand not found', 404);
+  assertDemandInScope(req, demand.requestingWH?.outletId, demand.supplyingWH?.outletId);
   if (demand.status !== 'PENDING') throw new ApiError('Only pending demands can be rejected', 400);
 
   // Same approval-level permission for rejection
@@ -307,8 +322,15 @@ export const rejectDemand = asyncHandler(async (req: Request, res: Response) => 
 });
 
 export const cancelDemand = asyncHandler(async (req: Request, res: Response) => {
-  const demand = await prisma.stockDemand.findUnique({ where: { id: req.params.id } });
+  const demand = await prisma.stockDemand.findUnique({
+    where: { id: req.params.id },
+    include: {
+      requestingWH: { select: { outletId: true } },
+      supplyingWH:  { select: { outletId: true } },
+    },
+  });
   if (!demand) throw new ApiError('Demand not found', 404);
+  assertDemandInScope(req, demand.requestingWH?.outletId, demand.supplyingWH?.outletId);
   if (demand.status !== 'PENDING') throw new ApiError('Only pending demands can be cancelled', 400);
   // Only the requester can cancel their own demand
   if (demand.requestedById !== req.user?.id) throw new ApiError('You can only cancel your own demands', 403);
