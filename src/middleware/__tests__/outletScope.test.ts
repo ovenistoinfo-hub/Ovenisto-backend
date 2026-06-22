@@ -48,3 +48,28 @@ describe('resolveOutletScope', () => {
     expect(resolveOutletScope(mockReq({}))).toBeNull();
   });
 });
+
+import { resolveCreateOutlet } from '../outletScope.js';
+
+describe('resolveCreateOutlet', () => {
+  it('returns the warehouse outlet when given (ignores scope)', () => {
+    expect(resolveCreateOutlet(mockReq({ role: 'Super Admin' }), 'o1')).toBe('o1');
+  });
+
+  it('falls back to the user scope when no warehouse outlet', () => {
+    expect(resolveCreateOutlet(mockReq({ role: 'Manager', userOutletId: 'o2' }))).toBe('o2');
+  });
+
+  it('Super Admin on "All" with no warehouse throws 400 with the exact message', () => {
+    expect(() => resolveCreateOutlet(mockReq({ role: 'Super Admin' })))
+      .toThrow('Select a specific outlet before creating');
+  });
+
+  it('Super Admin targeting a specific outlet via header, no warehouse → that outlet', () => {
+    expect(resolveCreateOutlet(mockReq({ role: 'Super Admin', headerOutlet: 'o3' }))).toBe('o3');
+  });
+
+  it('treats a null warehouse outlet as "not given" and uses scope', () => {
+    expect(resolveCreateOutlet(mockReq({ role: 'Manager', userOutletId: 'o2' }), null)).toBe('o2');
+  });
+});

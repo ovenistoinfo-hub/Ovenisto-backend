@@ -1,4 +1,5 @@
 import type { Request } from 'express';
+import { ApiError } from '../utils/ApiError.js';
 
 /**
  * Derives the effective outlet filter for a request.
@@ -26,4 +27,19 @@ export function resolveOutletScope(req: Request): string | null {
   }
   // Everyone else: pinned to their own outlet (header ignored).
   return req.user?.outletId ?? null;
+}
+
+/**
+ * Returns the outlet id to stamp on a NEW outlet-owned row.
+ *   warehouseOutletId given (truthy) → use it (the stock's physical outlet)
+ *   else → the acting user's scope (resolveOutletScope)
+ *   if that is null (Super Admin on "All", no warehouse) → 400, must pick an outlet.
+ * A non-super-admin always resolves to their own outlet (never reaches the throw
+ * unless they have no assigned outlet — the documented pre-existing edge).
+ */
+export function resolveCreateOutlet(req: Request, warehouseOutletId?: string | null): string {
+  if (warehouseOutletId) return warehouseOutletId;
+  const scope = resolveOutletScope(req);
+  if (scope) return scope;
+  throw ApiError.badRequest('Select a specific outlet before creating');
 }
