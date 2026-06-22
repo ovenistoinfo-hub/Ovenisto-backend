@@ -334,15 +334,16 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
     },
   });
   if (!challan) throw new ApiError('Challan not found', 404);
+  // B4b: unified strict-endpoint outlet guard — runs first so a cross-outlet
+  // caller always gets a uniform 404 (never a status-revealing 400/403),
+  // matching the other by-id handlers.
+  assertChallanInScope(req, challan.fromWarehouse?.outletId, challan.toWarehouse?.outletId);
   if (challan.status !== 'DISPATCHED') throw new ApiError('Only dispatched challans can be received', 400);
 
   // Super Admin dispatches, does not receive
   if (req.user?.role === 'Super Admin') {
     throw new ApiError('Super Admin cannot receive challans — branch/kitchen staff must confirm receipt', 403);
   }
-
-  // B4b: unified strict-endpoint outlet guard (replaces the old destination-only check)
-  assertChallanInScope(req, challan.fromWarehouse?.outletId, challan.toWarehouse?.outletId);
 
   const { items: itemsInput, shippingCost: shipIn, miscAmount: miscIn } = req.body || {};
 
