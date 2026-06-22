@@ -390,9 +390,15 @@ export const createTransfer = asyncHandler(async (req: Request, res: Response) =
 
   if (!itemName?.trim()) throw ApiError.badRequest('Item name is required');
 
+  // Forge guard: a scoped (non-super-admin) user may only originate a transfer
+  // FROM their own outlet — ignore any client-sent fromOutletId. Super Admin
+  // (scope null) keeps full control over the source.
+  const scope = resolveOutletScope(req);
+  const safeFromOutletId = scope ?? (fromOutletId || null);
+
   const transfer = await prisma.transfer.create({
     data: {
-      fromOutletId: fromOutletId || null,
+      fromOutletId: safeFromOutletId,
       toOutletId: toOutletId || null,
       itemName: itemName.trim(),
       quantity: quantity ? Number(quantity) : null,

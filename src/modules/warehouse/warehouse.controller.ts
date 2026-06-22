@@ -277,6 +277,15 @@ export const createWarehouse = asyncHandler(async (req: Request, res: Response) 
   if (!name?.trim()) throw ApiError.badRequest('Warehouse name is required');
   if (!type) throw ApiError.badRequest('Warehouse type is required');
 
+  // Outlet-scoping invariant: BRANCH/KITCHEN warehouses must belong to an outlet;
+  // the central MAIN warehouse must not. (Derived outlet scoping relies on this.)
+  if ((type === 'BRANCH' || type === 'KITCHEN') && !outletId) {
+    throw ApiError.badRequest('A branch/kitchen warehouse must belong to an outlet');
+  }
+  if (type === 'MAIN' && outletId) {
+    throw ApiError.badRequest('A main (central) warehouse must not belong to an outlet');
+  }
+
   // Auto-generate code if not provided
   let finalCode = code;
   if (!finalCode) {
@@ -316,6 +325,17 @@ export const updateWarehouse = asyncHandler(async (req: Request, res: Response) 
   if (code && code !== existing.code) {
     const codeTaken = await prisma.warehouse.findUnique({ where: { code } });
     if (codeTaken) throw ApiError.conflict('A warehouse with this code already exists');
+  }
+
+  // Outlet-scoping invariant (type is immutable here — check against existing.type):
+  // BRANCH/KITCHEN must keep an outlet; MAIN must stay outlet-less.
+  if (outletId !== undefined) {
+    if ((existing.type === 'BRANCH' || existing.type === 'KITCHEN') && !outletId) {
+      throw ApiError.badRequest('A branch/kitchen warehouse must belong to an outlet');
+    }
+    if (existing.type === 'MAIN' && outletId) {
+      throw ApiError.badRequest('A main (central) warehouse must not belong to an outlet');
+    }
   }
 
   const warehouse = await prisma.warehouse.update({
