@@ -9,6 +9,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { computeExpiry, minutesRemaining, batchStatus } from './dough.helpers.js';
+import { resolveCreateOutlet } from '../../middleware/outletScope.js';
 
 // ============================================================
 // STOCK ADJUSTMENTS
@@ -62,6 +63,11 @@ export const createAdjustment = asyncHandler(async (req: Request, res: Response)
   const ingredient = await prisma.ingredient.findUnique({ where: { id: ingredientId } });
   if (!ingredient) throw ApiError.notFound('Ingredient not found');
 
+  const adjWarehouse = warehouseId
+    ? await prisma.warehouse.findUnique({ where: { id: warehouseId }, select: { outletId: true } })
+    : null;
+  const outletId = resolveCreateOutlet(req, adjWarehouse?.outletId);
+
   const adjustedById = req.user?.id;
   const stockChange = ['add', 'correction'].includes(type) ? Number(quantity) : -Number(quantity);
 
@@ -74,6 +80,7 @@ export const createAdjustment = asyncHandler(async (req: Request, res: Response)
         reason: reason || null,
         adjustedById: adjustedById || null,
         warehouseId: warehouseId || null,
+        outletId,
         date: new Date(),
       },
       include: {
@@ -135,6 +142,7 @@ export const getStockTake = asyncHandler(async (req: Request, res: Response) => 
 /** POST /api/stock/takes - start a new stock take (captures system quantities) */
 export const startStockTake = asyncHandler(async (req: Request, res: Response) => {
   const { notes } = req.body;
+  const outletId = resolveCreateOutlet(req);
 
   const ingredients = await prisma.ingredient.findMany({
     where: { status: 'active' },
@@ -151,6 +159,7 @@ export const startStockTake = asyncHandler(async (req: Request, res: Response) =
       status: 'active',
       countedBy: req.user?.name || null,
       notes: notes || null,
+      outletId,
       items: {
         create: ingredients.map((ing) => ({
           ingredientId: ing.id,
@@ -253,6 +262,8 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
   if (!itemName?.trim()) throw ApiError.badRequest('Item name is required');
   if (!quantity || Number(quantity) <= 0) throw ApiError.badRequest('Quantity must be greater than 0');
 
+  const prodOutletId = resolveCreateOutlet(req);
+
   const production = await prisma.$transaction(async (tx) => {
     const prod = await tx.production.create({
       data: {
@@ -262,6 +273,7 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
         producedBy: req.user?.name || null,
         date: new Date(),
         notes: notes || null,
+        outletId: prodOutletId,
       },
     });
 
@@ -285,11 +297,8 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
     if (producedIngredientId) {
       let whId: string | null = warehouseId || null;
       if (!whId) {
-        // Prefer the kitchen warehouse of the user's own outlet (multi-branch correctness),
-        // fall back to any active kitchen only if the user has no outlet.
-        const outletId = req.user?.outletId ?? null;
         const kw = await tx.warehouse.findFirst({
-          where: { type: 'KITCHEN' as never, isActive: true, ...(outletId ? { outletId } : {}) },
+          where: { type: 'KITCHEN' as never, isActive: true, outletId: prodOutletId },
           select: { id: true },
         });
         whId = kw?.id ?? null;
@@ -329,6 +338,7 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
           reason: `Produced ${itemName.trim()}`,
           adjustedById: req.user?.id ?? null,
           warehouseId: whId,
+          outletId: prodOutletId,
           date: new Date(),
         },
       });
@@ -441,6 +451,7 @@ export const createWasteRecord = asyncHandler(async (req: Request, res: Response
   const { itemName, quantity, unit, reason, cost, ingredientId } = req.body;
 
   if (!itemName?.trim()) throw ApiError.badRequest('Item name is required');
+  const outletId = resolveCreateOutlet(req);
 
   const record = await prisma.$transaction(async (tx) => {
     const waste = await tx.wasteRecord.create({
@@ -451,6 +462,7 @@ export const createWasteRecord = asyncHandler(async (req: Request, res: Response
         reason: reason || null,
         cost: cost ? Number(cost) : null,
         recordedBy: req.user?.name || null,
+        outletId,
         date: new Date(),
       },
     });
@@ -522,10 +534,12 @@ export const wasteDoughBatch = asyncHandler(async (req: Request, res: Response) 
       where: { id },
       select: {
         remainingQty: true, ingredientId: true,
+        warehouse: { select: { outletId: true } },
         ingredient: { select: { name: true, purchasePrice: true, unit: { select: { name: true } } } },
       },
     });
     if (!batch) throw ApiError.notFound('Batch not found');
+    const wasteOutletId = resolveCreateOutlet(req, batch.warehouse?.outletId);
     const remaining = Number(batch.remainingQty);
     if (remaining <= 0) throw ApiError.badRequest('Batch already empty');
 
@@ -549,6 +563,7 @@ export const wasteDoughBatch = asyncHandler(async (req: Request, res: Response) 
         unit: batch.ingredient.unit?.name ?? null,
         cost: Number(batch.ingredient.purchasePrice ?? 0) * remaining,
         reason: 'Expired (short shelf life)',
+        outletId: wasteOutletId,
         recordedBy: req.user?.name ?? null,
         date: new Date(),
       },
