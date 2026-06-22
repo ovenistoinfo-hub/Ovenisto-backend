@@ -9,7 +9,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { computeExpiry, minutesRemaining, batchStatus } from './dough.helpers.js';
-import { resolveCreateOutlet } from '../../middleware/outletScope.js';
+import { resolveCreateOutlet, resolveOutletScope } from '../../middleware/outletScope.js';
 
 // ============================================================
 // STOCK ADJUSTMENTS
@@ -22,14 +22,9 @@ export const getAdjustments = asyncHandler(async (req: Request, res: Response) =
 
   const where: any = {};
   if (search) where.ingredient = { name: { contains: String(search), mode: 'insensitive' } };
-  if (warehouseId) {
-    where.warehouseId = String(warehouseId);
-  } else if (req.user?.role !== 'Super Admin' && req.user?.outletId) {
-    // Outlet scoping: non-Super Admin sees only their outlet's warehouse adjustments
-    where.warehouse = {
-      OR: [{ outletId: req.user.outletId }, { type: 'MAIN' }],
-    };
-  }
+  if (warehouseId) where.warehouseId = String(warehouseId);
+  const scope = resolveOutletScope(req);
+  if (scope) where.outletId = scope;
 
   const [adjustments, total] = await Promise.all([
     prisma.stockAdjustment.findMany({
@@ -121,8 +116,10 @@ export const createAdjustment = asyncHandler(async (req: Request, res: Response)
 // ============================================================
 
 /** GET /api/stock/takes */
-export const getStockTakes = asyncHandler(async (_req: Request, res: Response) => {
+export const getStockTakes = asyncHandler(async (req: Request, res: Response) => {
+  const scope = resolveOutletScope(req);
   const takes = await prisma.stockTake.findMany({
+    where: scope ? { outletId: scope } : {},
     orderBy: { createdAt: 'desc' },
     include: { items: { include: { ingredient: { select: { id: true, name: true, unit: { select: { name: true } } } } } } },
   });
@@ -243,6 +240,8 @@ export const getProductions = asyncHandler(async (req: Request, res: Response) =
 
   const where: any = {};
   if (search) where.itemName = { contains: String(search), mode: 'insensitive' };
+  const scope = resolveOutletScope(req);
+  if (scope) where.outletId = scope;
 
   const [productions, total] = await Promise.all([
     prisma.production.findMany({ where, skip, take: Number(limit), orderBy: { date: 'desc' } }),
@@ -361,6 +360,8 @@ export const getTransfers = asyncHandler(async (req: Request, res: Response) => 
 
   const where: any = {};
   if (status) where.status = String(status);
+  const scope = resolveOutletScope(req);
+  if (scope) where.OR = [{ fromOutletId: scope }, { toOutletId: scope }];
 
   const [transfers, total] = await Promise.all([
     prisma.transfer.findMany({
@@ -437,6 +438,8 @@ export const getWasteRecords = asyncHandler(async (req: Request, res: Response) 
 
   const where: any = {};
   if (search) where.itemName = { contains: String(search), mode: 'insensitive' };
+  const scope = resolveOutletScope(req);
+  if (scope) where.outletId = scope;
 
   const [records, total] = await Promise.all([
     prisma.wasteRecord.findMany({ where, skip, take: Number(limit), orderBy: { date: 'desc' } }),
