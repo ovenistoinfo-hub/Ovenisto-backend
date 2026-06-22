@@ -6,6 +6,7 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import { resolveOutletScope, resolveCreateOutlet } from '../../middleware/outletScope.js';
 
 function mapPurchase(p: any) {
   return {
@@ -37,6 +38,9 @@ export const getPurchases = asyncHandler(async (req: Request, res: Response) => 
   if (supplierId) where.supplierId = supplierId;
   if (status) where.status = status;
 
+  const scope = resolveOutletScope(req);
+  if (scope) where.outletId = scope;
+
   const [data, total] = await Promise.all([
     prisma.purchase.findMany({
       where,
@@ -64,6 +68,8 @@ export const getPurchase = asyncHandler(async (req: Request, res: Response) => {
     },
   });
   if (!p) throw new ApiError('Purchase not found', 404);
+  const scope = resolveOutletScope(req);
+  if (scope && p.outletId !== scope) throw new ApiError('Purchase not found', 404);
   return res.json(ApiResponse.success(mapPurchase(p)));
 });
 
@@ -86,6 +92,11 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
     if (!pr) throw new ApiError('Purchase request not found', 404);
     if (pr.status !== 'APPROVED') throw new ApiError('Purchase request is not approved', 400);
   }
+
+  const pWarehouse = warehouseId
+    ? await prisma.warehouse.findUnique({ where: { id: warehouseId }, select: { outletId: true } })
+    : null;
+  const outletId = resolveCreateOutlet(req, pWarehouse?.outletId);
 
   const paidAmount = Number(paid ?? 0);
   const totalAmount = Number(total);
@@ -112,6 +123,7 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
         status,
         notes: notes || null,
         warehouseId: warehouseId || null,
+        outletId,
         purchaseRequestId: purchaseRequestId || null,
         createdById: (req as any).user?.id || null,
       },
@@ -197,6 +209,8 @@ export const updatePurchase = asyncHandler(async (req: Request, res: Response) =
 
   const existing = await prisma.purchase.findUnique({ where: { id: req.params.id } });
   if (!existing) throw new ApiError('Purchase not found', 404);
+  const scope = resolveOutletScope(req);
+  if (scope && existing.outletId !== scope) throw new ApiError('Purchase not found', 404);
 
   const totalAmount = Number(existing.total ?? 0);
   const paidAmount = Number(paid ?? 0);
@@ -233,6 +247,8 @@ export const updatePurchase = asyncHandler(async (req: Request, res: Response) =
 export const deletePurchase = asyncHandler(async (req: Request, res: Response) => {
   const existing = await prisma.purchase.findUnique({ where: { id: req.params.id } });
   if (!existing) throw new ApiError('Purchase not found', 404);
+  const scope = resolveOutletScope(req);
+  if (scope && existing.outletId !== scope) throw new ApiError('Purchase not found', 404);
 
   const items = (existing.items as any[]) || [];
 
