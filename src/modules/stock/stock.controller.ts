@@ -133,6 +133,8 @@ export const getStockTake = asyncHandler(async (req: Request, res: Response) => 
     include: { items: { include: { ingredient: { select: { id: true, name: true, unit: { select: { name: true } } } } } } },
   });
   if (!take) throw ApiError.notFound('Stock take not found');
+  const scope = resolveOutletScope(req);
+  if (scope && take.outletId !== scope) throw ApiError.notFound('Stock take not found');
   res.json(ApiResponse.success(take));
 });
 
@@ -180,6 +182,8 @@ export const completeStockTake = asyncHandler(async (req: Request, res: Response
 
   const take = await prisma.stockTake.findUnique({ where: { id } });
   if (!take) throw ApiError.notFound('Stock take not found');
+  const scope = resolveOutletScope(req);
+  if (scope && take.outletId !== scope) throw ApiError.notFound('Stock take not found');
   if (take.status === 'completed') throw ApiError.badRequest('Stock take already completed');
 
   if (!items?.length) throw ApiError.badRequest('Counted items are required');
@@ -414,6 +418,10 @@ export const updateTransferStatus = asyncHandler(async (req: Request, res: Respo
 
   const transfer = await prisma.transfer.findUnique({ where: { id } });
   if (!transfer) throw ApiError.notFound('Transfer not found');
+  const scope = resolveOutletScope(req);
+  if (scope && transfer.fromOutletId !== scope && transfer.toOutletId !== scope) {
+    throw ApiError.notFound('Transfer not found');
+  }
 
   const updated = await prisma.transfer.update({
     where: { id },
@@ -493,14 +501,14 @@ export const createWasteRecord = asyncHandler(async (req: Request, res: Response
 
 /** GET /api/stock/dough-batches?outletId=<id|all> */
 export const getDoughBatches = asyncHandler(async (req: Request, res: Response) => {
-  const outletId = req.query.outletId as string | undefined;
+  const scope = resolveOutletScope(req);
   const now = new Date();
 
   const batches = await prisma.stockBatch.findMany({
     where: {
       remainingQty: { gt: 0 },
       ingredient: { shelfLifeHours: { not: null } },
-      ...(outletId && outletId !== 'all' ? { warehouse: { outletId } } : {}),
+      ...(scope ? { warehouse: { outletId: scope } } : {}),
     },
     select: {
       id: true, ingredientId: true, remainingQty: true, createdAt: true,
@@ -542,6 +550,8 @@ export const wasteDoughBatch = asyncHandler(async (req: Request, res: Response) 
       },
     });
     if (!batch) throw ApiError.notFound('Batch not found');
+    const scope = resolveOutletScope(req);
+    if (scope && batch.warehouse?.outletId !== scope) throw ApiError.notFound('Batch not found');
     const wasteOutletId = resolveCreateOutlet(req, batch.warehouse?.outletId);
     const remaining = Number(batch.remainingQty);
     if (remaining <= 0) throw ApiError.badRequest('Batch already empty');
