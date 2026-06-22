@@ -28,13 +28,17 @@ model Outlet {
   createdAt DateTime @default(now())
 
   // Relations
-  users           User[]
-  settings        Settings[]
-  loyaltySettings LoyaltySettings[]
-  transfersFrom   Transfer[]        @relation("TransferFrom")
-  transfersTo     Transfer[]        @relation("TransferTo")
-  warehouses      Warehouse[]
-  orders          Order[]           @relation("OrderOutlet")
+  users            User[]
+  settings         Settings[]
+  loyaltySettings  LoyaltySettings[]
+  transfersFrom    Transfer[]        @relation("TransferFrom")
+  transfersTo      Transfer[]        @relation("TransferTo")
+  warehouses       Warehouse[]
+  orders           Order[]           @relation("OrderOutlet")
+  stockAdjustments StockAdjustment[]
+  stockTakes       StockTake[]
+  productions      Production[]
+  wasteRecords     WasteRecord[]
 
   @@map("outlets")
 }
@@ -318,15 +322,18 @@ model StockAdjustment {
   reason       String?
   adjustedById String?
   warehouseId  String?
+  outletId     String?
   date         DateTime @default(now())
 
   // Relations
   ingredient Ingredient @relation(fields: [ingredientId], references: [id])
   adjustedBy User?      @relation(fields: [adjustedById], references: [id])
   warehouse  Warehouse? @relation(fields: [warehouseId], references: [id])
+  outlet     Outlet?    @relation(fields: [outletId], references: [id])
 
   @@index([ingredientId])
   @@index([warehouseId, type, date])
+  @@index([outletId])
   @@map("stock_adjustments")
 }
 
@@ -339,13 +346,16 @@ model StockTake {
   totalVarianceValue Decimal   @default(0) @db.Decimal(10, 2)
   notes              String?
   warehouseId        String?
+  outletId           String?
   completedAt        DateTime?
   createdAt          DateTime  @default(now())
 
   // Relations
   items     StockTakeItem[]
   warehouse Warehouse?      @relation(fields: [warehouseId], references: [id])
+  outlet    Outlet?         @relation(fields: [outletId], references: [id])
 
+  @@index([outletId])
   @@map("stock_takes")
 }
 
@@ -371,9 +381,14 @@ model Production {
   quantity   Decimal? @db.Decimal(10, 3)
   unit       String?  @db.VarChar(20)
   producedBy String?  @db.VarChar(100)
+  outletId   String?
   date       DateTime @default(now())
   notes      String?
 
+  // Relations
+  outlet     Outlet?  @relation(fields: [outletId], references: [id])
+
+  @@index([outletId])
   @@map("productions")
 }
 
@@ -404,8 +419,13 @@ model WasteRecord {
   reason     String?
   cost       Decimal? @db.Decimal(10, 2)
   recordedBy String?  @db.VarChar(100)
+  outletId   String?
   date       DateTime @default(now())
 
+  // Relations
+  outlet     Outlet?  @relation(fields: [outletId], references: [id])
+
+  @@index([outletId])
   @@map("waste_records")
 }
 
