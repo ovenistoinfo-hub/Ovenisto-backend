@@ -7,8 +7,20 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { USER_SELECT, mapUser } from '../../utils/userHelpers.js';
+import { resolveOutletScope } from '../../middleware/outletScope.js';
 
-const ADMIN_ROLES = ['Super Admin', 'Admin'];
+// B4b: throw 404 if the acting outlet owns neither warehouse of this challan.
+// scope === null (admins, central main-warehouse staff) → no restriction.
+function assertChallanInScope(
+  req: Request,
+  fromOutletId: string | null | undefined,
+  toOutletId: string | null | undefined,
+): void {
+  const scope = resolveOutletScope(req);
+  if (scope && fromOutletId !== scope && toOutletId !== scope) {
+    throw new ApiError('Challan not found', 404);
+  }
+}
 
 // Shared include block — add outletId to warehouse selects (W6)
 const CHALLAN_INCLUDE = {
@@ -100,17 +112,6 @@ function mapChallan(c: any) {
   };
 }
 
-// Resolve warehouse IDs visible to a non-admin user
-async function getUserScopeWhIds(outletId: string | null | undefined): Promise<string[]> {
-  if (outletId) {
-    const whs = await prisma.warehouse.findMany({ where: { outletId }, select: { id: true } });
-    return whs.map(w => w.id);
-  }
-  // No outletId → main-warehouse staff; scope to MAIN type warehouses
-  const whs = await prisma.warehouse.findMany({ where: { type: 'MAIN' }, select: { id: true } });
-  return whs.map(w => w.id);
-}
-
 export const getChallans = asyncHandler(async (req: Request, res: Response) => {
   const { status, fromWarehouseId, toWarehouseId, page, limit } = req.query as Record<string, string>;
 
@@ -119,15 +120,13 @@ export const getChallans = asyncHandler(async (req: Request, res: Response) => {
   if (fromWarehouseId)  where.fromWarehouseId  = fromWarehouseId;
   if (toWarehouseId)    where.toWarehouseId    = toWarehouseId;
 
-  // W6: Outlet-scoped filtering for non-admin users
-  if (!ADMIN_ROLES.includes(req.user?.role || '')) {
-    const whIds = await getUserScopeWhIds(req.user?.outletId);
-    if (whIds.length === 0) {
-      return res.json(ApiResponse.success([]));
-    }
+  // B4b: strict-endpoint outlet scoping. scope===null (admins / central
+  // main-warehouse staff) → no filter, matching the Demand controller.
+  const scope = resolveOutletScope(req);
+  if (scope) {
     where.OR = [
-      { fromWarehouseId: { in: whIds } },
-      { toWarehouseId:   { in: whIds } },
+      { fromWarehouse: { outletId: scope } },
+      { toWarehouse:   { outletId: scope } },
     ];
   }
 
@@ -174,6 +173,7 @@ export const getChallan = asyncHandler(async (req: Request, res: Response) => {
     include: CHALLAN_INCLUDE,
   });
   if (!c) throw new ApiError('Challan not found', 404);
+  assertChallanInScope(req, c.fromWarehouse?.outletId, c.toWarehouse?.outletId);
   return res.json(ApiResponse.success(mapChallan(c)));
 });
 
@@ -211,6 +211,14 @@ export const createChallan = asyncHandler(async (req: Request, res: Response) =>
     throw new ApiError('Branch can only transfer to its own outlet\'s kitchen', 400);
   }
 
+  // B4b: a scoped (non-admin) user may only originate transfers from their own
+  // outlet's warehouse. Central main-warehouse staff have no outletId → scope
+  // null → no restriction (preserves MAIN→branch dispatch creation).
+  const scope = resolveOutletScope(req);
+  if (scope && fromWH.outletId !== scope) {
+    throw new ApiError('From warehouse is not in your outlet', 403);
+  }
+
   // Auto-generate challan number: CHN-YYYYMMDD-XXXX
   const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const count = await prisma.stockChallan.count({
@@ -241,8 +249,15 @@ export const createChallan = asyncHandler(async (req: Request, res: Response) =>
 });
 
 export const dispatchChallan = asyncHandler(async (req: Request, res: Response) => {
-  const challan = await prisma.stockChallan.findUnique({ where: { id: req.params.id } });
+  const challan = await prisma.stockChallan.findUnique({
+    where: { id: req.params.id },
+    include: {
+      fromWarehouse: { select: { outletId: true } },
+      toWarehouse:   { select: { outletId: true } },
+    },
+  });
   if (!challan) throw new ApiError('Challan not found', 404);
+  assertChallanInScope(req, challan.fromWarehouse?.outletId, challan.toWarehouse?.outletId);
   if (challan.status !== 'PENDING') throw new ApiError('Only pending challans can be dispatched', 400);
 
   // Pre-transaction: load items and validate stock availability (avoids transaction timeout on Neon)
@@ -313,7 +328,10 @@ export const dispatchChallan = asyncHandler(async (req: Request, res: Response) 
 export const receiveChallan = asyncHandler(async (req: Request, res: Response) => {
   const challan = await prisma.stockChallan.findUnique({
     where: { id: req.params.id },
-    include: { toWarehouse: { select: { outletId: true, type: true } } },
+    include: {
+      fromWarehouse: { select: { outletId: true } },
+      toWarehouse:   { select: { outletId: true, type: true } },
+    },
   });
   if (!challan) throw new ApiError('Challan not found', 404);
   if (challan.status !== 'DISPATCHED') throw new ApiError('Only dispatched challans can be received', 400);
@@ -323,11 +341,8 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
     throw new ApiError('Super Admin cannot receive challans — branch/kitchen staff must confirm receipt', 403);
   }
 
-  // Non-admin users must belong to the destination warehouse's outlet
-  const destOutlet = (challan as any).toWarehouse?.outletId;
-  if (!ADMIN_ROLES.includes(req.user?.role ?? '') && req.user?.outletId && destOutlet && req.user.outletId !== destOutlet) {
-    throw new ApiError('You can only receive challans destined to your outlet', 403);
-  }
+  // B4b: unified strict-endpoint outlet guard (replaces the old destination-only check)
+  assertChallanInScope(req, challan.fromWarehouse?.outletId, challan.toWarehouse?.outletId);
 
   const { items: itemsInput, shippingCost: shipIn, miscAmount: miscIn } = req.body || {};
 
@@ -429,8 +444,15 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
 });
 
 export const cancelChallan = asyncHandler(async (req: Request, res: Response) => {
-  const challan = await prisma.stockChallan.findUnique({ where: { id: req.params.id } });
+  const challan = await prisma.stockChallan.findUnique({
+    where: { id: req.params.id },
+    include: {
+      fromWarehouse: { select: { outletId: true } },
+      toWarehouse:   { select: { outletId: true } },
+    },
+  });
   if (!challan) throw new ApiError('Challan not found', 404);
+  assertChallanInScope(req, challan.fromWarehouse?.outletId, challan.toWarehouse?.outletId);
   if (challan.status !== 'PENDING' && challan.status !== 'DISPATCHED') {
     throw new ApiError('Only pending or dispatched challans can be cancelled', 400);
   }
