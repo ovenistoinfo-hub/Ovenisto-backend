@@ -18,6 +18,7 @@
     "db:seed-outlet-stock": "tsx src/seeds/outletStockBackfill.ts",
     "db:seed-outlet-shifttable": "tsx src/seeds/outletShiftTableBackfill.ts",
     "db:seed-outlet-expense": "tsx src/seeds/outletExpenseBackfill.ts",
+    "db:seed-outlet-purchase": "tsx src/seeds/outletPurchaseBackfill.ts",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
