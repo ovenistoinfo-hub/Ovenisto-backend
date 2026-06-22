@@ -267,10 +267,10 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
     if (classifyChannel(displayOrderType(String(o.type))) === 'online') lastOnline += amt; else lastOffline += amt;
   }
 
-  // --- expenses + waste this month (restaurant-wide; Expense has no outletId) ---
+  // --- expenses + waste this month (waste is outlet-scoped; Expense has no outletId yet → restaurant-wide) ---
   const [expenseRows, wasteRows] = await Promise.all([
     prisma.expense.findMany({ where: { date: { gte: mb.thisStart, lte: mb.thisEnd } }, select: { amount: true } }),
-    prisma.wasteRecord.findMany({ where: { date: { gte: mb.thisStart, lte: mb.thisEnd } }, select: { cost: true } }),
+    prisma.wasteRecord.findMany({ where: { ...outletFilter, date: { gte: mb.thisStart, lte: mb.thisEnd } }, select: { cost: true } }),
   ]);
   const expenses = expenseRows.reduce((s, e) => s + Number(e.amount), 0);
   const foodLoss = wasteRows.reduce((s, w) => s + Number(w.cost ?? 0), 0);
