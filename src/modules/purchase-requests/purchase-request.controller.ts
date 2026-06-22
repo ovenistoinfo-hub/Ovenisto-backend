@@ -8,8 +8,7 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-
-const SUPER_ADMIN = 'Super Admin';
+import { resolveOutletScope } from '../../middleware/outletScope.js';
 
 // Auto-generate request number: PR-YYYYMMDD-XXXX
 async function generateRequestNo(): Promise<string> {
@@ -108,17 +107,9 @@ export const getPurchaseRequests = asyncHandler(async (req: Request, res: Respon
   if (status) where.status = String(status);
   if (warehouseId) where.warehouseId = String(warehouseId);
 
-  // Role scoping: Super Admin sees all, others see their outlet's warehouses + MAIN
-  if (req.user?.role !== SUPER_ADMIN) {
-    if (req.user?.outletId) {
-      where.warehouse = {
-        OR: [
-          { outletId: req.user.outletId },
-          { type: 'MAIN' },
-        ],
-      };
-    }
-  }
+  // Outlet scoping: filter by the target warehouse's outlet (a PR always targets a BRANCH warehouse).
+  const scope = resolveOutletScope(req);
+  if (scope) where.warehouse = { outletId: scope };
 
   const p = Math.max(1, parseInt(String(page), 10) || 1);
   const l = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 50));
@@ -175,6 +166,11 @@ export const getPurchaseRequest = asyncHandler(async (req: Request, res: Respons
   });
 
   if (!pr) throw ApiError.notFound('Purchase request not found');
+  const scope = resolveOutletScope(req);
+  if (scope) {
+    const wh = await prisma.warehouse.findUnique({ where: { id: pr.warehouseId }, select: { outletId: true } });
+    if (wh?.outletId !== scope) throw ApiError.notFound('Purchase request not found');
+  }
 
   const ingredientIds = pr.items.map((i: any) => i.ingredientId);
   const stockMap = ingredientIds.length > 0 ? await getWarehouseStockMap(pr.warehouseId, ingredientIds) : new Map();
@@ -194,9 +190,10 @@ export const createPurchaseRequest = asyncHandler(async (req: Request, res: Resp
   if (!warehouse) throw ApiError.notFound('Warehouse not found');
   if (warehouse.type !== 'BRANCH') throw ApiError.badRequest('Purchase requests can only target BRANCH warehouses');
 
-  // Non-Super Admin: warehouse must belong to user's outlet
-  if (req.user?.role !== SUPER_ADMIN && warehouse.outletId !== req.user?.outletId) {
-    throw ApiError.forbidden('You can only create requests for your own outlet');
+  // Outlet scoping: the target warehouse must be in the acting outlet (Super Admin on "All" may target any branch).
+  const scope = resolveOutletScope(req);
+  if (scope && warehouse.outletId !== scope) {
+    throw ApiError.badRequest('Warehouse is not in your outlet');
   }
 
   // Validate all ingredients exist
@@ -242,6 +239,11 @@ export const approveRequest = asyncHandler(async (req: Request, res: Response) =
   });
 
   if (!pr) throw ApiError.notFound('Purchase request not found');
+  const scope = resolveOutletScope(req);
+  if (scope) {
+    const wh = await prisma.warehouse.findUnique({ where: { id: pr.warehouseId }, select: { outletId: true } });
+    if (wh?.outletId !== scope) throw ApiError.notFound('Purchase request not found');
+  }
   if (pr.status !== 'PENDING') throw ApiError.badRequest(`Cannot approve a ${pr.status} request`);
 
   if (!items || !Array.isArray(items)) throw ApiError.badRequest('Items with approved quantities are required');
@@ -292,6 +294,11 @@ export const rejectRequest = asyncHandler(async (req: Request, res: Response) =>
 
   const pr = await prisma.purchaseRequest.findUnique({ where: { id } });
   if (!pr) throw ApiError.notFound('Purchase request not found');
+  const scope = resolveOutletScope(req);
+  if (scope) {
+    const wh = await prisma.warehouse.findUnique({ where: { id: pr.warehouseId }, select: { outletId: true } });
+    if (wh?.outletId !== scope) throw ApiError.notFound('Purchase request not found');
+  }
   if (pr.status !== 'PENDING') throw ApiError.badRequest(`Cannot reject a ${pr.status} request`);
 
   const updated = await prisma.purchaseRequest.update({
@@ -321,6 +328,11 @@ export const cancelRequest = asyncHandler(async (req: Request, res: Response) =>
 
   const pr = await prisma.purchaseRequest.findUnique({ where: { id } });
   if (!pr) throw ApiError.notFound('Purchase request not found');
+  const scope = resolveOutletScope(req);
+  if (scope) {
+    const wh = await prisma.warehouse.findUnique({ where: { id: pr.warehouseId }, select: { outletId: true } });
+    if (wh?.outletId !== scope) throw ApiError.notFound('Purchase request not found');
+  }
   if (pr.status !== 'PENDING') throw ApiError.badRequest(`Cannot cancel a ${pr.status} request`);
   if (pr.requestedById !== req.user!.id) throw ApiError.forbidden('You can only cancel your own requests');
 
