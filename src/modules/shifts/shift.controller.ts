@@ -39,7 +39,7 @@ async function generateShiftNumber(): Promise<string> {
 /** GET /api/shifts/active — public */
 export const getActiveShift = asyncHandler(async (req: Request, res: Response) => {
   const scope = resolveOutletScope(req);
-  const shift = await prisma.shift.findFirst({ where: { status: 'open', ...(scope ? { outletId: scope } : {}) } });
+  const shift = await prisma.shift.findFirst({ where: { status: 'open', ...(scope ? { outletId: scope } : {}) }, orderBy: { openedAt: 'desc' } });
   res.json(ApiResponse.success(shift ? mapShift(shift) : null));
 });
 
