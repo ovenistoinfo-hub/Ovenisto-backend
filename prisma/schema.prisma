@@ -41,6 +41,7 @@ model Outlet {
   wasteRecords     WasteRecord[]
   shifts           Shift[]
   restaurantTables RestaurantTable[]
+  expenses         Expense[]
 
   @@map("outlets")
 }
@@ -879,8 +880,13 @@ model Expense {
   receipt       Boolean  @default(false)
   date          DateTime @default(now()) @db.Date
   recordedBy    String?  @db.VarChar(100)
+  outletId      String?
   createdAt     DateTime @default(now())
 
+  // Relations
+  outlet        Outlet?  @relation(fields: [outletId], references: [id])
+
+  @@index([outletId])
   @@map("expenses")
 }
 
