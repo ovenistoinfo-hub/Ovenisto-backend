@@ -13,6 +13,7 @@ import {
   getTransfers, createTransfer, updateTransferStatus,
   getWasteRecords, createWasteRecord,
   getDoughBatches, wasteDoughBatch,
+  getProductionStock, wasteProductionBatch,
 } from './stock.controller.js';
 
 const router = Router();
@@ -44,5 +45,9 @@ router.post('/waste', authenticate, authorize(stockRoles), createWasteRecord);
 // ── Dough / Short-Life Batches ──
 router.get('/dough-batches', authenticate, authorize(stockRoles), getDoughBatches);
 router.post('/dough-batches/:id/waste', authenticate, authorize(stockRoles), wasteDoughBatch);
+
+// ── Production Stock (production items) ──
+router.get('/production-stock', authenticate, getProductionStock);
+router.post('/production-batches/:id/waste', authenticate, authorize(stockRoles), wasteProductionBatch);
 
 export default router;

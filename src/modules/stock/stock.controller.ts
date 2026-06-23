@@ -257,10 +257,84 @@ export const getProductions = asyncHandler(async (req: Request, res: Response) =
 
 /** POST /api/stock/productions */
 export const createProduction = asyncHandler(async (req: Request, res: Response) => {
+  const body = req.body;
   const {
     itemName, quantity, unit, notes, menuItemId, deductIngredients,
     producedIngredientId, consumedIngredients, warehouseId, shelfLifeMinutes,
-  } = req.body;
+  } = body;
+
+  // Path B-new: produce a production item → goes to Production Stock
+  if (body.productionItemId) {
+    const { productionItemId, quantity: piQty, unit: piUnit, consumedIngredients: piConsumed = [], shelfLifeMinutes: piSlm, notes: piNotes } = body;
+
+    if (!piQty || Number(piQty) <= 0) throw ApiError.badRequest('Quantity must be greater than 0');
+
+    const productionItem = await prisma.productionItem.findUnique({ where: { id: productionItemId } });
+    if (!productionItem || !productionItem.isActive) throw ApiError.badRequest('Production item not found');
+
+    const outletId = resolveCreateOutlet(req);
+    const kitchenWH = await prisma.warehouse.findFirst({
+      where: { outletId, type: 'KITCHEN' as never, isActive: true },
+      select: { id: true },
+    });
+    if (!kitchenWH) throw ApiError.badRequest('No kitchen warehouse found for this outlet');
+    const piWarehouseId = kitchenWH.id;
+
+    let totalCost = 0;
+    if (piConsumed.length > 0) {
+      const ids = piConsumed.map((c: any) => c.ingredientId);
+      const prices = await prisma.ingredient.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, purchasePrice: true },
+      });
+      const priceMap = new Map(prices.map((p: { id: string; purchasePrice: any }) => [p.id, Number(p.purchasePrice ?? 0)]));
+      for (const c of piConsumed) {
+        totalCost += Number(c.qty) * (priceMap.get(c.ingredientId) ?? 0);
+      }
+    }
+    const piUnitCost = Number(piQty) > 0 ? totalCost / Number(piQty) : 0;
+
+    await prisma.$transaction(async (tx) => {
+      for (const c of piConsumed) {
+        await tx.ingredient.update({
+          where: { id: c.ingredientId },
+          data: { currentStock: { decrement: Number(c.qty) } },
+        });
+        await tx.warehouseStock.upsert({
+          where: { warehouseId_ingredientId: { warehouseId: piWarehouseId, ingredientId: c.ingredientId } },
+          update: { currentStock: { decrement: Number(c.qty) } },
+          create: { warehouseId: piWarehouseId, ingredientId: c.ingredientId, currentStock: -Number(c.qty), lowStockLevel: 0 },
+        });
+      }
+      await tx.productionBatch.create({
+        data: {
+          productionItemId,
+          warehouseId: piWarehouseId,
+          batchQty: Number(piQty),
+          remainingQty: Number(piQty),
+          shelfLifeMinutes: piSlm ?? null,
+          unitCost: piUnitCost > 0 ? piUnitCost : null,
+        },
+      });
+      await tx.productionWarehouseStock.upsert({
+        where: { productionItemId_warehouseId: { productionItemId, warehouseId: piWarehouseId } },
+        update: { currentStock: { increment: Number(piQty) } },
+        create: { productionItemId, warehouseId: piWarehouseId, currentStock: Number(piQty) },
+      });
+      await tx.production.create({
+        data: {
+          itemName: productionItem.name,
+          quantity: Number(piQty),
+          unit: piUnit || productionItem.unit,
+          outletId,
+          notes: piNotes || null,
+          producedBy: req.user?.name ?? null,
+        },
+      });
+    }, { timeout: 60000 });
+
+    return res.status(201).json(ApiResponse.created({ message: 'Production batch created' }));
+  }
 
   if (!itemName?.trim()) throw ApiError.badRequest('Item name is required');
   if (!quantity || Number(quantity) <= 0) throw ApiError.badRequest('Quantity must be greater than 0');
@@ -422,7 +496,7 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
     return prod;
   }, { timeout: 60000 });
 
-  res.status(201).json(ApiResponse.created(production, 'Production recorded'));
+  return res.status(201).json(ApiResponse.created(production, 'Production recorded'));
 });
 
 // ============================================================
@@ -571,6 +645,89 @@ export const createWasteRecord = asyncHandler(async (req: Request, res: Response
   }, { timeout: 60000 });
 
   res.status(201).json(ApiResponse.created(record, 'Waste record saved'));
+});
+
+// ============================================================
+// PRODUCTION STOCK (production items)
+// ============================================================
+
+/** GET /api/stock/production-stock */
+export const getProductionStock = asyncHandler(async (req: Request, res: Response) => {
+  const scope = resolveOutletScope(req);
+
+  const warehouseWhere: any = { type: 'KITCHEN', isActive: true };
+  if (scope) warehouseWhere.outletId = scope;
+
+  const kitchenWarehouses = await prisma.warehouse.findMany({
+    where: warehouseWhere,
+    select: { id: true, name: true },
+  });
+  const warehouseIds = kitchenWarehouses.map(w => w.id);
+  const warehouseMap = new Map(kitchenWarehouses.map(w => [w.id, w]));
+
+  const stocks = await prisma.productionWarehouseStock.findMany({
+    where: { warehouseId: { in: warehouseIds } },
+    include: { productionItem: true },
+  });
+
+  const result = await Promise.all(stocks.map(async (s) => {
+    const batches = await prisma.productionBatch.findMany({
+      where: { productionItemId: s.productionItemId, warehouseId: s.warehouseId, remainingQty: { gt: 0 } },
+      orderBy: { createdAt: 'asc' },
+    });
+    const shelfHours = s.productionItem.shelfLifeHours;
+    return {
+      productionItemId: s.productionItemId,
+      item: {
+        id: s.productionItem.id,
+        name: s.productionItem.name,
+        unit: s.productionItem.unit,
+        shelfLifeHours: shelfHours,
+      },
+      warehouseId: s.warehouseId,
+      warehouse: warehouseMap.get(s.warehouseId) ?? { id: s.warehouseId, name: 'Unknown' },
+      currentStock: Number(s.currentStock),
+      batches: batches.map(b => {
+        const totalMinutes = b.shelfLifeMinutes ?? (shelfHours != null ? shelfHours * 60 : null);
+        const effectiveExpiryVal = totalMinutes != null
+          ? new Date(b.createdAt.getTime() + totalMinutes * 60 * 1000).toISOString()
+          : null;
+        return {
+          id: b.id,
+          batchQty: Number(b.batchQty),
+          remainingQty: Number(b.remainingQty),
+          shelfLifeMinutes: b.shelfLifeMinutes,
+          unitCost: b.unitCost != null ? Number(b.unitCost) : null,
+          createdAt: b.createdAt.toISOString(),
+          effectiveExpiry: effectiveExpiryVal,
+        };
+      }),
+    };
+  }));
+
+  res.json(ApiResponse.success(result));
+});
+
+/** POST /api/stock/production-batches/:id/waste */
+export const wasteProductionBatch = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { qty } = req.body;
+  if (!qty || Number(qty) <= 0) throw ApiError.badRequest('qty must be a positive number');
+
+  const batch = await prisma.productionBatch.findUnique({ where: { id } });
+  if (!batch) throw ApiError.notFound('Production batch not found');
+
+  const wasteQty = Math.min(Number(qty), Number(batch.remainingQty));
+
+  await prisma.$transaction(async (tx) => {
+    await tx.productionBatch.update({ where: { id }, data: { remainingQty: { decrement: wasteQty } } });
+    await tx.productionWarehouseStock.updateMany({
+      where: { productionItemId: batch.productionItemId, warehouseId: batch.warehouseId },
+      data: { currentStock: { decrement: wasteQty } },
+    });
+  });
+
+  res.json(ApiResponse.success({ wastedQty: wasteQty }, 'Waste recorded'));
 });
 
 // ============================================================
