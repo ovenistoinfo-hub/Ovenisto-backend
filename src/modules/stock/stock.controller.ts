@@ -717,6 +717,15 @@ export const wasteProductionBatch = asyncHandler(async (req: Request, res: Respo
   const batch = await prisma.productionBatch.findUnique({ where: { id } });
   if (!batch) throw ApiError.notFound('Production batch not found');
 
+  const batchWarehouse = await prisma.warehouse.findUnique({
+    where: { id: batch.warehouseId },
+    select: { outletId: true },
+  });
+  const scope = resolveOutletScope(req);
+  if (scope && batchWarehouse?.outletId !== scope) throw ApiError.notFound('Production batch not found');
+
+  if (Number(batch.remainingQty) <= 0) throw ApiError.badRequest('Batch is already fully consumed');
+
   const wasteQty = Math.min(Number(qty), Number(batch.remainingQty));
 
   await prisma.$transaction(async (tx) => {
