@@ -163,7 +163,7 @@ export const getMenuItem = asyncHandler(async (req: Request, res: Response) => {
     include: {
       category: { select: { id: true, name: true } },
       variants: { orderBy: { displayOrder: 'asc' } },
-      recipes: { include: { ingredient: { include: { unit: true } }, usageUnit: { select: { id: true, name: true } } } },
+      recipes: { include: { ingredient: { include: { unit: true } }, productionItem: { select: { id: true, name: true, unit: true } }, usageUnit: { select: { id: true, name: true } } } },
       modifiers: { include: { modifier: true } },
     },
   });
@@ -388,6 +388,13 @@ export const updateRecipe = asyncHandler(async (req: Request, res: Response) => 
 
   const item = await prisma.foodMenuItem.findUnique({ where: { id }, select: { id: true } });
   if (!item) throw ApiError.notFound('Menu item not found');
+
+  if (ingredients?.length) {
+    for (const r of ingredients) {
+      const hasIng = !!r.ingredientId, hasProd = !!r.productionItemId;
+      if (hasIng === hasProd) throw ApiError.badRequest('Each recipe row must reference exactly one of ingredientId or productionItemId');
+    }
+  }
 
   await prisma.$transaction(async (tx) => {
     await tx.foodRecipe.deleteMany({ where: { menuItemId: id } });
