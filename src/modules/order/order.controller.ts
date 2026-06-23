@@ -370,6 +370,7 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
             return !r.variantId; // item-level recipe (no variant)
           });
           for (const r of itemRecipes) {
+            if (!r.ingredientId) continue; // skip production-item recipes
             const qty = Number(r.qtyPerUnit) * item.qty;
             deductions[r.ingredientId] = (deductions[r.ingredientId] || 0) + qty;
           }

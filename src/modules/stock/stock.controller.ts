@@ -305,6 +305,7 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
         kitchenWhId = kw?.id ?? null;
       }
       for (const recipe of recipes) {
+        if (!recipe.ingredientId || !recipe.ingredient) continue; // skip production-item recipes
         const required = Number(recipe.qtyPerUnit) * Number(quantity);
         await tx.ingredient.update({
           where: { id: recipe.ingredientId },

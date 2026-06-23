@@ -91,19 +91,21 @@ export const getPnlReport = asyncHandler(async (req: Request, res: Response) => 
       where: { menuItemId: { in: menuItemIds } },
       select: { menuItemId: true, variantId: true, ingredientId: true, qtyPerUnit: true },
     });
-    const ingredientIds = [...new Set(recipes.map((r) => r.ingredientId))];
+    const ingredientIds = [...new Set(recipes.map((r) => r.ingredientId).filter((id): id is string => id !== null))];
     const ingredients = await prisma.ingredient.findMany({
       where: { id: { in: ingredientIds } },
       select: { id: true, purchasePrice: true },
     });
     const priceById = new Map(ingredients.map((i) => [i.id, Number(i.purchasePrice ?? 0)]));
     const allItems = completed.flatMap((o) => o.items);
-    const recipesForCogs = recipes.map((r) => ({
-      menuItemId: r.menuItemId,
-      variantId: r.variantId,
-      ingredientId: r.ingredientId,
-      qtyPerUnit: Number(r.qtyPerUnit),
-    }));
+    const recipesForCogs = recipes
+      .filter((r): r is typeof r & { ingredientId: string } => r.ingredientId !== null)
+      .map((r) => ({
+        menuItemId: r.menuItemId,
+        variantId: r.variantId,
+        ingredientId: r.ingredientId,
+        qtyPerUnit: Number(r.qtyPerUnit),
+      }));
     cogs = computeCogs(allItems, recipesForCogs, priceById);
   }
 
