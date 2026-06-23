@@ -34,18 +34,20 @@ export const getWarehouses = asyncHandler(async (req: Request, res: Response) =>
 
   if (type) where.type = String(type);
   const scope = resolveOutletScope(req);
-  if (scope) where.outletId = scope;
 
-  // Only Super Admin sees ALL warehouses across all outlets
-  // Everyone else (including Admin) sees their outlet's warehouses + MAIN
-  if (!ADMIN_ROLES.includes(req.user?.role || '')) {
+  if (ADMIN_ROLES.includes(req.user?.role || '')) {
+    // Super Admin: apply outlet header scope if set; null = see everything
+    if (scope) where.outletId = scope;
+  } else {
+    // All other roles: own outlet's warehouses + MAIN (so MAIN is always
+    // visible as a supply source for BRANCH→MAIN demand flow)
     if (req.user?.outletId) {
       where.OR = [
         { outletId: req.user.outletId },
         { type: 'MAIN' },
       ];
     } else {
-      // No outlet assigned (main warehouse staff) → only MAIN type
+      // No outlet assigned → only MAIN type
       where.type = 'MAIN';
     }
   }
