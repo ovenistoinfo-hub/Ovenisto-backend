@@ -347,9 +347,15 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
         : [];
       const lowStockRows = await tx.ingredient.findMany({
         where: { id: { in: [producedIngredientId, ...consumedList.map((c) => c.ingredientId)] } },
-        select: { id: true, lowStockLevel: true },
+        select: { id: true, lowStockLevel: true, purchasePrice: true },
       });
       const lowStockById = new Map(lowStockRows.map((r) => [r.id, Number(r.lowStockLevel ?? 0)]));
+      const priceById = new Map(lowStockRows.map((r) => [r.id, Number(r.purchasePrice ?? 0)]));
+      // Real make-cost of this batch = sum(consumed qty * that ingredient's purchase price),
+      // expressed per produced unit. Stored on the batch so waste is valued by what the dough
+      // actually cost to make (not the produced ingredient's arbitrary purchasePrice).
+      const consumedCost = consumedList.reduce((sum, c) => sum + c.qty * (priceById.get(c.ingredientId) ?? 0), 0);
+      const producedUnitCost = Number(quantity) > 0 ? consumedCost / Number(quantity) : 0;
 
       // Consume the picked ingredients: drop BOTH the global stock AND the kitchen
       // warehouse stock (so the Kitchen Stock page reflects what the dough ate).
@@ -394,6 +400,7 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
           remainingQty: Number(quantity),
           expiryDate: null, // exact expiry is derived from shelfLifeMinutes/shelfLifeHours, not this date column
           shelfLifeMinutes: batchShelfLifeMinutes, // per-batch override; null -> use ingredient.shelfLifeHours
+          unitCost: producedUnitCost, // cost/unit from consumed ingredients; values waste accurately
         },
       });
 
@@ -618,7 +625,7 @@ export const wasteDoughBatch = asyncHandler(async (req: Request, res: Response) 
     const batch = await tx.stockBatch.findUnique({
       where: { id },
       select: {
-        remainingQty: true, ingredientId: true, warehouseId: true,
+        remainingQty: true, ingredientId: true, warehouseId: true, unitCost: true,
         warehouse: { select: { outletId: true } },
         ingredient: { select: { name: true, purchasePrice: true, unit: { select: { name: true } } } },
       },
@@ -654,7 +661,9 @@ export const wasteDoughBatch = asyncHandler(async (req: Request, res: Response) 
         itemName: batch.ingredient.name,
         quantity: remaining,
         unit: batch.ingredient.unit?.name ?? null,
-        cost: Number(batch.ingredient.purchasePrice ?? 0) * remaining,
+        // Value the waste by what the dough actually cost to make (per-unit consumed-ingredient
+        // cost stored at production). Legacy batches with no unitCost fall back to purchasePrice.
+        cost: (batch.unitCost != null ? Number(batch.unitCost) : Number(batch.ingredient.purchasePrice ?? 0)) * remaining,
         reason: 'Expired (short shelf life)',
         outletId: wasteOutletId,
         recordedBy: req.user?.name ?? null,

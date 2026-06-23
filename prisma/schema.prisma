@@ -474,6 +474,7 @@ model StockBatch {
   remainingQty     Decimal   @db.Decimal(10, 3)
   expiryDate       DateTime? @db.Date
   shelfLifeMinutes Int? // per-batch expiry override (minutes from createdAt); null = use ingredient.shelfLifeHours
+  unitCost         Decimal?  @db.Decimal(10, 2) // cost per produced unit = (sum of consumed ingredient costs) / qty; used to value waste
   createdAt        DateTime  @default(now())
 
   warehouse  Warehouse  @relation(fields: [warehouseId], references: [id])
