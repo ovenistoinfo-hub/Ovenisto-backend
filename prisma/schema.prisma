@@ -426,12 +426,15 @@ model WasteRecord {
   cost       Decimal? @db.Decimal(10, 2)
   recordedBy String?  @db.VarChar(100)
   outletId   String?
+  purchaseId String?
   date       DateTime @default(now())
 
   // Relations
-  outlet     Outlet?  @relation(fields: [outletId], references: [id])
+  outlet     Outlet?   @relation(fields: [outletId], references: [id])
+  purchase   Purchase? @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
 
   @@index([outletId])
+  @@index([purchaseId])
   @@map("waste_records")
 }
 
@@ -921,6 +924,7 @@ model Purchase {
   purchaseRequest PurchaseRequest? @relation(fields: [purchaseRequestId], references: [id])
   createdBy       User?            @relation("PurchaseCreatedBy", fields: [createdById], references: [id])
   stockBatches    StockBatch[]
+  wasteRecords    WasteRecord[]
 
   @@index([outletId])
   @@map("purchases")

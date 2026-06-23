@@ -179,6 +179,29 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
       }
     }
 
+    // Step 2b: Record purchase-time waste in the Waste section so it is trackable.
+    // The wasted qty never entered stock (receivedQty = qty - wasteQty above), so this is
+    // tracking ONLY — do NOT deduct stock again here. Linked via purchaseId so the record
+    // is removed if the purchase is deleted (see deletePurchase).
+    for (const item of items) {
+      const wasteQty = Number(item.wasteQty ?? 0);
+      if (wasteQty > 0) {
+        await tx.wasteRecord.create({
+          data: {
+            itemName: String(item.name || 'Ingredient').slice(0, 100),
+            quantity: wasteQty,
+            unit: item.unit || null,
+            reason: String(item.wasteReason ?? '').trim() || 'Wasted at purchase receiving',
+            cost: wasteQty * Number(item.unitPrice ?? 0),
+            recordedBy: (req as any).user?.name || null,
+            outletId,
+            purchaseId: p.id,
+            date: p.date,
+          },
+        });
+      }
+    }
+
     // Step 3: Update supplier totals if supplierId provided
     if (supplierId) {
       await tx.supplier.update({
@@ -300,6 +323,10 @@ export const deletePurchase = asyncHandler(async (req: Request, res: Response) =
         },
       });
     }
+
+    // Remove the waste records this purchase created (linked via purchaseId) so the
+    // Waste section stays consistent with the purchase being gone.
+    await tx.wasteRecord.deleteMany({ where: { purchaseId: existing.id } });
 
     await tx.purchase.delete({ where: { id: req.params.id } });
   });
