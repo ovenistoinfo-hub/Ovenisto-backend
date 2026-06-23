@@ -594,7 +594,7 @@ export const wasteDoughBatch = asyncHandler(async (req: Request, res: Response) 
     const batch = await tx.stockBatch.findUnique({
       where: { id },
       select: {
-        remainingQty: true, ingredientId: true,
+        remainingQty: true, ingredientId: true, warehouseId: true,
         warehouse: { select: { outletId: true } },
         ingredient: { select: { name: true, purchasePrice: true, unit: { select: { name: true } } } },
       },
@@ -616,6 +616,12 @@ export const wasteDoughBatch = asyncHandler(async (req: Request, res: Response) 
 
     await tx.ingredient.update({
       where: { id: batch.ingredientId },
+      data: { currentStock: { decrement: remaining } },
+    });
+    // Also drop the kitchen warehouse stock for this batch's warehouse, so wasting/
+    // expiring dough leaves the Kitchen Stock page too (mirrors the production add).
+    await tx.warehouseStock.updateMany({
+      where: { warehouseId: batch.warehouseId, ingredientId: batch.ingredientId },
       data: { currentStock: { decrement: remaining } },
     });
 
