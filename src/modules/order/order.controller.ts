@@ -357,11 +357,20 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
       if (menuItemIds.length > 0) {
         const recipes = await tx.foodRecipe.findMany({
           where: { menuItemId: { in: menuItemIds } },
+          select: {
+            menuItemId: true,
+            variantId: true,
+            ingredientId: true,
+            productionItemId: true,
+            qtyPerUnit: true,
+          },
         });
 
         // Group deductions: ingredientId → total qty to deduct
+        // Group prodDeductions: productionItemId → total qty to deduct
         // If order item has a variantId, use variant-specific recipes; otherwise use item-level recipes
         const deductions: Record<string, number> = {};
+        const prodDeductions: Record<string, number> = {};
         for (const item of updated.items) {
           if (!item.menuItemId) continue;
           const itemRecipes = recipes.filter((r) => {
@@ -370,9 +379,13 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
             return !r.variantId; // item-level recipe (no variant)
           });
           for (const r of itemRecipes) {
-            if (!r.ingredientId) continue; // skip production-item recipes
             const qty = Number(r.qtyPerUnit) * item.qty;
-            deductions[r.ingredientId] = (deductions[r.ingredientId] || 0) + qty;
+            if (r.ingredientId) {
+              deductions[r.ingredientId] = (deductions[r.ingredientId] || 0) + qty;
+            } else if (r.productionItemId) {
+              prodDeductions[r.productionItemId] = (prodDeductions[r.productionItemId] || 0) + qty;
+            }
+            // skip rows where both are null (shouldn't happen but be safe)
           }
         }
 
@@ -465,6 +478,36 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
               date: new Date(),
             })),
           });
+        }
+
+        // 4. Production item FIFO drawdown
+        const prodEntries = Object.entries(prodDeductions);
+        if (prodEntries.length > 0 && kitchenWarehouseId) {
+          for (const [productionItemId, qty] of prodEntries) {
+            const batches = await tx.productionBatch.findMany({
+              where: {
+                productionItemId,
+                warehouseId: kitchenWarehouseId,
+                remainingQty: { gt: 0 },
+              },
+              select: { id: true, remainingQty: true },
+              orderBy: { createdAt: 'asc' },
+            });
+            const draws = fifoDrawdown(
+              batches.map((b) => ({ id: b.id, remainingQty: Number(b.remainingQty) })),
+              qty
+            );
+            for (const d of draws) {
+              await tx.productionBatch.update({
+                where: { id: d.id },
+                data: { remainingQty: d.newRemaining },
+              });
+            }
+            await tx.productionWarehouseStock.updateMany({
+              where: { productionItemId, warehouseId: kitchenWarehouseId },
+              data: { currentStock: { decrement: qty } },
+            });
+          }
         }
       }
     }
