@@ -1,10 +1,27 @@
 import { describe, it, expect } from 'vitest';
-import { computeExpiry, minutesRemaining, batchStatus, fifoDrawdown } from '../dough.helpers.js';
+import { computeExpiry, effectiveExpiry, minutesRemaining, batchStatus, fifoDrawdown } from '../dough.helpers.js';
 
 describe('computeExpiry', () => {
   it('adds shelfLifeHours to createdAt', () => {
     expect(computeExpiry(new Date('2026-06-20T09:00:00.000Z'), 8).toISOString())
       .toBe('2026-06-20T17:00:00.000Z');
+  });
+});
+
+describe('effectiveExpiry', () => {
+  const made = new Date('2026-06-20T09:00:00.000Z');
+  it('uses the per-batch minutes when present (overrides ingredient hours)', () => {
+    // 270 min = 4h30m -> 13:30, ignoring the ingredient default of 8h
+    expect(effectiveExpiry(made, 270, 8).toISOString()).toBe('2026-06-20T13:30:00.000Z');
+  });
+  it('falls back to ingredient shelfLifeHours when batch minutes is null', () => {
+    expect(effectiveExpiry(made, null, 8).toISOString()).toBe('2026-06-20T17:00:00.000Z');
+  });
+  it('honours a zero-minute override (expires immediately at made-at)', () => {
+    expect(effectiveExpiry(made, 0, 8).toISOString()).toBe('2026-06-20T09:00:00.000Z');
+  });
+  it('treats a batch with neither value as already expired (expiry === createdAt)', () => {
+    expect(effectiveExpiry(made, null, null).toISOString()).toBe('2026-06-20T09:00:00.000Z');
   });
 });
 

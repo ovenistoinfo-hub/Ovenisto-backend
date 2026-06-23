@@ -3,6 +3,23 @@ export function computeExpiry(createdAt: Date, shelfLifeHours: number): Date {
   return new Date(createdAt.getTime() + shelfLifeHours * 60 * 60 * 1000);
 }
 
+/**
+ * Effective expiry for a batch: a per-batch shelf life (minutes) wins; otherwise
+ * fall back to the ingredient's default (hours). Either may be null — when both are
+ * absent the batch is treated as already expired (expiry === createdAt).
+ */
+export function effectiveExpiry(
+  createdAt: Date,
+  batchShelfLifeMinutes: number | null,
+  ingredientShelfLifeHours: number | null
+): Date {
+  const minutes =
+    batchShelfLifeMinutes != null
+      ? batchShelfLifeMinutes
+      : (ingredientShelfLifeHours ?? 0) * 60;
+  return new Date(createdAt.getTime() + minutes * 60 * 1000);
+}
+
 /** Whole minutes from now until expiry; floored at 0. */
 export function minutesRemaining(expiresAt: Date, now: Date): number {
   const ms = expiresAt.getTime() - now.getTime();

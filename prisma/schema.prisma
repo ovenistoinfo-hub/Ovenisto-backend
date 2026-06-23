@@ -470,10 +470,11 @@ model StockBatch {
   warehouseId  String
   ingredientId String
   purchaseId   String?
-  batchQty     Decimal   @db.Decimal(10, 3)
-  remainingQty Decimal   @db.Decimal(10, 3)
-  expiryDate   DateTime? @db.Date
-  createdAt    DateTime  @default(now())
+  batchQty         Decimal   @db.Decimal(10, 3)
+  remainingQty     Decimal   @db.Decimal(10, 3)
+  expiryDate       DateTime? @db.Date
+  shelfLifeMinutes Int? // per-batch expiry override (minutes from createdAt); null = use ingredient.shelfLifeHours
+  createdAt        DateTime  @default(now())
 
   warehouse  Warehouse  @relation(fields: [warehouseId], references: [id])
   ingredient Ingredient @relation(fields: [ingredientId], references: [id])

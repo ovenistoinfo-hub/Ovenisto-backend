@@ -8,7 +8,7 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { computeExpiry, minutesRemaining, batchStatus } from './dough.helpers.js';
+import { effectiveExpiry, minutesRemaining, batchStatus } from './dough.helpers.js';
 import { resolveCreateOutlet, resolveOutletScope } from '../../middleware/outletScope.js';
 
 // ============================================================
@@ -259,11 +259,17 @@ export const getProductions = asyncHandler(async (req: Request, res: Response) =
 export const createProduction = asyncHandler(async (req: Request, res: Response) => {
   const {
     itemName, quantity, unit, notes, menuItemId, deductIngredients,
-    producedIngredientId, consumedIngredients, warehouseId,
+    producedIngredientId, consumedIngredients, warehouseId, shelfLifeMinutes,
   } = req.body;
 
   if (!itemName?.trim()) throw ApiError.badRequest('Item name is required');
   if (!quantity || Number(quantity) <= 0) throw ApiError.badRequest('Quantity must be greater than 0');
+
+  // Optional per-batch expiry override (minutes from now). Null/blank/invalid -> fall
+  // back to the produced ingredient's shelfLifeHours at read time.
+  const slmRaw = Number(shelfLifeMinutes);
+  const batchShelfLifeMinutes =
+    Number.isFinite(slmRaw) && slmRaw >= 0 ? Math.round(slmRaw) : null;
 
   const prodOutletId = resolveCreateOutlet(req);
 
@@ -329,7 +335,8 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
           ingredientId: producedIngredientId,
           batchQty: Number(quantity),
           remainingQty: Number(quantity),
-          expiryDate: null, // derived from shelfLifeHours, not stored
+          expiryDate: null, // exact expiry is derived from shelfLifeMinutes/shelfLifeHours, not this date column
+          shelfLifeMinutes: batchShelfLifeMinutes, // per-batch override; null -> use ingredient.shelfLifeHours
         },
       });
 
@@ -513,18 +520,22 @@ export const getDoughBatches = asyncHandler(async (req: Request, res: Response) 
   const batches = await prisma.stockBatch.findMany({
     where: {
       remainingQty: { gt: 0 },
-      ingredient: { shelfLifeHours: { not: null } },
+      // Short-life batch = the ingredient has a default shelf life OR this batch carries a per-batch override.
+      OR: [
+        { ingredient: { shelfLifeHours: { not: null } } },
+        { shelfLifeMinutes: { not: null } },
+      ],
       ...(scope ? { warehouse: { outletId: scope } } : {}),
     },
     select: {
-      id: true, ingredientId: true, remainingQty: true, createdAt: true,
+      id: true, ingredientId: true, remainingQty: true, createdAt: true, shelfLifeMinutes: true,
       ingredient: { select: { name: true, shelfLifeHours: true, unit: { select: { name: true } } } },
     },
     orderBy: { createdAt: 'asc' },
   });
 
   const rows = batches.map((b) => {
-    const expiresAt = computeExpiry(b.createdAt, b.ingredient.shelfLifeHours as number);
+    const expiresAt = effectiveExpiry(b.createdAt, b.shelfLifeMinutes, b.ingredient.shelfLifeHours);
     return {
       id: b.id,
       ingredientId: b.ingredientId,
