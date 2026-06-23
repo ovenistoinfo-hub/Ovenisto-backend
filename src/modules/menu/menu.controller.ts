@@ -374,6 +374,7 @@ export const getRecipe = asyncHandler(async (req: Request, res: Response) => {
     where: { menuItemId: id },
     include: {
       ingredient: { include: { unit: { select: { id: true, name: true } }, category: { select: { id: true, name: true } } } },
+      productionItem: { select: { id: true, name: true, unit: true } },
       usageUnit: { select: { id: true, name: true } },
     },
   });
@@ -394,7 +395,8 @@ export const updateRecipe = asyncHandler(async (req: Request, res: Response) => 
       await tx.foodRecipe.createMany({
         data: ingredients.map((r: any) => ({
           menuItemId: id,
-          ingredientId: r.ingredientId,
+          ingredientId: r.ingredientId ?? null,
+          productionItemId: r.productionItemId ?? null,
           qtyPerUnit: r.qtyPerUnit,
           variantId: r.variantId || null,
           usageUnitId: r.usageUnitId || null,
@@ -407,6 +409,7 @@ export const updateRecipe = asyncHandler(async (req: Request, res: Response) => 
     where: { menuItemId: id },
     include: {
       ingredient: { include: { unit: { select: { id: true, name: true } } } },
+      productionItem: { select: { id: true, name: true, unit: true } },
       usageUnit: { select: { id: true, name: true } },
     },
   });
