@@ -314,19 +314,52 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
       }
       if (!whId) throw ApiError.badRequest('No kitchen warehouse found to store the produced batch');
 
-      if (Array.isArray(consumedIngredients)) {
-        for (const c of consumedIngredients) {
-          if (!c?.ingredientId || !c?.qty) continue;
-          await tx.ingredient.update({
-            where: { id: c.ingredientId },
-            data: { currentStock: { decrement: Number(c.qty) } },
-          });
-        }
+      // Pre-fetch lowStockLevel for the produced + consumed ingredients (needed when a
+      // WarehouseStock row has to be created on first touch). One query, no N+1.
+      const consumedList: { ingredientId: string; qty: number }[] = Array.isArray(consumedIngredients)
+        ? consumedIngredients
+            .filter((c: any) => c?.ingredientId && c?.qty)
+            .map((c: any) => ({ ingredientId: String(c.ingredientId), qty: Number(c.qty) }))
+        : [];
+      const lowStockRows = await tx.ingredient.findMany({
+        where: { id: { in: [producedIngredientId, ...consumedList.map((c) => c.ingredientId)] } },
+        select: { id: true, lowStockLevel: true },
+      });
+      const lowStockById = new Map(lowStockRows.map((r) => [r.id, Number(r.lowStockLevel ?? 0)]));
+
+      // Consume the picked ingredients: drop BOTH the global stock AND the kitchen
+      // warehouse stock (so the Kitchen Stock page reflects what the dough ate).
+      for (const c of consumedList) {
+        await tx.ingredient.update({
+          where: { id: c.ingredientId },
+          data: { currentStock: { decrement: c.qty } },
+        });
+        await tx.warehouseStock.upsert({
+          where: { warehouseId_ingredientId: { warehouseId: whId, ingredientId: c.ingredientId } },
+          update: { currentStock: { decrement: c.qty } },
+          create: {
+            warehouseId: whId,
+            ingredientId: c.ingredientId,
+            currentStock: -c.qty, // negative = consumed before any stock was received (audit flag)
+            lowStockLevel: lowStockById.get(c.ingredientId) ?? 0,
+          },
+        });
       }
 
+      // Add the produced dough to BOTH the global stock AND the kitchen warehouse stock.
       await tx.ingredient.update({
         where: { id: producedIngredientId },
         data: { currentStock: { increment: Number(quantity) } },
+      });
+      await tx.warehouseStock.upsert({
+        where: { warehouseId_ingredientId: { warehouseId: whId, ingredientId: producedIngredientId } },
+        update: { currentStock: { increment: Number(quantity) } },
+        create: {
+          warehouseId: whId,
+          ingredientId: producedIngredientId,
+          currentStock: Number(quantity),
+          lowStockLevel: lowStockById.get(producedIngredientId) ?? 0,
+        },
       });
 
       await tx.stockBatch.create({
