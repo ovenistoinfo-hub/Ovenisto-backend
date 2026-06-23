@@ -286,18 +286,42 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
       },
     });
 
-    // Path A (existing): deduct a menu item's recipe ingredients.
+    // Path A (existing): deduct a menu item's recipe ingredients — from BOTH global stock
+    // and the kitchen warehouse stock (so the Kitchen Stock page reflects the consumption).
     if (menuItemId && deductIngredients) {
       const recipes = await tx.foodRecipe.findMany({
         where: { menuItemId },
         include: { ingredient: true },
       });
+      // Soft-resolve the kitchen warehouse for this outlet. Unlike dough (Path B), a recipe
+      // production must NOT hard-fail if there's no kitchen warehouse — just skip the
+      // warehouse-level update and keep the global deduction.
+      let kitchenWhId: string | null = warehouseId || null;
+      if (!kitchenWhId) {
+        const kw = await tx.warehouse.findFirst({
+          where: { type: 'KITCHEN' as never, isActive: true, outletId: prodOutletId },
+          select: { id: true },
+        });
+        kitchenWhId = kw?.id ?? null;
+      }
       for (const recipe of recipes) {
         const required = Number(recipe.qtyPerUnit) * Number(quantity);
         await tx.ingredient.update({
           where: { id: recipe.ingredientId },
-          data: { currentStock: { increment: -required } },
+          data: { currentStock: { decrement: required } },
         });
+        if (kitchenWhId) {
+          await tx.warehouseStock.upsert({
+            where: { warehouseId_ingredientId: { warehouseId: kitchenWhId, ingredientId: recipe.ingredientId } },
+            update: { currentStock: { decrement: required } },
+            create: {
+              warehouseId: kitchenWhId,
+              ingredientId: recipe.ingredientId,
+              currentStock: -required, // negative = consumed before any stock was received (audit flag)
+              lowStockLevel: Number(recipe.ingredient.lowStockLevel ?? 0),
+            },
+          });
+        }
       }
     }
 
