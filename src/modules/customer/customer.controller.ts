@@ -6,6 +6,7 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import { resolveOutletScope } from '../../middleware/outletScope.js';
 
 function mapCustomer(c: any) {
   return {
@@ -19,7 +20,9 @@ export const getCustomers = asyncHandler(async (req: Request, res: Response) => 
   const { search, customerType, page = '1', limit = '100' } = req.query as Record<string, string>;
   const skip = (Number(page) - 1) * Number(limit);
 
+  const scope = resolveOutletScope(req);
   const where: any = {};
+  if (scope) where.outletId = scope;
   if (search) {
     where.OR = [
       { name: { contains: search, mode: 'insensitive' } },
@@ -47,7 +50,7 @@ export const createCustomer = asyncHandler(async (req: Request, res: Response) =
   const { name, phone, email, address, customerType } = req.body;
   if (!name) throw new ApiError('Name is required', 400);
   const c = await prisma.customer.create({
-    data: { name, phone: phone || null, email: email || null, address: address || null, customerType: customerType || 'walk-in' },
+    data: { name, phone: phone || null, email: email || null, address: address || null, customerType: customerType || 'walk-in', outletId: req.user?.outletId ?? null },
   });
   return res.status(201).json(ApiResponse.created(mapCustomer(c), 'Customer created'));
 });

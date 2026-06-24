@@ -44,6 +44,7 @@ model Outlet {
   expenses         Expense[]
   purchases        Purchase[]
   reservations     Reservation[]
+  customers        Customer[]
 
   @@map("outlets")
 }
@@ -811,8 +812,10 @@ model Customer {
   outstandingDue  Decimal   @default(0) @db.Decimal(10, 2)
   lastOrder       DateTime? @db.Date
   createdAt       DateTime  @default(now())
+  outletId        String?   @db.VarChar(36)
 
   // Relations
+  outlet        Outlet?        @relation(fields: [outletId], references: [id])
   orders        Order[]
   loyaltyMember LoyaltyMember?
 
