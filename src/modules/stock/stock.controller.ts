@@ -329,6 +329,7 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
           outletId,
           notes: piNotes || null,
           producedBy: req.user?.name ?? null,
+          shelfLifeMinutes: piSlm ?? null,
         },
       });
     }, { timeout: 60000 });
@@ -357,6 +358,7 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
         date: new Date(),
         notes: notes || null,
         outletId: prodOutletId,
+        shelfLifeMinutes: batchShelfLifeMinutes,
       },
     });
 

@@ -383,17 +383,18 @@ model StockTakeItem {
 }
 
 model Production {
-  id         String   @id @default(uuid())
-  itemName   String?  @db.VarChar(100)
-  quantity   Decimal? @db.Decimal(10, 3)
-  unit       String?  @db.VarChar(20)
-  producedBy String?  @db.VarChar(100)
-  outletId   String?
-  date       DateTime @default(now())
-  notes      String?
+  id               String   @id @default(uuid())
+  itemName         String?  @db.VarChar(100)
+  quantity         Decimal? @db.Decimal(10, 3)
+  unit             String?  @db.VarChar(20)
+  producedBy       String?  @db.VarChar(100)
+  outletId         String?
+  date             DateTime @default(now())
+  notes            String?
+  shelfLifeMinutes Int?
 
   // Relations
-  outlet     Outlet?  @relation(fields: [outletId], references: [id])
+  outlet           Outlet?  @relation(fields: [outletId], references: [id])
 
   @@index([outletId])
   @@map("productions")
