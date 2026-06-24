@@ -268,6 +268,9 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
     const { productionItemId, quantity: piQty, unit: piUnit, consumedIngredients: piConsumed = [], shelfLifeMinutes: piSlm, notes: piNotes } = body;
 
     if (!piQty || Number(piQty) <= 0) throw ApiError.badRequest('Quantity must be greater than 0');
+    if (!Array.isArray(piConsumed) || piConsumed.length === 0) throw ApiError.badRequest('At least one consumed ingredient is required');
+    const invalidIngredient = piConsumed.find((c: any) => !c.ingredientId || Number(c.qty) <= 0);
+    if (invalidIngredient) throw ApiError.badRequest('Each ingredient must have an ID and quantity greater than 0');
 
     const productionItem = await prisma.productionItem.findUnique({ where: { id: productionItemId } });
     if (!productionItem || !productionItem.isActive) throw ApiError.badRequest('Production item not found');
