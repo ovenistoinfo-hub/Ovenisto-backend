@@ -43,6 +43,7 @@ model Outlet {
   restaurantTables RestaurantTable[]
   expenses         Expense[]
   purchases        Purchase[]
+  reservations     Reservation[]
 
   @@map("outlets")
 }
@@ -1169,11 +1170,14 @@ model Reservation {
   status          String   @default("pending") @db.VarChar(20) // pending, confirmed, seated, completed, cancelled, noShow
   specialRequests String?
   source          String?  @db.VarChar(20) // phone, walkin, online
+  outletId        String?
   createdAt       DateTime @default(now())
 
   // Relations
-  table RestaurantTable? @relation(fields: [tableId], references: [id])
+  table  RestaurantTable? @relation(fields: [tableId], references: [id])
+  outlet Outlet?          @relation(fields: [outletId], references: [id])
 
+  @@index([outletId])
   @@map("reservations")
 }
 

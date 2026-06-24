@@ -28,6 +28,7 @@ import { demandsRouter }  from '../modules/demands/demand.routes.js';
 import { purchaseRequestsRouter } from '../modules/purchase-requests/purchase-request.routes.js';
 import { reportsRouter } from '../modules/reports/reports.routes.js';
 import productionItemsRoutes from '../modules/production-items/production-items.routes.js';
+import { reservationsRouter } from '../modules/reservations/reservation.routes.js';
 
 const router = Router();
 
@@ -153,7 +154,7 @@ router.use('/shifts', shiftsRouter);
 // Phase 10: Advanced
 // router.use('/deals', dealRoutes);
 // router.use('/coupons', couponRoutes);
-// router.use('/reservations', reservationRoutes);
+router.use('/reservations', reservationsRouter);
 router.use('/tables', tableRoutes);
 router.use('/reports', reportsRouter);
 router.use('/production-items', productionItemsRoutes);
