@@ -115,7 +115,7 @@ export const getAssignments = asyncHandler(async (req: Request, res: Response) =
   const assignments = await prisma.deliveryAssignment.findMany({
     where,
     include: {
-      order: { select: { id: true, orderNumber: true, total: true, subtotal: true, tax: true, discount: true, status: true, customer: true, deliveryAddress: true, phone: true } },
+      order: { select: { id: true, orderNumber: true, total: true, subtotal: true, tax: true, discount: true, status: true, customerName: true, deliveryAddress: true, phone: true } },
       rider: true,
     },
     orderBy: { assignedAt: 'desc' },
@@ -130,7 +130,7 @@ export const getMyAssignments = asyncHandler(async (req: Request, res: Response)
 
   const assignments = await prisma.deliveryAssignment.findMany({
     where: { riderId: riderProfile.id, status: { in: ['pending', 'accepted', 'dispatched'] } },
-    include: { order: { select: { id: true, orderNumber: true, total: true, customer: true, deliveryAddress: true, phone: true } } },
+    include: { order: { select: { id: true, orderNumber: true, total: true, customerName: true, deliveryAddress: true, phone: true } } },
     orderBy: { assignedAt: 'desc' },
   });
   res.json(ApiResponse.success({ rider: mapRider(riderProfile), assignments: assignments.map(mapAssignment) }));
@@ -197,7 +197,7 @@ export const assignRider = asyncHandler(async (req: Request, res: Response) => {
         amountToCollect: order.total,
         notes: notes || null,
       },
-      include: { order: { select: { id: true, orderNumber: true, total: true, customer: true, deliveryAddress: true } }, rider: true },
+      include: { order: { select: { id: true, orderNumber: true, total: true, customerName: true, deliveryAddress: true } }, rider: true },
     }),
     prisma.deliveryRider.update({
       where: { id: riderId },
@@ -226,7 +226,7 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
   if (status === 'accepted')   data.acceptedAt   = new Date();
   if (status === 'delivered')  data.deliveredAt  = new Date();
 
-  const ops: any[] = [prisma.deliveryAssignment.update({ where: { id }, data, include: { order: { select: { id: true, orderNumber: true, total: true, customer: true } }, rider: true } })];
+  const ops: any[] = [prisma.deliveryAssignment.update({ where: { id }, data, include: { order: { select: { id: true, orderNumber: true, total: true, customerName: true } }, rider: true } })];
 
   // Rider accepts → mark as on_delivery now (assignment was pending until this point)
   if (status === 'accepted') {
@@ -325,7 +325,7 @@ export const getDeliveryDashboard = asyncHandler(async (req: Request, res: Respo
     }),
     prisma.deliveryAssignment.findMany({
       where: { status: { in: ['pending', 'accepted', 'dispatched'] }, ...(scope ? { order: { outletId: scope } } : {}) },
-      include: { order: { select: { id: true, orderNumber: true, total: true, customer: true, deliveryAddress: true } }, rider: true },
+      include: { order: { select: { id: true, orderNumber: true, total: true, customerName: true, deliveryAddress: true } }, rider: true },
       orderBy: { assignedAt: 'desc' },
     }),
   ]);
