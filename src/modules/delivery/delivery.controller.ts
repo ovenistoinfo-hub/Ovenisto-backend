@@ -201,7 +201,7 @@ export const assignRider = asyncHandler(async (req: Request, res: Response) => {
     }),
     prisma.deliveryRider.update({
       where: { id: riderId },
-      data: { activeDeliveries: { increment: 1 }, isAvailable: false, status: 'on_delivery' },
+      data: { activeDeliveries: { increment: 1 }, isAvailable: false },
     }),
     prisma.order.update({ where: { id: orderId }, data: { riderId } }),
   ]);
@@ -227,6 +227,16 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
   if (status === 'delivered')  data.deliveredAt  = new Date();
 
   const ops: any[] = [prisma.deliveryAssignment.update({ where: { id }, data, include: { order: { select: { id: true, orderNumber: true, total: true, customer: true } }, rider: true } })];
+
+  // Rider accepts → mark as on_delivery now (assignment was pending until this point)
+  if (status === 'accepted') {
+    ops.push(
+      prisma.deliveryRider.update({
+        where: { id: assignment.riderId },
+        data: { status: 'on_delivery' },
+      }),
+    );
+  }
 
   // When delivered — decrement active deliveries, restore availability, complete order
   if (status === 'delivered') {
