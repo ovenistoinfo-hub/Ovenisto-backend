@@ -13,18 +13,16 @@ function todayStr(): string {
 }
 
 function currentWeekStart(): string {
-  const now = new Date();
-  const day = now.getDay();
-  const diff = now.getDate() - day + (day === 0 ? -6 : 1);
-  const d = new Date(now);
-  d.setDate(diff);
-  d.setUTCHours(0, 0, 0, 0);
-  return d.toISOString().split('T')[0];
+  const pkt = new Date(Date.now() + 5 * 60 * 60 * 1000);
+  const day = pkt.getUTCDay(); // 0=Sun
+  const diff = day === 0 ? -6 : 1 - day; // days to Monday
+  const monMs = Date.now() + 5 * 60 * 60 * 1000 + diff * 86_400_000;
+  return new Date(monMs).toISOString().split('T')[0];
 }
 
 function todayDayIndex(): number {
-  const day = new Date().getDay();
-  return day === 0 ? 6 : day - 1;
+  const pkt = new Date(Date.now() + 5 * 60 * 60 * 1000);
+  return pkt.getUTCDay(); // 0=Sun,1=Mon,...,6=Sat
 }
 
 export const clockIn = asyncHandler(async (req: Request, res: Response) => {

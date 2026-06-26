@@ -117,16 +117,20 @@ export const submitLeaveRequest = asyncHandler(async (req: Request, res: Respons
 
   const userId = req.user!.id;
   if (leaveType !== 'emergency') {
-    const balance = await prisma.leaveBalance.findUnique({
+    const balance = await prisma.leaveBalance.upsert({
       where: { userId_year: { userId, year: currentYear() } },
+      update: {},
+      create: { userId, year: currentYear() },
     });
-    if (balance) {
-      const used  = balance[`${leaveType}Used` as keyof typeof balance] as number;
-      const total = balance[leaveType as keyof typeof balance] as number;
+    const usedField = `${leaveType}Used` as 'annualUsed' | 'sickUsed' | 'casualUsed';
+    const totalField = leaveType as 'annual' | 'sick' | 'casual';
+    if (usedField in { annualUsed: 1, sickUsed: 1, casualUsed: 1 }) {
+      const used = balance[usedField] as number;
+      const total = balance[totalField] as number;
       if (used + totalDays > total) {
         throw new ApiError(
           `Insufficient ${leaveType} leave balance (${total - used} days left)`,
-          400
+          400,
         );
       }
     }
