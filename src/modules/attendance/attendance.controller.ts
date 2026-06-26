@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express';
+import { z } from 'zod';
 import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
@@ -6,7 +7,9 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope, resolveCreateOutlet } from '../../middleware/outletScope.js';
 
 function todayStr(): string {
-  return new Date().toISOString().split('T')[0];
+  // Use PKT (UTC+5) so midnight shifts stamp the correct local date
+  const pkt = new Date(Date.now() + 5 * 60 * 60 * 1000);
+  return pkt.toISOString().split('T')[0];
 }
 
 function currentWeekStart(): string {
@@ -145,7 +148,15 @@ export const correctAttendance = asyncHandler(async (req: Request, res: Response
   const scope = resolveOutletScope(req);
   if (scope && existing.outletId !== scope) throw new ApiError('Attendance record not found', 404);
 
-  const { clockIn: ci, clockOut: co, status, notes } = req.body;
+  const schema = z.object({
+    clockIn:  z.string().datetime().nullable().optional(),
+    clockOut: z.string().datetime().nullable().optional(),
+    status:   z.enum(['present', 'late', 'absent']).optional(),
+    notes:    z.string().max(500).nullable().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) throw new ApiError(parsed.error.errors[0].message, 400);
+  const { clockIn: ci, clockOut: co, status, notes } = parsed.data;
 
   const updated = await prisma.attendanceRecord.update({
     where: { id: req.params.id },
