@@ -43,8 +43,11 @@ model Outlet {
   restaurantTables RestaurantTable[]
   expenses         Expense[]
   purchases        Purchase[]
-  reservations     Reservation[]
-  customers        Customer[]
+  reservations      Reservation[]
+  customers         Customer[]
+  attendanceRecords AttendanceRecord[]
+  leaveRequests     LeaveRequest[]
+  staffSchedules    StaffSchedule[]
 
   @@map("outlets")
 }
@@ -83,11 +86,12 @@ model User {
   outlet                   Outlet?           @relation(fields: [outletId], references: [id])
   orders                   Order[]
   stockAdjustments         StockAdjustment[]
-  attendance               Attendance[]
+  attendanceRecords        AttendanceRecord[]  @relation("UserAttendance")
+  leaveRequests            LeaveRequest[]      @relation("UserLeaves")
+  leaveReviews             LeaveRequest[]      @relation("LeaveReviewer")
+  leaveBalance             LeaveBalance[]
+  staffSchedules           StaffSchedule[]     @relation("UserSchedules")
   shifts                   Shift[]
-  staffSchedules           StaffSchedule[]
-  leaveRequests            LeaveRequest[]
-  leaveBalance             LeaveBalance?
   riderProfile             DeliveryRider?
   managedWarehouses        Warehouse[]       @relation("WarehouseManager")
   challansDispatched       StockChallan[]    @relation("ChallanDispatched")
@@ -1007,80 +1011,91 @@ model DeliveryAssignment {
 // PHASE 9: HR & Staff
 // =============================================
 
-model Attendance {
-  id       String    @id @default(uuid())
-  userId   String
-  date     DateTime  @db.Date
-  checkIn  DateTime?
-  checkOut DateTime?
-  status   String    @default("present") @db.VarChar(20)
-  notes    String?
+model AttendanceRecord {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation("UserAttendance", fields: [userId], references: [id])
+  outletId  String
+  outlet    Outlet    @relation(fields: [outletId], references: [id])
+  date      String    // "YYYY-MM-DD" — one record per person per day
+  clockIn   DateTime?
+  clockOut  DateTime?
+  status    String    @default("present") // present | late | absent
+  notes     String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
-  // Relations
-  user User @relation(fields: [userId], references: [id])
-
-  @@map("attendance")
-}
-
-model ShiftTemplate {
-  id        String  @id @default(uuid())
-  name      String  @db.VarChar(50)
-  startTime String? @db.VarChar(10)
-  endTime   String? @db.VarChar(10)
-  color     String? @db.VarChar(100)
-
-  @@map("shift_templates")
-}
-
-model StaffSchedule {
-  id         String   @id @default(uuid())
-  employeeId String
-  weekStart  DateTime @db.Date
-  shifts     Json // [{day, templateId, templateName, startTime, endTime}]
-  status     String   @default("draft") @db.VarChar(20)
-  createdBy  String?  @db.VarChar(100)
-  createdAt  DateTime @default(now())
-
-  // Relations
-  employee User @relation(fields: [employeeId], references: [id])
-
-  @@map("staff_schedules")
+  @@unique([userId, date])
+  @@map("attendance_records")
 }
 
 model LeaveRequest {
-  id         String    @id @default(uuid())
-  employeeId String
-  leaveType  String    @db.VarChar(20) // sick, casual, annual, emergency
-  startDate  DateTime  @db.Date
-  endDate    DateTime  @db.Date
-  totalDays  Int?
-  reason     String?
-  status     String    @default("pending") @db.VarChar(20)
-  appliedOn  DateTime  @default(now()) @db.Date
-  reviewedBy String?   @db.VarChar(100)
-  reviewedOn DateTime? @db.Date
-  reviewNote String?
-
-  // Relations
-  employee User @relation(fields: [employeeId], references: [id])
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation("UserLeaves", fields: [userId], references: [id])
+  outletId     String
+  outlet       Outlet   @relation(fields: [outletId], references: [id])
+  leaveType    String   // casual | sick | annual | emergency
+  startDate    String   // "YYYY-MM-DD"
+  endDate      String
+  totalDays    Int
+  reason       String
+  status       String   @default("pending") // pending | approved | rejected
+  reviewedById String?
+  reviewedBy   User?    @relation("LeaveReviewer", fields: [reviewedById], references: [id])
+  reviewedOn   String?
+  reviewNote   String?
+  appliedOn    String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@map("leave_requests")
 }
 
 model LeaveBalance {
-  id          String @id @default(uuid())
-  employeeId  String @unique
-  annualTotal Int    @default(14)
-  annualUsed  Int    @default(0)
-  sickTotal   Int    @default(8)
-  sickUsed    Int    @default(0)
-  casualTotal Int    @default(6)
-  casualUsed  Int    @default(0)
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  year       Int
+  annual     Int      @default(14)
+  annualUsed Int      @default(0)
+  sick       Int      @default(6)
+  sickUsed   Int      @default(0)
+  casual     Int      @default(6)
+  casualUsed Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
-  // Relations
-  employee User @relation(fields: [employeeId], references: [id])
-
+  @@unique([userId, year])
   @@map("leave_balances")
+}
+
+model StaffSchedule {
+  id        String          @id @default(cuid())
+  userId    String
+  user      User            @relation("UserSchedules", fields: [userId], references: [id])
+  outletId  String
+  outlet    Outlet          @relation(fields: [outletId], references: [id])
+  weekStart String          // "YYYY-MM-DD" always a Monday
+  status    String          @default("draft") // draft | published
+  shifts    ScheduleShift[]
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  @@unique([userId, weekStart])
+  @@map("staff_schedules")
+}
+
+model ScheduleShift {
+  id         String        @id @default(cuid())
+  scheduleId String
+  schedule   StaffSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  dayIndex   Int           // 0=Mon, 1=Tue, ..., 6=Sun
+  shiftType  String        // morning | evening | night | off
+  startTime  String?       // "09:00"
+  endTime    String?       // "17:00"
+
+  @@map("schedule_shifts")
 }
 
 model Shift {
