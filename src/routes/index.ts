@@ -30,6 +30,7 @@ import { reportsRouter } from '../modules/reports/reports.routes.js';
 import productionItemsRoutes from '../modules/production-items/production-items.routes.js';
 import { reservationsRouter } from '../modules/reservations/reservation.routes.js';
 import { attendanceRouter } from '../modules/attendance/attendance.routes.js';
+import { leaveRequestsRouter } from '../modules/leave-requests/leave-request.routes.js';
 
 const router = Router();
 
@@ -148,9 +149,9 @@ router.use('/delivery', deliveryRouter);
 
 // Phase 9: HR & Staff
 router.use('/attendance', attendanceRouter);
+router.use('/leave-requests', leaveRequestsRouter);
 router.use('/shifts', shiftsRouter);
 // router.use('/scheduling', schedulingRoutes);
-// router.use('/leave', leaveRoutes);
 
 // Phase 10: Advanced
 // router.use('/deals', dealRoutes);
