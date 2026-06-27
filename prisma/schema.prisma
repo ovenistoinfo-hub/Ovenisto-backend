@@ -77,10 +77,12 @@ model User {
   role         UserRole
   branch       String?   @db.VarChar(100)
   outletId     String?
-  avatar       String?
-  status       String    @default("active") @db.VarChar(20)
-  lastLogin    DateTime?
-  createdAt    DateTime  @default(now())
+  avatar         String?
+  status         String    @default("active") @db.VarChar(20)
+  lastLogin      DateTime?
+  createdAt      DateTime  @default(now())
+  hourlyRate     Decimal?  @db.Decimal(10, 2)
+  absencePenalty Decimal?  @db.Decimal(10, 2)
 
   // Relations
   outlet                   Outlet?           @relation(fields: [outletId], references: [id])
@@ -127,6 +129,7 @@ model Settings {
   selfOrderConfig   Json     @default("{}")
   websiteConfig     Json     @default("{}")
   reservationConfig Json     @default("{}")
+  shiftConfig       Json     @default("{}")
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
