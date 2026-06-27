@@ -32,10 +32,14 @@ export const getMyBalance = asyncHandler(async (req: Request, res: Response) => 
 
 export const getAllBalances = asyncHandler(async (req: Request, res: Response) => {
   const year = currentYear();
+  const scope = resolveOutletScope(req);
+
+  const where: any = { year };
+  if (scope) where.user = { outletId: scope };
 
   const balances = await prisma.leaveBalance.findMany({
-    where: { year },
-    include: { user: { select: { id: true, name: true, role: true } } },
+    where,
+    include: { user: { select: { id: true, name: true, role: true, outletId: true } } },
     orderBy: { user: { name: 'asc' } },
   });
 

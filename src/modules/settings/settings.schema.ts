@@ -19,6 +19,7 @@ export const updateSettingsSchema = z.object({
   selfOrderConfig: z.record(z.any()).optional(),
   websiteConfig: z.record(z.any()).optional(),
   reservationConfig: z.record(z.any()).optional(),
+  shiftConfig: z.record(z.any()).optional(),
 });
 
 export type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>;

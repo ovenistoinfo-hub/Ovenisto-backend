@@ -97,28 +97,41 @@ export const getMyStatus = asyncHandler(async (req: Request, res: Response) => {
 
 export const getMyHistory = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.id;
-  const { page = '1', limit = '30' } = req.query as Record<string, string>;
+  const { page = '1', limit = '30', startDate, endDate } = req.query as Record<string, string>;
   const skip = (Number(page) - 1) * Number(limit);
+
+  const where: any = { userId };
+  if (startDate || endDate) {
+    where.date = {};
+    if (startDate) where.date.gte = startDate;
+    if (endDate)   where.date.lte = endDate;
+  }
 
   const [data, total] = await Promise.all([
     prisma.attendanceRecord.findMany({
-      where: { userId },
+      where,
       skip,
       take: Number(limit),
       orderBy: { date: 'desc' },
     }),
-    prisma.attendanceRecord.count({ where: { userId } }),
+    prisma.attendanceRecord.count({ where }),
   ]);
 
   return res.json(ApiResponse.paginated(data, Number(page), Number(limit), total));
 });
 
 export const getAllAttendance = asyncHandler(async (req: Request, res: Response) => {
-  const { date, userId, status, page = '1', limit = '50' } = req.query as Record<string, string>;
+  const { date, startDate, endDate, userId, status, page = '1', limit = '50' } = req.query as Record<string, string>;
   const skip = (Number(page) - 1) * Number(limit);
 
   const where: any = {};
-  if (date) where.date = date;
+  if (date) {
+    where.date = date;
+  } else if (startDate || endDate) {
+    where.date = {};
+    if (startDate) where.date.gte = startDate;
+    if (endDate)   where.date.lte = endDate;
+  }
   if (userId) where.userId = userId;
   if (status) where.status = status;
 
@@ -137,6 +150,68 @@ export const getAllAttendance = asyncHandler(async (req: Request, res: Response)
   ]);
 
   return res.json(ApiResponse.paginated(data, Number(page), Number(limit), total));
+});
+
+export const markAbsent = asyncHandler(async (req: Request, res: Response) => {
+  const { date } = req.body as { date: string };
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new ApiError('date (YYYY-MM-DD) is required', 400);
+  }
+
+  const scope = resolveOutletScope(req);
+  if (!scope) throw new ApiError('Select a specific outlet before marking absent', 400);
+
+  // All active staff in this outlet (exclude Riders and Customer Screens)
+  const staffUsers = await prisma.user.findMany({
+    where: {
+      outletId: scope,
+      status: 'active',
+      role: { notIn: ['RIDER', 'CUSTOMER_SCREEN'] },
+    },
+    select: { id: true, outletId: true },
+  });
+
+  if (staffUsers.length === 0) {
+    return res.json(ApiResponse.success({ count: 0 }, 'No staff found for this outlet'));
+  }
+
+  // Users who already have an attendance record for the date
+  const existing = await prisma.attendanceRecord.findMany({
+    where: { userId: { in: staffUsers.map(u => u.id) }, date },
+    select: { userId: true },
+  });
+  const existingIds = new Set(existing.map(r => r.userId));
+
+  // Users on approved leave covering this date
+  const onLeave = await prisma.leaveRequest.findMany({
+    where: {
+      userId: { in: staffUsers.map(u => u.id) },
+      status: 'approved',
+      startDate: { lte: date },
+      endDate: { gte: date },
+    },
+    select: { userId: true },
+  });
+  const onLeaveIds = new Set(onLeave.map(r => r.userId));
+
+  // Mark absent only those with no record and not on leave
+  const toMark = staffUsers.filter(u => !existingIds.has(u.id) && !onLeaveIds.has(u.id));
+
+  if (toMark.length === 0) {
+    return res.json(ApiResponse.success({ count: 0 }, 'All employees are accounted for'));
+  }
+
+  await prisma.attendanceRecord.createMany({
+    data: toMark.map(u => ({
+      userId: u.id,
+      outletId: u.outletId!,
+      date,
+      status: 'absent',
+    })),
+    skipDuplicates: true,
+  });
+
+  return res.json(ApiResponse.success({ count: toMark.length }, `${toMark.length} employee(s) marked absent`));
 });
 
 export const correctAttendance = asyncHandler(async (req: Request, res: Response) => {

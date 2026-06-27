@@ -74,11 +74,13 @@ export const updateUserSchema = z.object({
   outletId: z.string().uuid().optional().nullable(),
   avatar: z.string().optional().nullable(),
   status: z.enum(['active', 'inactive']).optional(),
+  hourlyRate: z.coerce.number().nonnegative().nullable().optional(),
+  absencePenalty: z.coerce.number().nonnegative().nullable().optional(),
 });
 
 export const userQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
-  limit: z.coerce.number().int().positive().max(100).default(20),
+  limit: z.coerce.number().int().positive().max(500).default(20),
   search: z.string().optional(),
   role: userRoleEnum.optional(),
   status: z.enum(['active', 'inactive']).optional(),

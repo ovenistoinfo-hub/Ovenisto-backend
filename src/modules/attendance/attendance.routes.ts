@@ -8,6 +8,7 @@ import {
   getMyHistory,
   getAllAttendance,
   correctAttendance,
+  markAbsent,
 } from './attendance.controller.js';
 
 const adminRoles = ['Super Admin', 'Admin', 'Manager'];
@@ -19,5 +20,6 @@ attendanceRouter.post('/clock-out',   authenticate, clockOut);
 attendanceRouter.get('/my-status',    authenticate, getMyStatus);
 attendanceRouter.get('/my-history',   authenticate, getMyHistory);
 
+attendanceRouter.post('/mark-absent',  authenticate, authorize(adminRoles), markAbsent);
 attendanceRouter.get('/',             authenticate, authorize(adminRoles), getAllAttendance);
 attendanceRouter.patch('/:id',        authenticate, authorize(adminRoles), correctAttendance);
