@@ -49,7 +49,7 @@ export const getAllBalances = asyncHandler(async (req: Request, res: Response) =
 export const updateBalance = asyncHandler(async (req: Request, res: Response) => {
   const { userId } = req.params;
   const year = currentYear();
-  const { annual, sick, casual } = req.body;
+  const { annual, sick, casual, halfday } = req.body;
 
   const balance = await prisma.leaveBalance.upsert({
     where: { userId_year: { userId, year } },
@@ -57,6 +57,7 @@ export const updateBalance = asyncHandler(async (req: Request, res: Response) =>
       ...(annual != null ? { annual: Number(annual) } : {}),
       ...(sick   != null ? { sick:   Number(sick)   } : {}),
       ...(casual != null ? { casual: Number(casual) } : {}),
+      ...(halfday != null ? { halfday: Number(halfday) } : {}),
     },
     create: {
       userId,
@@ -64,6 +65,7 @@ export const updateBalance = asyncHandler(async (req: Request, res: Response) =>
       annual: annual != null ? Number(annual) : 14,
       sick:   sick   != null ? Number(sick)   : 6,
       casual: casual != null ? Number(casual) : 6,
+      halfday: halfday != null ? Number(halfday) : 10,
     },
   });
 

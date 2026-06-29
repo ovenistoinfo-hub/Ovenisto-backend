@@ -130,6 +130,7 @@ model Settings {
   websiteConfig     Json     @default("{}")
   reservationConfig Json     @default("{}")
   shiftConfig       Json     @default("{}")
+  graceMinutes      Int      @default(15)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -1066,6 +1067,8 @@ model LeaveBalance {
   sickUsed   Int      @default(0)
   casual     Int      @default(6)
   casualUsed Int      @default(0)
+  halfday    Int      @default(10)
+  halfdayUsed Int      @default(0)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
