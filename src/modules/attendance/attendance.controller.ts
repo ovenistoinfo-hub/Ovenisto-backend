@@ -30,6 +30,54 @@ function todayDayIndex(): number {
   return day === 0 ? 6 : day - 1; // Map to: 0=Mon, 1=Tue, ..., 6=Sun
 }
 
+function weekStartOfDate(dateStr: string): string {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  const day = d.getUTCDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setUTCDate(d.getUTCDate() + diff);
+  return d.toISOString().split('T')[0];
+}
+
+function dayIndexOfDate(dateStr: string): number {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  const day = d.getUTCDay();
+  return day === 0 ? 6 : day - 1;
+}
+
+// Overtime = minutes the actual clock-out falls past the scheduled shift's end time,
+// looked up from the live Settings.shiftConfig (not the schedule's own static
+// startTime/endTime snapshot) so it always matches what staff see on their schedule.
+async function calcOvertimeMinutes(userId: string, outletId: string, recordDate: string, clockOutAt: Date): Promise<number> {
+  const weekStart = weekStartOfDate(recordDate);
+  const dayIndex = dayIndexOfDate(recordDate);
+  const schedule = await prisma.staffSchedule.findFirst({
+    where: { userId, weekStart, status: 'published' },
+    include: { shifts: true },
+  });
+  const shift = schedule?.shifts.find(s => s.dayIndex === dayIndex);
+  if (!shift?.shiftType || shift.shiftType === 'off') return 0;
+
+  let settings = await prisma.settings.findFirst({ where: { outletId } });
+  if (!settings) settings = await prisma.settings.findFirst();
+  const shiftConfig = (settings?.shiftConfig as Record<string, { start?: string; end?: string }>) ?? {};
+  const endTime = shiftConfig?.[shift.shiftType]?.end;
+  const startTime = shiftConfig?.[shift.shiftType]?.start ?? shift.startTime ?? undefined;
+  if (!endTime || !startTime) return 0;
+
+  const [eh, em] = endTime.split(':').map(Number);
+  const [sh, sm] = startTime.split(':').map(Number);
+  const endMinutes = eh * 60 + em;
+  const startMinutes = sh * 60 + sm;
+
+  const baseMs = new Date(recordDate + 'T00:00:00Z').getTime();
+  let scheduledEndMs = baseMs + endMinutes * 60_000;
+  if (endMinutes <= startMinutes) scheduledEndMs += 24 * 60 * 60_000; // shift crosses midnight
+
+  const clockOutPktMs = clockOutAt.getTime() + 5 * 60 * 60 * 1000;
+  const overtimeMs = clockOutPktMs - scheduledEndMs;
+  return overtimeMs > 0 ? Math.round(overtimeMs / 60_000) : 0;
+}
+
 async function autoMarkAbsents(outletId?: string | null) {
   const date = todayStr();
   const weekStart = currentWeekStart();
@@ -232,9 +280,12 @@ export const clockOut = asyncHandler(async (req: Request, res: Response) => {
   if (!record?.clockIn) throw new ApiError('Not clocked in today', 400);
   if (record.clockOut) throw new ApiError('Already clocked out today', 400);
 
+  const now = new Date();
+  const overtimeMinutes = await calcOvertimeMinutes(userId, record.outletId, record.date, now);
+
   const updated = await prisma.attendanceRecord.update({
     where: { id: record.id },
-    data: { clockOut: new Date() },
+    data: { clockOut: now, overtimeMinutes },
   });
 
   return res.json(ApiResponse.success(updated, 'Clocked out'));
@@ -429,6 +480,10 @@ export const correctAttendance = asyncHandler(async (req: Request, res: Response
   if (!parsed.success) throw new ApiError(parsed.error.errors[0].message, 400);
   const { clockIn: ci, clockOut: co, status, notes } = parsed.data;
 
+  const overtimeMinutes = co !== undefined
+    ? (co ? await calcOvertimeMinutes(existing.userId, existing.outletId, existing.date, new Date(co)) : 0)
+    : undefined;
+
   const updated = await prisma.attendanceRecord.update({
     where: { id: req.params.id },
     data: {
@@ -436,6 +491,7 @@ export const correctAttendance = asyncHandler(async (req: Request, res: Response
       ...(co !== undefined ? { clockOut: co ? new Date(co) : null } : {}),
       ...(status !== undefined ? { status } : {}),
       ...(notes !== undefined ? { notes } : {}),
+      ...(overtimeMinutes !== undefined ? { overtimeMinutes } : {}),
     },
   });
 

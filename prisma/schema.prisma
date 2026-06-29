@@ -1025,6 +1025,7 @@ model AttendanceRecord {
   clockIn   DateTime?
   clockOut  DateTime?
   status    String    @default("present") // present | late | absent
+  overtimeMinutes Int @default(0) // minutes clocked out past the scheduled shift end
   notes     String?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
