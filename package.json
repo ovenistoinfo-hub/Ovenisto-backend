@@ -19,6 +19,7 @@
     "db:seed-outlet-shifttable": "tsx src/seeds/outletShiftTableBackfill.ts",
     "db:seed-outlet-expense": "tsx src/seeds/outletExpenseBackfill.ts",
     "db:seed-outlet-purchase": "tsx src/seeds/outletPurchaseBackfill.ts",
+    "db:seed-employee-backfill": "tsx src/seeds/employeeBackfill.ts",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
