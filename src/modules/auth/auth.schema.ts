@@ -74,8 +74,6 @@ export const updateUserSchema = z.object({
   outletId: z.string().uuid().optional().nullable(),
   avatar: z.string().optional().nullable(),
   status: z.enum(['active', 'inactive']).optional(),
-  hourlyRate: z.coerce.number().nonnegative().nullable().optional(),
-  absencePenalty: z.coerce.number().nonnegative().nullable().optional(),
 });
 
 export const userQuerySchema = z.object({

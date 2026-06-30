@@ -82,8 +82,6 @@ model User {
   status         String    @default("active") @db.VarChar(20)
   lastLogin      DateTime?
   createdAt      DateTime  @default(now())
-  hourlyRate     Decimal?  @db.Decimal(10, 2)
-  absencePenalty Decimal?  @db.Decimal(10, 2)
 
   // Relations
   outlet                   Outlet?           @relation(fields: [outletId], references: [id])

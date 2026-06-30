@@ -59,8 +59,6 @@ function mapUser(user: any) {
   return {
     ...rest,
     role: toFrontendRole(rest.role),
-    hourlyRate: rest.hourlyRate != null ? Number(rest.hourlyRate) : null,
-    absencePenalty: rest.absencePenalty != null ? Number(rest.absencePenalty) : null,
   };
 }
 
@@ -114,8 +112,6 @@ export const getUsers = asyncHandler(async (req: Request, res: Response) => {
         status: true,
         lastLogin: true,
         createdAt: true,
-        hourlyRate: true,
-        absencePenalty: true,
         outlet: { select: { id: true, name: true, code: true } },
       },
     }),
@@ -144,8 +140,6 @@ export const getUser = asyncHandler(async (req: Request, res: Response) => {
       status: true,
       lastLogin: true,
       createdAt: true,
-      hourlyRate: true,
-      absencePenalty: true,
       outlet: { select: { id: true, name: true, code: true } },
     },
   });
@@ -195,8 +189,6 @@ export const createUser = asyncHandler(async (req: Request, res: Response) => {
       avatar: true,
       status: true,
       createdAt: true,
-      hourlyRate: true,
-      absencePenalty: true,
       outlet: { select: { id: true, name: true, code: true } },
     },
   });
@@ -246,8 +238,6 @@ export const updateUser = asyncHandler(async (req: Request, res: Response) => {
   if (input.outletId !== undefined) updateData.outletId = input.outletId;
   if (input.avatar !== undefined) updateData.avatar = input.avatar;
   if (input.status !== undefined) updateData.status = input.status;
-  if ((input as any).hourlyRate !== undefined) updateData.hourlyRate = (input as any).hourlyRate != null ? Number((input as any).hourlyRate) : null;
-  if ((input as any).absencePenalty !== undefined) updateData.absencePenalty = (input as any).absencePenalty != null ? Number((input as any).absencePenalty) : null;
 
   // Hash new password if provided
   if (input.password) {

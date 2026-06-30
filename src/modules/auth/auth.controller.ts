@@ -132,8 +132,6 @@ export const getMe = asyncHandler(async (req: Request, res: Response) => {
       status: true,
       lastLogin: true,
       createdAt: true,
-      hourlyRate: true,
-      absencePenalty: true,
       outlet: { select: { id: true, name: true, code: true } },
     },
   });
@@ -146,8 +144,6 @@ export const getMe = asyncHandler(async (req: Request, res: Response) => {
     ApiResponse.success({
       ...user,
       role: mapRole(user.role),
-      hourlyRate: user.hourlyRate != null ? Number(user.hourlyRate) : null,
-      absencePenalty: user.absencePenalty != null ? Number(user.absencePenalty) : null,
     })
   );
 });
