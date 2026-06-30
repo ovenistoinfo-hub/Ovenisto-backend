@@ -62,6 +62,7 @@ export const createUserSchema = z.object({
   outletId: z.string().uuid().optional().nullable(),
   avatar: z.string().optional().nullable(),
   status: z.enum(['active', 'inactive']).optional().default('active'),
+  employeeId: z.string().uuid().optional().nullable(),
 });
 
 export const updateUserSchema = z.object({

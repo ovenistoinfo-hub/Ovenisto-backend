@@ -193,6 +193,15 @@ export const createUser = asyncHandler(async (req: Request, res: Response) => {
     },
   });
 
+  // Link employee profile if employeeId provided
+  const employeeId = (req.body as any).employeeId as string | undefined;
+  if (employeeId) {
+    await prisma.employee.update({
+      where: { id: employeeId },
+      data: { userId: user.id },
+    });
+  }
+
   // Auto-create DeliveryRider profile for Rider role
   if (input.role === 'Rider') {
     await prisma.deliveryRider.upsert({
@@ -203,6 +212,28 @@ export const createUser = asyncHandler(async (req: Request, res: Response) => {
   }
 
   res.status(201).json(ApiResponse.created(mapUser(user), 'User created successfully'));
+});
+
+/**
+ * GET /api/users/unlinked-employees
+ * Returns employees that have no portal user account yet (userId is null)
+ */
+export const getUnlinkedEmployees = asyncHandler(async (req: Request, res: Response) => {
+  const employees = await prisma.employee.findMany({
+    where: { userId: null, status: 'active' },
+    orderBy: { firstName: 'asc' },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      phone: true,
+      designation: true,
+      outletId: true,
+      outlet: { select: { id: true, name: true } },
+    },
+  });
+  res.json(ApiResponse.success(employees));
 });
 
 /**

@@ -18,17 +18,20 @@ import {
   createUser,
   updateUser,
   deleteUser,
+  getUnlinkedEmployees,
 } from './user.controller.js';
 
 const router = Router();
 
-// All user routes require Admin or Super Admin
-router.use(authenticate, authorize(['Super Admin', 'Admin']));
+// All user routes require authenticate
+router.use(authenticate);
 
-router.get('/', validateRequest({ query: userQuerySchema }), getUsers);
-router.get('/:id', getUser);
-router.post('/', validateRequest({ body: createUserSchema }), createUser);
-router.put('/:id', validateRequest({ body: updateUserSchema }), updateUser);
-router.delete('/:id', deleteUser);
+router.get('/unlinked-employees', authorize(['Super Admin', 'Admin', 'Manager']), getUnlinkedEmployees);
+router.get('/', authorize(['Super Admin', 'Admin', 'Manager']), validateRequest({ query: userQuerySchema }), getUsers);
+router.post('/', authorize(['Super Admin', 'Admin', 'Manager']), validateRequest({ body: createUserSchema }), createUser);
+
+router.get('/:id', authorize(['Super Admin', 'Admin']), getUser);
+router.put('/:id', authorize(['Super Admin', 'Admin']), validateRequest({ body: updateUserSchema }), updateUser);
+router.delete('/:id', authorize(['Super Admin', 'Admin']), deleteUser);
 
 export default router;
