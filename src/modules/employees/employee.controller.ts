@@ -107,6 +107,13 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
 
   const outletId = resolveCreateOutlet(req);
 
+  if (supervisorId) {
+    const supervisor = await prisma.employee.findUnique({ where: { id: supervisorId } });
+    if (!supervisor || supervisor.outletId !== outletId) {
+      throw new ApiError('Supervisor not found', 400);
+    }
+  }
+
   try {
     const e = await prisma.employee.create({
       data: {
@@ -154,6 +161,16 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
 
   if (rateType !== undefined && !RATE_TYPES.includes(rateType)) {
     throw new ApiError(`rateType must be one of: ${RATE_TYPES.join(', ')}`, 400);
+  }
+
+  if (supervisorId) {
+    if (supervisorId === req.params.id) {
+      throw new ApiError('An employee cannot be their own supervisor', 400);
+    }
+    const supervisor = await prisma.employee.findUnique({ where: { id: supervisorId } });
+    if (!supervisor || (scope && supervisor.outletId !== scope)) {
+      throw new ApiError('Supervisor not found', 400);
+    }
   }
 
   try {
