@@ -48,6 +48,7 @@ model Outlet {
   attendanceRecords AttendanceRecord[]
   leaveRequests     LeaveRequest[]
   staffSchedules    StaffSchedule[]
+  employees         Employee[]
 
   @@map("outlets")
 }
@@ -86,6 +87,7 @@ model User {
 
   // Relations
   outlet                   Outlet?           @relation(fields: [outletId], references: [id])
+  employee                 Employee?
   orders                   Order[]
   stockAdjustments         StockAdjustment[]
   attendanceRecords        AttendanceRecord[]  @relation("UserAttendance")
@@ -106,6 +108,52 @@ model User {
   purchasesCreated         Purchase[]        @relation("PurchaseCreatedBy")
 
   @@map("users")
+}
+
+model Employee {
+  id           String    @id @default(uuid())
+  userId       String?   @unique
+  outletId     String?
+  supervisorId String?
+
+  // Basic
+  firstName String  @db.VarChar(100)
+  lastName  String? @db.VarChar(100)
+  email     String? @db.VarChar(100)
+  phone     String  @db.VarChar(20)
+  photoUrl  String?
+
+  // Positional / Pay
+  division     String?  @db.VarChar(100)
+  designation  String   @db.VarChar(100)
+  dutyType     String?  @db.VarChar(20) // Full Time | Part Time
+  hireDate     DateTime
+  rateType     String   @db.VarChar(20) // Hourly | Daily | Monthly | PerShift
+  rate         Decimal  @db.Decimal(10, 2)
+  payFrequency String?  @db.VarChar(20) // Weekly | BiWeekly | Monthly
+  penaltyFee   Decimal? @db.Decimal(10, 2)
+
+  // Biographical
+  dateOfBirth   DateTime?
+  gender        String?   @db.VarChar(20)
+  maritalStatus String?   @db.VarChar(20)
+  cnic          String?   @db.VarChar(20)
+
+  // Emergency Contact
+  emergencyContactName     String? @db.VarChar(100)
+  emergencyContactRelation String? @db.VarChar(50)
+  emergencyContactPhone    String? @db.VarChar(20)
+
+  status    String   @default("active") @db.VarChar(20) // active | inactive
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user         User?      @relation(fields: [userId], references: [id])
+  outlet       Outlet?    @relation(fields: [outletId], references: [id])
+  supervisor   Employee?  @relation("EmployeeSupervisor", fields: [supervisorId], references: [id])
+  subordinates Employee[] @relation("EmployeeSupervisor")
+
+  @@map("employees")
 }
 
 // =============================================
