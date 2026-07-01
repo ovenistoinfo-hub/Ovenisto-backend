@@ -348,8 +348,14 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
       },
     });
 
-    // Deduct ingredient stock when order is completed
-    if (prismaStatus === 'COMPLETED' && existing.status !== 'COMPLETED') {
+    // Deduct ingredient stock the first time an order enters the kitchen pipeline
+    // (PREPARING/READY/COMPLETED) — this is when ingredients are physically consumed,
+    // not when the order is later marked complete. Idempotent: fires exactly once per
+    // order, whichever of these three states it reaches first.
+    const CONSUMED_STATES = ['PREPARING', 'READY', 'COMPLETED'];
+    const alreadyConsumed = CONSUMED_STATES.includes(existing.status);
+    const enteringConsumedState = CONSUMED_STATES.includes(prismaStatus);
+    if (enteringConsumedState && !alreadyConsumed) {
       const menuItemIds = updated.items
         .filter((i) => i.menuItemId)
         .map((i) => i.menuItemId as string);
