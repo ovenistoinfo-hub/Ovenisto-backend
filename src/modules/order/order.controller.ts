@@ -11,6 +11,7 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { emitOrderEvent } from '../../socket.js';
 import { fifoDrawdown } from '../stock/dough.helpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
+import bcrypt from 'bcryptjs';
 
 // ── Enum conversion helpers ──
 
@@ -524,6 +525,93 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
   const statusUpdated = mapOrderOut(order);
   emitOrderEvent('order:updated', statusUpdated);
   res.json(ApiResponse.success(statusUpdated, 'Order status updated'));
+});
+
+const CANCEL_AUTHORIZER_ROLES = ['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'FLOOR_MANAGER'];
+
+/** POST /api/orders/:id/cancel */
+export const cancelOrder = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const {
+    itemIds, reason, authorizedById, managerPin,
+    refundAmount, refundMethod, newSubtotal, newTax, newTotal,
+  } = req.body;
+
+  if (!reason) throw ApiError.badRequest('Reason is required');
+  if (!authorizedById) throw ApiError.badRequest('Authorizing manager is required');
+  if (!managerPin) throw ApiError.badRequest('Manager PIN is required');
+  if (refundAmount == null) throw ApiError.badRequest('Refund amount is required');
+  if (!refundMethod) throw ApiError.badRequest('Refund method is required');
+
+  const existing = await prisma.order.findUnique({ where: { id }, include: { items: true } });
+  if (!existing) throw ApiError.notFound('Order not found');
+  const scope = resolveOutletScope(req);
+  if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
+
+  if (existing.status === 'COMPLETED' || existing.status === 'CANCELLED') {
+    throw ApiError.badRequest('Order cannot be cancelled from its current status');
+  }
+
+  const manager = await prisma.user.findUnique({ where: { id: authorizedById } });
+  if (!manager || !CANCEL_AUTHORIZER_ROLES.includes(manager.role)) {
+    throw ApiError.badRequest('Selected user is not authorized to approve cancellations');
+  }
+  if (!manager.pinHash) throw ApiError.badRequest('Selected manager has not set a PIN');
+  const pinValid = await bcrypt.compare(managerPin, manager.pinHash);
+  if (!pinValid) throw ApiError.badRequest('Invalid manager PIN');
+
+  const activeItems = existing.items.filter((i) => i.status !== 'cancelled');
+  const isItemCancel = Array.isArray(itemIds) && itemIds.length > 0 && itemIds.length < activeItems.length;
+
+  if (isItemCancel) {
+    const validIds = new Set(activeItems.map((i) => i.id));
+    for (const tid of itemIds) {
+      if (!validIds.has(tid)) throw ApiError.badRequest('One or more items do not belong to this order');
+    }
+    if (newSubtotal == null || newTax == null || newTotal == null) {
+      throw ApiError.badRequest('Recalculated totals are required for a partial cancellation');
+    }
+  }
+
+  const order = await prisma.$transaction(async (tx) => {
+    if (isItemCancel) {
+      await tx.orderItem.updateMany({
+        where: { id: { in: itemIds } },
+        data: { status: 'cancelled' },
+      });
+      await tx.order.update({
+        where: { id },
+        data: { subtotal: newSubtotal, tax: newTax, total: newTotal },
+      });
+    } else {
+      await tx.order.update({ where: { id }, data: { status: 'CANCELLED' } });
+    }
+
+    await tx.orderModificationLog.create({
+      data: {
+        orderId: id,
+        action: isItemCancel ? 'item_cancelled' : 'order_cancelled',
+        detail: reason,
+        staff: req.user?.name ?? null,
+        refundAmount,
+        refundMethod,
+        authorizedById,
+      },
+    });
+
+    return tx.order.findUnique({
+      where: { id },
+      include: {
+        items: {
+          include: { menuItem: { select: { category: { select: { name: true } } } } },
+        },
+      },
+    });
+  });
+
+  const cancelledOrder = mapOrderOut(order);
+  emitOrderEvent('order:updated', cancelledOrder);
+  res.json(ApiResponse.success(cancelledOrder, 'Order cancelled'));
 });
 
 /** DELETE /api/orders/:id */
