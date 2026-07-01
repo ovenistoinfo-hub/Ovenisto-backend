@@ -82,6 +82,7 @@ model User {
   status         String    @default("active") @db.VarChar(20)
   lastLogin      DateTime?
   createdAt      DateTime  @default(now())
+  pinHash        String?   @db.VarChar(255) // bcrypt hash of a 4-digit PIN; Super Admin/Admin/Manager/Floor Manager only
 
   // Relations
   outlet                   Outlet?           @relation(fields: [outletId], references: [id])
@@ -104,6 +105,7 @@ model User {
   purchaseRequests         PurchaseRequest[] @relation("PurchaseRequestedBy")
   purchaseRequestApprovals PurchaseRequest[] @relation("PurchaseApprovedBy")
   purchasesCreated         Purchase[]        @relation("PurchaseCreatedBy")
+  orderCancelAuthorizations OrderModificationLog[] @relation("OrderCancelAuthorizedBy")
 
   @@map("users")
 }
@@ -487,14 +489,17 @@ model WasteRecord {
   recordedBy String?  @db.VarChar(100)
   outletId   String?
   purchaseId String?
+  orderId    String?
   date       DateTime @default(now())
 
   // Relations
   outlet     Outlet?   @relation(fields: [outletId], references: [id])
   purchase   Purchase? @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  order      Order?    @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   @@index([outletId])
   @@index([purchaseId])
+  @@index([orderId])
   @@map("waste_records")
 }
 
@@ -795,6 +800,7 @@ model Order {
   modifications OrderModificationLog[]
   deliveries    DeliveryAssignment[]
   loyaltyTx     LoyaltyTransaction[]
+  wasteRecords  WasteRecord[]
 
   @@index([createdAt])
   @@index([status])
@@ -818,6 +824,7 @@ model OrderItem {
   modifiers   String[]
   cookingTime Int?
   notes       String?
+  status      String   @default("active") @db.VarChar(20) // active | cancelled
 
   // Relations
   order    Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -835,9 +842,13 @@ model OrderModificationLog {
   detail    String?
   staff     String?  @db.VarChar(100)
   timestamp DateTime @default(now())
+  refundAmount   Decimal? @db.Decimal(10, 2)
+  refundMethod   String?  @db.VarChar(20) // cash | card | online | none
+  authorizedById String?
 
   // Relations
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  authorizedBy User?  @relation("OrderCancelAuthorizedBy", fields: [authorizedById], references: [id])
 
   @@map("order_modification_logs")
 }
