@@ -9,6 +9,8 @@ import {
   createEmployee,
   updateEmployee,
   deleteEmployee,
+  terminateEmployee,
+  rehireEmployee,
 } from './employee.controller.js';
 
 const writeRoles = ['Super Admin', 'Admin', 'Manager', 'Store Manager'];
@@ -23,4 +25,6 @@ employeesRouter.get('/',            authenticate, getEmployees);
 employeesRouter.get('/:id',         authenticate, getEmployee);
 employeesRouter.post('/',           authenticate, authorize(writeRoles), createEmployee);
 employeesRouter.put('/:id',         authenticate, authorize(adminRoles), updateEmployee);
+employeesRouter.put('/:id/terminate', authenticate, authorize(adminRoles), terminateEmployee);
+employeesRouter.put('/:id/rehire',    authenticate, authorize(adminRoles), rehireEmployee);
 employeesRouter.delete('/:id',      authenticate, authorize(adminRoles), deleteEmployee);

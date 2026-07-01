@@ -214,6 +214,49 @@ export const deleteEmployee = asyncHandler(async (req: Request, res: Response) =
   if (!existing) throw new ApiError('Employee not found', 404);
   const scope = resolveOutletScope(req);
   if (scope && existing.outletId !== scope) throw new ApiError('Employee not found', 404);
-  const e = await prisma.employee.update({ where: { id: req.params.id }, data: { status: 'inactive' } });
+  const e = await prisma.employee.update({ where: { id: req.params.id }, data: { status: 'inactive', terminationDate: new Date(), terminationReason: 'Deactivated' } });
   return res.json(ApiResponse.success(mapEmployee(e), 'Employee deactivated'));
+});
+
+export const terminateEmployee = asyncHandler(async (req: Request, res: Response) => {
+  const { reason } = req.body;
+  if (!reason || !reason.trim()) {
+    throw new ApiError('Termination reason is required', 400);
+  }
+
+  const existing = await prisma.employee.findUnique({ where: { id: req.params.id } });
+  if (!existing) throw new ApiError('Employee not found', 404);
+  const scope = resolveOutletScope(req);
+  if (scope && existing.outletId !== scope) throw new ApiError('Employee not found', 404);
+
+  const e = await prisma.employee.update({
+    where: { id: req.params.id },
+    data: {
+      status: 'inactive',
+      terminationDate: new Date(),
+      terminationReason: reason.trim(),
+    },
+  });
+
+  return res.json(ApiResponse.success(mapEmployee(e), 'Employee terminated successfully'));
+});
+
+export const rehireEmployee = asyncHandler(async (req: Request, res: Response) => {
+  const existing = await prisma.employee.findUnique({ where: { id: req.params.id } });
+  if (!existing) throw new ApiError('Employee not found', 404);
+  const scope = resolveOutletScope(req);
+  if (scope && existing.outletId !== scope) throw new ApiError('Employee not found', 404);
+
+  const { rehireDate, rate } = req.body;
+
+  const e = await prisma.employee.update({
+    where: { id: req.params.id },
+    data: {
+      status: 'active',
+      rehireDate: rehireDate ? new Date(rehireDate) : new Date(),
+      rate: rate != null ? Number(rate) : existing.rate,
+    },
+  });
+
+  return res.json(ApiResponse.success(mapEmployee(e), 'Employee rehired successfully'));
 });

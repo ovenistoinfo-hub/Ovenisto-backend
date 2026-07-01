@@ -143,6 +143,9 @@ model Employee {
   emergencyContactPhone    String? @db.VarChar(20)
 
   status    String   @default("active") @db.VarChar(20) // active | inactive
+  terminationDate   DateTime?
+  terminationReason String?
+  rehireDate        DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
