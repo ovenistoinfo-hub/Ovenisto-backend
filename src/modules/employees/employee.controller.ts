@@ -10,6 +10,7 @@ import { resolveOutletScope, resolveCreateOutlet } from '../../middleware/outlet
 
 const supervisorSelect = { id: true, firstName: true, lastName: true };
 const userSelect = { id: true, name: true, email: true };
+const outletSelect = { id: true, name: true, code: true };
 
 function mapEmployee(e: any) {
   return {
@@ -42,7 +43,7 @@ export const getEmployees = asyncHandler(async (req: Request, res: Response) => 
       skip,
       take: Number(limit),
       orderBy: { firstName: 'asc' },
-      include: { supervisor: { select: supervisorSelect }, user: { select: userSelect } },
+      include: { supervisor: { select: supervisorSelect }, user: { select: userSelect }, outlet: { select: outletSelect } },
     }),
     prisma.employee.count({ where }),
   ]);
@@ -53,7 +54,7 @@ export const getEmployees = asyncHandler(async (req: Request, res: Response) => 
 export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
   const e = await prisma.employee.findUnique({
     where: { id: req.params.id },
-    include: { supervisor: { select: supervisorSelect }, user: { select: userSelect } },
+    include: { supervisor: { select: supervisorSelect }, user: { select: userSelect }, outlet: { select: outletSelect } },
   });
   if (!e) throw new ApiError('Employee not found', 404);
   const scope = resolveOutletScope(req);
