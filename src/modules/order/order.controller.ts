@@ -587,6 +587,121 @@ export const cancelOrder = asyncHandler(async (req: Request, res: Response) => {
       await tx.order.update({ where: { id }, data: { status: 'CANCELLED' } });
     }
 
+    // Waste accounting — only if this order had already entered the kitchen pipeline
+    // (Task 3: stock for its active items was already deducted at PREPARING/READY).
+    // A still-PENDING order never had stock deducted, so there is nothing to record.
+    if (existing.status !== 'PENDING') {
+      // Use activeItems (defined above), not existing.items — a prior partial cancel on
+      // this order may have already cancelled and waste-recorded some items, and
+      // re-including them here would double-count their waste.
+      const targetItems = isItemCancel
+        ? activeItems.filter((i) => itemIds.includes(i.id))
+        : activeItems;
+      const menuItemIds = targetItems.filter((i) => i.menuItemId).map((i) => i.menuItemId as string);
+
+      if (menuItemIds.length > 0) {
+        const recipes = await tx.foodRecipe.findMany({
+          where: { menuItemId: { in: menuItemIds } },
+          select: { menuItemId: true, variantId: true, ingredientId: true, productionItemId: true, qtyPerUnit: true },
+        });
+
+        const wasteDeductions: Record<string, number> = {};
+        const wasteProdDeductions: Record<string, number> = {};
+        for (const item of targetItems) {
+          if (!item.menuItemId) continue;
+          const itemRecipes = recipes.filter((r) => {
+            if (r.menuItemId !== item.menuItemId) return false;
+            if (item.variantId) return r.variantId === item.variantId;
+            return !r.variantId;
+          });
+          for (const r of itemRecipes) {
+            const qty = Number(r.qtyPerUnit) * item.qty;
+            if (r.ingredientId) {
+              wasteDeductions[r.ingredientId] = (wasteDeductions[r.ingredientId] || 0) + qty;
+            } else if (r.productionItemId) {
+              wasteProdDeductions[r.productionItemId] = (wasteProdDeductions[r.productionItemId] || 0) + qty;
+            }
+          }
+        }
+
+        let kitchenWarehouseId: string | null = null;
+        if (existing.outletId) {
+          const kw = await tx.warehouse.findFirst({
+            where: { outletId: existing.outletId, type: 'KITCHEN', isActive: true },
+            select: { id: true },
+          });
+          kitchenWarehouseId = kw?.id ?? null;
+        }
+
+        const ingredientIds = Object.keys(wasteDeductions);
+        if (ingredientIds.length > 0) {
+          const ingredients = await tx.ingredient.findMany({
+            where: { id: { in: ingredientIds } },
+            select: { id: true, name: true, purchasePrice: true, unit: { select: { symbol: true } } },
+          });
+          const ingredientById = new Map(ingredients.map((i) => [i.id, i]));
+
+          for (const [ingredientId, qty] of Object.entries(wasteDeductions)) {
+            const ingredient = ingredientById.get(ingredientId);
+            if (!ingredient) continue;
+            let unitCost = Number(ingredient.purchasePrice ?? 0);
+            if (kitchenWarehouseId) {
+              const latestBatch = await tx.stockBatch.findFirst({
+                where: { ingredientId, warehouseId: kitchenWarehouseId, unitCost: { not: null } },
+                orderBy: { createdAt: 'desc' },
+                select: { unitCost: true },
+              });
+              if (latestBatch?.unitCost != null) unitCost = Number(latestBatch.unitCost);
+            }
+            await tx.wasteRecord.create({
+              data: {
+                itemName: ingredient.name,
+                quantity: qty,
+                unit: ingredient.unit?.symbol ?? null,
+                reason: 'Order cancelled after preparation',
+                cost: unitCost * qty,
+                recordedBy: req.user?.name ?? null,
+                outletId: existing.outletId,
+                orderId: id,
+              },
+            });
+          }
+        }
+
+        const productionItemIds = Object.keys(wasteProdDeductions);
+        if (productionItemIds.length > 0 && kitchenWarehouseId) {
+          const productionItems = await tx.productionItem.findMany({
+            where: { id: { in: productionItemIds } },
+            select: { id: true, name: true, unit: true },
+          });
+          const productionItemById = new Map(productionItems.map((p) => [p.id, p]));
+
+          for (const [productionItemId, qty] of Object.entries(wasteProdDeductions)) {
+            const productionItem = productionItemById.get(productionItemId);
+            if (!productionItem) continue;
+            const latestBatch = await tx.productionBatch.findFirst({
+              where: { productionItemId, warehouseId: kitchenWarehouseId, unitCost: { not: null } },
+              orderBy: { createdAt: 'desc' },
+              select: { unitCost: true },
+            });
+            const unitCost = latestBatch?.unitCost != null ? Number(latestBatch.unitCost) : 0;
+            await tx.wasteRecord.create({
+              data: {
+                itemName: productionItem.name,
+                quantity: qty,
+                unit: productionItem.unit,
+                reason: 'Order cancelled after preparation',
+                cost: unitCost * qty,
+                recordedBy: req.user?.name ?? null,
+                outletId: existing.outletId,
+                orderId: id,
+              },
+            });
+          }
+        }
+      }
+    }
+
     await tx.orderModificationLog.create({
       data: {
         orderId: id,
