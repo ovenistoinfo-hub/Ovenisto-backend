@@ -12,7 +12,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import type { JwtPayload } from '../../types/index.js';
-import type { LoginInput, UpdateProfileInput, ChangePasswordInput } from './auth.schema.js';
+import type { LoginInput, UpdateProfileInput, ChangePasswordInput, SetPinInput } from './auth.schema.js';
 
 // Helper: map Prisma UserRole enum to frontend-friendly string
 function mapRole(role: string): string {
@@ -205,6 +205,21 @@ export const changePassword = asyncHandler(async (req: Request, res: Response) =
   });
 
   res.json(ApiResponse.success(null, 'Password changed successfully'));
+});
+
+/**
+ * PUT /api/auth/pin
+ */
+export const setPin = asyncHandler(async (req: Request, res: Response) => {
+  const { pin } = req.body as SetPinInput;
+
+  const pinHash = await bcrypt.hash(pin, 10);
+  await prisma.user.update({
+    where: { id: req.user!.id },
+    data: { pinHash },
+  });
+
+  res.json(ApiResponse.success(null, 'PIN set successfully'));
 });
 
 /**

@@ -10,12 +10,14 @@
 
 import { Router } from 'express';
 import { authenticate } from '../../middleware/authenticate.js';
+import { authorize } from '../../middleware/authorize.js';
 import { validateRequest } from '../../middleware/validateRequest.js';
 import {
   loginSchema,
   updateProfileSchema,
   changePasswordSchema,
   refreshTokenSchema,
+  setPinSchema,
 } from './auth.schema.js';
 import {
   login,
@@ -24,6 +26,7 @@ import {
   updateMe,
   changePassword,
   refreshAccessToken,
+  setPin,
 } from './auth.controller.js';
 
 const router = Router();
@@ -41,6 +44,14 @@ router.put(
   authenticate,
   validateRequest({ body: changePasswordSchema }),
   changePassword
+);
+
+router.put(
+  '/pin',
+  authenticate,
+  authorize(['Super Admin', 'Admin', 'Manager', 'Floor Manager']),
+  validateRequest({ body: setPinSchema }),
+  setPin
 );
 
 export default router;

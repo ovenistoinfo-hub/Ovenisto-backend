@@ -28,6 +28,10 @@ export const changePasswordSchema = z.object({
     .max(100),
 });
 
+export const setPinSchema = z.object({
+  pin: z.string().regex(/^\d{4}$/, 'PIN must be exactly 4 digits'),
+});
+
 export const refreshTokenSchema = z.object({
   refreshToken: z.string().min(1, 'Refresh token is required'),
 });
@@ -90,6 +94,7 @@ export const userQuerySchema = z.object({
 export type LoginInput = z.infer<typeof loginSchema>;
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+export type SetPinInput = z.infer<typeof setPinSchema>;
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 export type UpdateUserInput = z.infer<typeof updateUserSchema>;
 export type UserQueryInput = z.infer<typeof userQuerySchema>;
