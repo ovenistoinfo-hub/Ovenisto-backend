@@ -542,6 +542,12 @@ export const cancelOrder = asyncHandler(async (req: Request, res: Response) => {
   if (!managerPin) throw ApiError.badRequest('Manager PIN is required');
   if (refundAmount == null) throw ApiError.badRequest('Refund amount is required');
   if (!refundMethod) throw ApiError.badRequest('Refund method is required');
+  if (typeof refundAmount !== 'number' || refundAmount < 0) {
+    throw ApiError.badRequest('Refund amount must be a non-negative number');
+  }
+  if (!['cash', 'card', 'online', 'none'].includes(refundMethod)) {
+    throw ApiError.badRequest('Invalid refund method');
+  }
 
   const existing = await prisma.order.findUnique({ where: { id }, include: { items: true } });
   if (!existing) throw ApiError.notFound('Order not found');
@@ -571,6 +577,12 @@ export const cancelOrder = asyncHandler(async (req: Request, res: Response) => {
     if (newSubtotal == null || newTax == null || newTotal == null) {
       throw ApiError.badRequest('Recalculated totals are required for a partial cancellation');
     }
+    if (
+      typeof newSubtotal !== 'number' || typeof newTax !== 'number' || typeof newTotal !== 'number'
+      || newTotal < 0
+    ) {
+      throw ApiError.badRequest('Recalculated totals must be non-negative numbers');
+    }
   }
 
   const order = await prisma.$transaction(async (tx) => {
@@ -584,6 +596,10 @@ export const cancelOrder = asyncHandler(async (req: Request, res: Response) => {
         data: { subtotal: newSubtotal, tax: newTax, total: newTotal },
       });
     } else {
+      await tx.orderItem.updateMany({
+        where: { id: { in: activeItems.map((i) => i.id) } },
+        data: { status: 'cancelled' },
+      });
       await tx.order.update({ where: { id }, data: { status: 'CANCELLED' } });
     }
 
