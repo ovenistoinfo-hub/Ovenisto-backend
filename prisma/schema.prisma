@@ -106,6 +106,7 @@ model User {
   purchaseRequestApprovals PurchaseRequest[] @relation("PurchaseApprovedBy")
   purchasesCreated         Purchase[]        @relation("PurchaseCreatedBy")
   orderCancelAuthorizations OrderModificationLog[] @relation("OrderCancelAuthorizedBy")
+  paymentLogsPaid          PaymentLog[]      @relation("PaymentLogPaidBy")
 
   @@map("users")
 }
@@ -155,6 +156,7 @@ model Employee {
   outlet       Outlet?    @relation(fields: [outletId], references: [id])
   supervisor   Employee?  @relation("EmployeeSupervisor", fields: [supervisorId], references: [id])
   subordinates Employee[] @relation("EmployeeSupervisor")
+  paymentLogs  PaymentLog[]
 
   @@map("employees")
 }
@@ -1346,4 +1348,27 @@ model PurchaseRequestItem {
 
   @@unique([requestId, ingredientId])
   @@map("purchase_request_items")
+}
+
+model PaymentLog {
+  id         String   @id @default(cuid())
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  startDate  String   // "YYYY-MM-DD"
+  endDate    String   // "YYYY-MM-DD"
+  basePay    Decimal  @db.Decimal(10, 2)
+  penalties  Decimal  @db.Decimal(10, 2)
+  rewards    Decimal  @db.Decimal(10, 2)
+  finalPay   Decimal  @db.Decimal(10, 2)
+  rateType     String?  @db.VarChar(20) // snapshot of Employee.rateType at time of payment
+  rate         Decimal? @db.Decimal(10, 2) // snapshot of Employee.rate at time of payment
+  unitsWorked  Decimal? @db.Decimal(10, 2) // hours (Hourly) or shift/day count (Daily|PerShift); null for Monthly
+  absentDays   Int?     // absence count used to compute `penalties` for this period
+  notes      String?  // Optional pay details or reward description
+  paidAt     DateTime @default(now())
+  paidById   String
+  paidBy     User     @relation("PaymentLogPaidBy", fields: [paidById], references: [id])
+
+  @@unique([employeeId, startDate, endDate])
+  @@map("payment_logs")
 }

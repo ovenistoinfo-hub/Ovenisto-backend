@@ -33,6 +33,7 @@ import { attendanceRouter } from '../modules/attendance/attendance.routes.js';
 import { leaveRequestsRouter } from '../modules/leave-requests/leave-request.routes.js';
 import { staffSchedulesRouter } from '../modules/staff-schedules/staff-schedule.routes.js';
 import { employeesRouter } from '../modules/employees/employee.routes.js';
+import { payrollRouter } from '../modules/payroll/payroll.routes.js';
 
 const router = Router();
 
@@ -155,6 +156,7 @@ router.use('/leave-requests', leaveRequestsRouter);
 router.use('/staff-schedules', staffSchedulesRouter);
 router.use('/shifts', shiftsRouter);
 router.use('/employees', employeesRouter);
+router.use('/payroll', payrollRouter);
 // router.use('/scheduling', schedulingRoutes);
 
 // Phase 10: Advanced
