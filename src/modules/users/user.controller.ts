@@ -123,6 +123,42 @@ export const getUsers = asyncHandler(async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/users/staff-picker
+ * Minimal, broadly-accessible user list (id/name/role only) for dropdowns that any
+ * POS-facing role needs to populate (e.g. cancellation-request approver/responsible
+ * person pickers) — unlike GET /users (Manager+ only), every role that can initiate a
+ * cancellation can call this.
+ */
+export const getStaffPicker = asyncHandler(async (req: Request, res: Response) => {
+  const { roles, outletId } = req.query as { roles?: string; outletId?: string };
+  const where: any = { status: 'active' };
+
+  if (roles) {
+    const requested = roles.split(',').map((r) => toPrismaRole(r.trim()));
+    where.role = { in: requested };
+  }
+
+  // Same pattern as getUsers: resolveOutletScope wins for non-Super-Admin (pinned to
+  // their own outlet) and for Super Admin on a specific outlet. When Super Admin is on
+  // "All Outlets" (scope === null), an explicit outletId lets a caller still scope this
+  // to one branch (e.g. the order's own outlet for a cancellation-request picker).
+  const scope = resolveOutletScope(req);
+  if (scope) {
+    where.outletId = scope;
+  } else if (outletId) {
+    where.outletId = outletId;
+  }
+
+  const users = await prisma.user.findMany({
+    where,
+    select: { id: true, name: true, role: true },
+    orderBy: { name: 'asc' },
+  });
+
+  res.json(ApiResponse.success(users.map((u) => ({ ...u, role: toFrontendRole(u.role) }))));
+});
+
+/**
  * GET /api/users/:id
  */
 export const getUser = asyncHandler(async (req: Request, res: Response) => {

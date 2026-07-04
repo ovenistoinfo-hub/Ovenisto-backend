@@ -7,9 +7,10 @@ import { Router } from 'express';
 import { authenticate } from '../../middleware/authenticate.js';
 import { authorize } from '../../middleware/authorize.js';
 import {
-  getOrders, getOrder, createOrder, updateOrder, updateOrderStatus, cancelOrder, deleteOrder,
+  getOrders, getOrder, createOrder, updateOrder, updateOrderStatus, deleteOrder,
   getKitchens, createKitchen, updateKitchen, deleteKitchen,
 } from './order.controller.js';
+import { createCancellationRequest } from '../cancellation-requests/cancellation-request.controller.js';
 
 const adminRoles = ['Super Admin', 'Admin', 'Manager'];
 const posRoles = ['Super Admin', 'Admin', 'Manager', 'Cashier', 'Waiter', 'Floor Manager'];
@@ -24,7 +25,7 @@ ordersRouter.get('/', authenticate, getOrders);
 ordersRouter.get('/:id', authenticate, getOrder);
 ordersRouter.post('/', authenticate, authorize(posRoles), createOrder);
 ordersRouter.put('/:id/status', authenticate, authorize(kitchenRoles), updateOrderStatus);
-ordersRouter.post('/:id/cancel', authenticate, authorize(kitchenRoles), cancelOrder);
+ordersRouter.post('/:id/cancellation-requests', authenticate, authorize(kitchenRoles), createCancellationRequest);
 ordersRouter.put('/:id', authenticate, authorize(posRoles), updateOrder);
 ordersRouter.delete('/:id', authenticate, authorize(adminRoles), deleteOrder);
 

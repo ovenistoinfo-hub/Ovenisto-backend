@@ -35,3 +35,14 @@ export function emitOrderEvent(event: OrderEventType, payload: unknown): void {
     // Real-time delivery is non-critical; swallow so the API response is unaffected.
   }
 }
+
+export type CancellationRequestEventType = 'cancellationRequest:created' | 'cancellationRequest:updated';
+
+/** Push a cancellation-request change (created/reviewed) so the approver inbox updates live. */
+export function emitCancellationRequestEvent(event: CancellationRequestEventType, payload: unknown): void {
+  try {
+    ioRef?.emit(event, payload);
+  } catch {
+    // Real-time delivery is non-critical; swallow so the API response is unaffected.
+  }
+}

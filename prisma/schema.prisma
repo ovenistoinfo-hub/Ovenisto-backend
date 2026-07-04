@@ -107,6 +107,11 @@ model User {
   purchasesCreated         Purchase[]        @relation("PurchaseCreatedBy")
   orderCancelAuthorizations OrderModificationLog[] @relation("OrderCancelAuthorizedBy")
   paymentLogsPaid          PaymentLog[]      @relation("PaymentLogPaidBy")
+  cancelRequestsMade        OrderCancellationRequest[] @relation("CancelReqRequestedBy")
+  cancelRequestsToApprove   OrderCancellationRequest[] @relation("CancelReqApprover")
+  cancelRequestsResponsible OrderCancellationRequest[] @relation("CancelReqResponsible")
+  cancelRequestsReviewed    OrderCancellationRequest[] @relation("CancelReqReviewedBy")
+  staffPenalties            StaffPenalty[]             @relation("StaffPenaltyUser")
 
   @@map("users")
 }
@@ -803,6 +808,8 @@ model Order {
   deliveries    DeliveryAssignment[]
   loyaltyTx     LoyaltyTransaction[]
   wasteRecords  WasteRecord[]
+  cancellationRequests OrderCancellationRequest[]
+  staffPenalties       StaffPenalty[]
 
   @@index([createdAt])
   @@index([status])
@@ -853,6 +860,59 @@ model OrderModificationLog {
   authorizedBy User?  @relation("OrderCancelAuthorizedBy", fields: [authorizedById], references: [id])
 
   @@map("order_modification_logs")
+}
+
+model OrderCancellationRequest {
+  id                String    @id @default(uuid())
+  orderId           String
+  outletId          String?
+  itemIds           String[]                                    // empty = full-order cancel
+  reason            String    @db.VarChar(255)
+  refundAmount      Decimal   @db.Decimal(10, 2)
+  refundMethod      String    @db.VarChar(20)                   // cash | card | online | none
+  newSubtotal       Decimal?  @db.Decimal(10, 2)                 // partial-cancel recomputed totals
+  newTax            Decimal?  @db.Decimal(10, 2)
+  newTotal          Decimal?  @db.Decimal(10, 2)
+  requestedById     String
+  approverId        String                                      // chosen manager/admin (informational routing)
+  responsibleUserId String?                                     // staff member to be penalised
+  penaltyAmount     Decimal   @default(0) @db.Decimal(10, 2)
+  status            String    @default("pending") @db.VarChar(20) // pending | approved | rejected
+  reviewedById      String?
+  reviewNote        String?   @db.VarChar(255)
+  reviewedAt        DateTime?
+  createdAt         DateTime  @default(now())
+
+  order           Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  requestedBy     User   @relation("CancelReqRequestedBy", fields: [requestedById], references: [id])
+  approver        User   @relation("CancelReqApprover", fields: [approverId], references: [id])
+  responsibleUser User?  @relation("CancelReqResponsible", fields: [responsibleUserId], references: [id])
+  reviewedBy      User?  @relation("CancelReqReviewedBy", fields: [reviewedById], references: [id])
+
+  @@index([outletId, status])
+  @@index([approverId, status])
+  @@map("order_cancellation_requests")
+}
+
+model StaffPenalty {
+  id           String   @id @default(uuid())
+  userId       String                                          // login account penalised (My Portal keys on this)
+  outletId     String?
+  amount       Decimal  @db.Decimal(10, 2)
+  reason       String   @db.VarChar(255)                       // e.g. "Order ORD-123 cancelled — Missing Item"
+  type         String   @default("order_cancellation") @db.VarChar(30)
+  date         String   @db.VarChar(10)                        // "YYYY-MM-DD" (PKT) — drives payroll period inclusion
+  orderId      String?
+  requestId    String?                                         // OrderCancellationRequest.id
+  paymentLogId String?                                         // stamped when paid, so payroll never double-counts
+  createdAt    DateTime @default(now())
+
+  user  User   @relation("StaffPenaltyUser", fields: [userId], references: [id])
+  order Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([userId, paymentLogId])
+  @@index([outletId])
+  @@map("staff_penalties")
 }
 
 model Kitchen {

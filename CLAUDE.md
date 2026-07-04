@@ -14,8 +14,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **`ApiError` style is per-file, not global.** Some controllers use the constructor
   `throw new ApiError('msg', 404)`; others use statics `ApiError.notFound('msg')`. Match whatever the
   file you're editing already uses — don't introduce the other style.
-- **No test runner exists for this backend** (vitest is frontend-only). Verify changes with
-  `npm run typecheck` (tsc --noEmit, must be clean) + `npm run build`. Do **not** author `*.test.ts` here.
+- **`vitest` is in `package.json` (`npm test`/`test:watch` exist) but there are zero `*.test.ts` files** —
+  it's not an established pattern here. Verify changes with `npm run typecheck` (tsc --noEmit, must be
+  clean) + `npm run build`. Do **not** author `*.test.ts` here without asking first.
 - **Every module = `*.controller.ts` + `*.routes.ts`**, aggregated in `src/routes/index.ts`. A scoped
   controller only works if its route has `authenticate`/`optionalAuth` — otherwise `req.user` is
   undefined and `resolveOutletScope` silently returns `null` (a real cross-outlet leak; audit the route).

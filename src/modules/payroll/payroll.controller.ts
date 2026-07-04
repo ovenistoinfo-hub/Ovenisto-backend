@@ -19,7 +19,7 @@ function mapPaymentLog(log: any) {
 export const createPaymentLog = asyncHandler(async (req: Request, res: Response) => {
   const {
     employeeId, startDate, endDate, basePay, penalties, rewards, finalPay, notes,
-    rateType, rate, unitsWorked, absentDays,
+    rateType, rate, unitsWorked, absentDays, penaltyIds,
   } = req.body;
   const paidById = req.user?.id;
 
@@ -38,36 +38,49 @@ export const createPaymentLog = asyncHandler(async (req: Request, res: Response)
     throw new ApiError('This employee has already been paid for this period', 409);
   }
 
-  const log = await prisma.paymentLog.create({
-    data: {
-      employeeId,
-      startDate,
-      endDate,
-      basePay,
-      penalties,
-      rewards,
-      finalPay,
-      notes,
-      paidById,
-      rateType,
-      rate,
-      unitsWorked,
-      absentDays,
-    },
-    include: {
-      employee: {
-        select: {
-          firstName: true,
-          lastName: true,
-          designation: true,
+  const log = await prisma.$transaction(async (tx) => {
+    const created = await tx.paymentLog.create({
+      data: {
+        employeeId,
+        startDate,
+        endDate,
+        basePay,
+        penalties,
+        rewards,
+        finalPay,
+        notes,
+        paidById,
+        rateType,
+        rate,
+        unitsWorked,
+        absentDays,
+      },
+      include: {
+        employee: {
+          select: {
+            firstName: true,
+            lastName: true,
+            designation: true,
+          },
+        },
+        paidBy: {
+          select: {
+            name: true,
+          },
         },
       },
-      paidBy: {
-        select: {
-          name: true,
-        },
-      },
-    },
+    });
+
+    // Mark the StaffPenalty (order-cancellation penalty) rows folded into this payout
+    // as paid, so the next payroll run never counts them again.
+    if (Array.isArray(penaltyIds) && penaltyIds.length > 0) {
+      await tx.staffPenalty.updateMany({
+        where: { id: { in: penaltyIds }, paymentLogId: null },
+        data: { paymentLogId: created.id },
+      });
+    }
+
+    return created;
   });
 
   return res.status(201).json(ApiResponse.created(mapPaymentLog(log), 'Payment logged successfully'));
@@ -105,10 +118,12 @@ export const createBatchPaymentLogs = asyncHandler(async (req: Request, res: Res
     throw new ApiError('All selected employees have already been paid for this period', 409);
   }
 
-  // Use a transaction to perform all insertions
-  const logs = await prisma.$transaction(
-    toPay.map((p: any) =>
-      prisma.paymentLog.create({
+  // Interactive transaction (not the array form) so each created log's id is available
+  // to stamp its own StaffPenalty rows before moving to the next payout.
+  const logs = await prisma.$transaction(async (tx) => {
+    const created = [];
+    for (const p of toPay) {
+      const log = await tx.paymentLog.create({
         data: {
           employeeId: p.employeeId,
           startDate: p.startDate,
@@ -124,9 +139,17 @@ export const createBatchPaymentLogs = asyncHandler(async (req: Request, res: Res
           unitsWorked: p.unitsWorked,
           absentDays: p.absentDays,
         },
-      })
-    )
-  );
+      });
+      if (Array.isArray(p.penaltyIds) && p.penaltyIds.length > 0) {
+        await tx.staffPenalty.updateMany({
+          where: { id: { in: p.penaltyIds }, paymentLogId: null },
+          data: { paymentLogId: log.id },
+        });
+      }
+      created.push(log);
+    }
+    return created;
+  });
 
   const message = skipped > 0
     ? `${logs.length} payments logged successfully (${skipped} skipped — already paid for this period)`

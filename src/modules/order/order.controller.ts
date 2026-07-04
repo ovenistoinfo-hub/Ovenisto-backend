@@ -4,6 +4,7 @@
  */
 
 import type { Request, Response } from 'express';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
@@ -11,7 +12,6 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { emitOrderEvent } from '../../socket.js';
 import { fifoDrawdown } from '../stock/dough.helpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
-import bcrypt from 'bcryptjs';
 
 // ── Enum conversion helpers ──
 
@@ -53,7 +53,7 @@ const STATUS_TO_DISPLAY: Record<string, string> = {
   SCHEDULED: 'scheduled',
 };
 
-function mapOrderOut(order: any): any {
+export function mapOrderOut(order: any): any {
   if (!order) return order;
   return {
     ...order,
@@ -527,51 +527,22 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
   res.json(ApiResponse.success(statusUpdated, 'Order status updated'));
 });
 
-const CANCEL_AUTHORIZER_ROLES = ['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'FLOOR_MANAGER'];
-
-/** POST /api/orders/:id/cancel */
-export const cancelOrder = asyncHandler(async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const {
-    itemIds, reason, authorizedById, managerPin,
-    refundAmount, refundMethod, newSubtotal, newTax, newTotal,
-  } = req.body;
-
-  if (!reason) throw ApiError.badRequest('Reason is required');
-  if (!authorizedById) throw ApiError.badRequest('Authorizing manager is required');
-  if (!managerPin) throw ApiError.badRequest('Manager PIN is required');
-  if (refundAmount == null) throw ApiError.badRequest('Refund amount is required');
-  if (!refundMethod) throw ApiError.badRequest('Refund method is required');
-  if (typeof refundAmount !== 'number' || refundAmount < 0) {
-    throw ApiError.badRequest('Refund amount must be a non-negative number');
-  }
-  if (!['cash', 'card', 'online', 'none'].includes(refundMethod)) {
-    throw ApiError.badRequest('Invalid refund method');
-  }
-
-  const existing = await prisma.order.findUnique({ where: { id }, include: { items: true } });
-  if (!existing) throw ApiError.notFound('Order not found');
-  const scope = resolveOutletScope(req);
-  if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
-
-  if (existing.status === 'COMPLETED' || existing.status === 'CANCELLED') {
-    throw ApiError.badRequest('Order cannot be cancelled from its current status');
-  }
-
-  const manager = await prisma.user.findUnique({ where: { id: authorizedById } });
-  if (!manager || !CANCEL_AUTHORIZER_ROLES.includes(manager.role)) {
-    throw ApiError.badRequest('Selected user is not authorized to approve cancellations');
-  }
-  if (!manager.pinHash) throw ApiError.badRequest('Selected manager has not set a PIN');
-  const pinValid = await bcrypt.compare(managerPin, manager.pinHash);
-  if (!pinValid) throw ApiError.badRequest('Invalid manager PIN');
-
-  const activeItems = existing.items.filter((i) => i.status !== 'cancelled');
+/**
+ * Validates that itemIds/newSubtotal/newTax/newTotal form a coherent cancel request
+ * against the order's current active items. Shared by cancellation-request creation
+ * (validate up front) and approval (re-validate — order state may have moved on).
+ */
+export function validateCancellationTargets(
+  activeItems: { id: string }[],
+  itemIds: string[] | undefined,
+  newSubtotal: unknown,
+  newTax: unknown,
+  newTotal: unknown,
+): boolean {
   const isItemCancel = Array.isArray(itemIds) && itemIds.length > 0 && itemIds.length < activeItems.length;
-
   if (isItemCancel) {
     const validIds = new Set(activeItems.map((i) => i.id));
-    for (const tid of itemIds) {
+    for (const tid of itemIds as string[]) {
       if (!validIds.has(tid)) throw ApiError.badRequest('One or more items do not belong to this order');
     }
     if (newSubtotal == null || newTax == null || newTotal == null) {
@@ -584,24 +555,57 @@ export const cancelOrder = asyncHandler(async (req: Request, res: Response) => {
       throw ApiError.badRequest('Recalculated totals must be non-negative numbers');
     }
   }
+  return isItemCancel;
+}
 
-  const order = await prisma.$transaction(async (tx) => {
-    if (isItemCancel) {
-      await tx.orderItem.updateMany({
-        where: { id: { in: itemIds } },
-        data: { status: 'cancelled' },
-      });
-      await tx.order.update({
-        where: { id },
-        data: { subtotal: newSubtotal, tax: newTax, total: newTotal },
-      });
-    } else {
-      await tx.orderItem.updateMany({
-        where: { id: { in: activeItems.map((i) => i.id) } },
-        data: { status: 'cancelled' },
-      });
-      await tx.order.update({ where: { id }, data: { status: 'CANCELLED' } });
-    }
+/**
+ * Executes the actual cancellation mutation (item or full order) inside an existing
+ * transaction: marks items/order cancelled, recomputes totals, writes waste records for
+ * already-consumed stock, and logs an OrderModificationLog entry. Extracted from the
+ * former direct PIN-gated `POST /orders/:id/cancel` endpoint (removed — cancellation is
+ * now request→approval only) so the `cancellation-requests` module's approval handler
+ * can reuse the exact same mutation logic.
+ */
+export async function executeCancellation(
+  tx: Prisma.TransactionClient,
+  params: {
+    existing: { id: string; outletId: string | null; status: string; items: any[] };
+    itemIds?: string[];
+    reason: string;
+    refundAmount: number;
+    refundMethod: string;
+    newSubtotal?: number;
+    newTax?: number;
+    newTotal?: number;
+    authorizedById: string;
+    actingUserName?: string | null;
+  },
+): Promise<any> {
+  const {
+    existing, itemIds, reason, refundAmount, refundMethod,
+    newSubtotal, newTax, newTotal, authorizedById, actingUserName,
+  } = params;
+  const id = existing.id;
+
+  const activeItems = existing.items.filter((i: any) => i.status !== 'cancelled');
+  const isItemCancel = validateCancellationTargets(activeItems, itemIds, newSubtotal, newTax, newTotal);
+
+  if (isItemCancel) {
+    await tx.orderItem.updateMany({
+      where: { id: { in: itemIds } },
+      data: { status: 'cancelled' },
+    });
+    await tx.order.update({
+      where: { id },
+      data: { subtotal: newSubtotal, tax: newTax, total: newTotal },
+    });
+  } else {
+    await tx.orderItem.updateMany({
+      where: { id: { in: activeItems.map((i) => i.id) } },
+      data: { status: 'cancelled' },
+    });
+    await tx.order.update({ where: { id }, data: { status: 'CANCELLED' } });
+  }
 
     // Waste accounting — only if this order had already entered the kitchen pipeline
     // (Task 3: stock for its active items was already deducted at PREPARING/READY).
@@ -611,7 +615,7 @@ export const cancelOrder = asyncHandler(async (req: Request, res: Response) => {
       // this order may have already cancelled and waste-recorded some items, and
       // re-including them here would double-count their waste.
       const targetItems = isItemCancel
-        ? activeItems.filter((i) => itemIds.includes(i.id))
+        ? activeItems.filter((i) => (itemIds as string[]).includes(i.id))
         : activeItems;
       const menuItemIds = targetItems.filter((i) => i.menuItemId).map((i) => i.menuItemId as string);
 
@@ -676,7 +680,7 @@ export const cancelOrder = asyncHandler(async (req: Request, res: Response) => {
                 unit: ingredient.unit?.symbol ?? null,
                 reason: 'Order cancelled after preparation',
                 cost: unitCost * qty,
-                recordedBy: req.user?.name ?? null,
+                recordedBy: actingUserName ?? null,
                 outletId: existing.outletId,
                 orderId: id,
               },
@@ -708,7 +712,7 @@ export const cancelOrder = asyncHandler(async (req: Request, res: Response) => {
                 unit: productionItem.unit,
                 reason: 'Order cancelled after preparation',
                 cost: unitCost * qty,
-                recordedBy: req.user?.name ?? null,
+                recordedBy: actingUserName ?? null,
                 outletId: existing.outletId,
                 orderId: id,
               },
@@ -718,32 +722,27 @@ export const cancelOrder = asyncHandler(async (req: Request, res: Response) => {
       }
     }
 
-    await tx.orderModificationLog.create({
-      data: {
-        orderId: id,
-        action: isItemCancel ? 'item_cancelled' : 'order_cancelled',
-        detail: reason,
-        staff: req.user?.name ?? null,
-        refundAmount,
-        refundMethod,
-        authorizedById,
-      },
-    });
-
-    return tx.order.findUnique({
-      where: { id },
-      include: {
-        items: {
-          include: { menuItem: { select: { category: { select: { name: true } } } } },
-        },
-      },
-    });
+  await tx.orderModificationLog.create({
+    data: {
+      orderId: id,
+      action: isItemCancel ? 'item_cancelled' : 'order_cancelled',
+      detail: reason,
+      staff: actingUserName ?? null,
+      refundAmount,
+      refundMethod,
+      authorizedById,
+    },
   });
 
-  const cancelledOrder = mapOrderOut(order);
-  emitOrderEvent('order:updated', cancelledOrder);
-  res.json(ApiResponse.success(cancelledOrder, 'Order cancelled'));
-});
+  return tx.order.findUnique({
+    where: { id },
+    include: {
+      items: {
+        include: { menuItem: { select: { category: { select: { name: true } } } } },
+      },
+    },
+  });
+}
 
 /** DELETE /api/orders/:id */
 export const deleteOrder = asyncHandler(async (req: Request, res: Response) => {
