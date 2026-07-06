@@ -125,6 +125,7 @@ export const getPurchaseRequests = asyncHandler(async (req: Request, res: Respon
         requestedBy: { select: userSelect },
         approvedBy: { select: userSelect },
         warehouse: { select: warehouseSelect },
+        supplier: { select: { id: true, name: true } },
         items: { include: itemInclude },
       },
     }),
@@ -160,6 +161,7 @@ export const getPurchaseRequest = asyncHandler(async (req: Request, res: Respons
       requestedBy: { select: userSelect },
       approvedBy: { select: userSelect },
       warehouse: { select: warehouseSelect },
+      supplier: { select: { id: true, name: true } },
       items: { include: itemInclude, orderBy: { ingredient: { name: 'asc' } } },
       purchase: { select: { id: true, invoiceNumber: true, status: true, date: true, total: true } },
     },
@@ -180,7 +182,7 @@ export const getPurchaseRequest = asyncHandler(async (req: Request, res: Respons
 
 /** POST /api/purchase-requests */
 export const createPurchaseRequest = asyncHandler(async (req: Request, res: Response) => {
-  const { warehouseId, items, notes } = req.body;
+  const { warehouseId, items, notes, supplierId } = req.body;
 
   if (!warehouseId) throw ApiError.badRequest('Warehouse is required');
   if (!items || !Array.isArray(items) || items.length === 0) throw ApiError.badRequest('At least one item is required');
@@ -209,6 +211,7 @@ export const createPurchaseRequest = asyncHandler(async (req: Request, res: Resp
       warehouseId,
       requestedById: req.user!.id,
       notes: notes || null,
+      supplierId: supplierId || null,
       items: {
         create: items.map((item: any) => ({
           ingredientId: item.ingredientId,
@@ -219,6 +222,7 @@ export const createPurchaseRequest = asyncHandler(async (req: Request, res: Resp
     include: {
       requestedBy: { select: userSelect },
       warehouse: { select: warehouseSelect },
+      supplier: { select: { id: true, name: true } },
       items: { include: itemInclude },
     },
   });

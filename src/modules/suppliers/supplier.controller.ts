@@ -88,3 +88,20 @@ export const recordPayment = asyncHandler(async (req: Request, res: Response) =>
 
   return res.json(ApiResponse.success(mapSupplier(updated), 'Payment recorded'));
 });
+
+export const getSupplierIngredients = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const supplier = await prisma.supplier.findUnique({ where: { id } });
+  if (!supplier) throw new ApiError('Supplier not found', 404);
+
+  const ingredients = await prisma.ingredient.findMany({
+    where: { supplierId: id, status: 'active' },
+    orderBy: { name: 'asc' },
+    include: {
+      category: { select: { id: true, name: true } },
+      unit: { select: { id: true, name: true } },
+    },
+  });
+
+  return res.json(ApiResponse.success(ingredients));
+});

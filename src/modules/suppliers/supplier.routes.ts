@@ -8,6 +8,7 @@ import {
   updateSupplier,
   deleteSupplier,
   recordPayment,
+  getSupplierIngredients,
 } from './supplier.controller.js';
 
 const writeRoles = ['Super Admin', 'Admin', 'Manager', 'Store Manager', 'Accountant'];
@@ -15,6 +16,7 @@ const writeRoles = ['Super Admin', 'Admin', 'Manager', 'Store Manager', 'Account
 export const suppliersRouter = Router();
 
 suppliersRouter.get('/',              authenticate, getSuppliers);
+suppliersRouter.get('/:id/ingredients', authenticate, getSupplierIngredients);
 suppliersRouter.get('/:id',           authenticate, getSupplier);
 suppliersRouter.post('/',             authenticate, authorize(writeRoles), createSupplier);
 suppliersRouter.put('/:id',           authenticate, authorize(writeRoles), updateSupplier);

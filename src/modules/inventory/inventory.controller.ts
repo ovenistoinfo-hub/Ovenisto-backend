@@ -242,6 +242,7 @@ export const getIngredients = asyncHandler(async (req: Request, res: Response) =
         include: {
           category: { select: { id: true, name: true } },
           unit: { select: { id: true, name: true } },
+          supplier: { select: { id: true, name: true } },
         },
         skip: (pageNum - 1) * limitNum!,
         take: limitNum!,
@@ -257,6 +258,7 @@ export const getIngredients = asyncHandler(async (req: Request, res: Response) =
     include: {
       category: { select: { id: true, name: true } },
       unit: { select: { id: true, name: true } },
+      supplier: { select: { id: true, name: true } },
     },
   });
 
@@ -275,6 +277,7 @@ export const getIngredient = asyncHandler(async (req: Request, res: Response) =>
     include: {
       category: { select: { id: true, name: true } },
       unit: { select: { id: true, name: true } },
+      supplier: { select: { id: true, name: true } },
     },
   });
   if (!ingredient) throw ApiError.notFound('Ingredient not found');
@@ -283,7 +286,7 @@ export const getIngredient = asyncHandler(async (req: Request, res: Response) =>
 
 /** POST /api/inventory/ingredients */
 export const createIngredient = asyncHandler(async (req: Request, res: Response) => {
-  const { name, brand, categoryId, unitId, purchasePrice, currentStock, lowStockLevel, status } = req.body;
+  const { name, brand, categoryId, unitId, purchasePrice, currentStock, lowStockLevel, status, supplierId } = req.body;
   if (!name?.trim()) throw ApiError.badRequest('Ingredient name is required');
 
   const ingredient = await prisma.ingredient.create({
@@ -296,10 +299,12 @@ export const createIngredient = asyncHandler(async (req: Request, res: Response)
       currentStock: currentStock ?? 0,
       lowStockLevel: lowStockLevel ?? 0,
       status: status ?? 'active',
+      supplierId: supplierId || null,
     },
     include: {
       category: { select: { id: true, name: true } },
       unit: { select: { id: true, name: true } },
+      supplier: { select: { id: true, name: true } },
     },
   });
   res.status(201).json(ApiResponse.created(ingredient, 'Ingredient created'));
@@ -308,7 +313,7 @@ export const createIngredient = asyncHandler(async (req: Request, res: Response)
 /** PUT /api/inventory/ingredients/:id */
 export const updateIngredient = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { name, brand, categoryId, unitId, purchasePrice, currentStock, lowStockLevel, status } = req.body;
+  const { name, brand, categoryId, unitId, purchasePrice, currentStock, lowStockLevel, status, supplierId } = req.body;
 
   const existing = await prisma.ingredient.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Ingredient not found');
@@ -324,10 +329,12 @@ export const updateIngredient = asyncHandler(async (req: Request, res: Response)
       ...(currentStock !== undefined && { currentStock }),
       ...(lowStockLevel !== undefined && { lowStockLevel }),
       ...(status && { status }),
+      ...(supplierId !== undefined && { supplierId: supplierId || null }),
     },
     include: {
       category: { select: { id: true, name: true } },
       unit: { select: { id: true, name: true } },
+      supplier: { select: { id: true, name: true } },
     },
   });
 

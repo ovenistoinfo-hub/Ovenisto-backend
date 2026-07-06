@@ -101,6 +101,7 @@ export const getWarehouseStock = asyncHandler(async (req: Request, res: Response
         include: {
           unit: { select: { id: true, name: true, symbol: true } },
           category: { select: { id: true, name: true } },
+          supplier: { select: { id: true, name: true } },
         },
       },
     },
@@ -133,6 +134,11 @@ export const getWarehouseStock = asyncHandler(async (req: Request, res: Response
       name: s.ingredient.name,
       brand: s.ingredient.brand || null,
       purchasePrice: s.ingredient.purchasePrice ? Number(s.ingredient.purchasePrice) : null,
+      supplierId: s.ingredient.supplierId || null,
+      supplier: s.ingredient.supplier ? {
+        id: s.ingredient.supplier.id,
+        name: s.ingredient.supplier.name,
+      } : null,
       unit: s.ingredient.unit ? {
         id: s.ingredient.unit.id,
         name: s.ingredient.unit.name,
