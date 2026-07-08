@@ -14,12 +14,14 @@ import {
   createWarehouse,
   updateWarehouse,
   deleteWarehouse,
+  getWarehouseDashboard,
 } from './warehouse.controller.js';
 
 const router = Router();
 const adminRoles = ['Super Admin', 'Admin', 'Manager', 'Store Manager'];
 
 router.get('/', authenticate, getWarehouses);
+router.get('/dashboard-stats', authenticate, getWarehouseDashboard);
 router.get('/:id', authenticate, getWarehouse);
 router.get('/:id/stock',          authenticate, getWarehouseStock);
 router.get('/:id/expiry-summary', authenticate, getWarehouseExpirySummary);

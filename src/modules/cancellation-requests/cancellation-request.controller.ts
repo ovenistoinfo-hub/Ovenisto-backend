@@ -74,9 +74,11 @@ async function approveRequest(
       ? overrideResponsibleUserId
       : request.responsibleUserId;
 
+    let responsibleUserName: string | null = null;
     if (finalResponsibleUserId) {
-      const respUser = await tx.user.findUnique({ where: { id: finalResponsibleUserId }, select: { id: true } });
+      const respUser = await tx.user.findUnique({ where: { id: finalResponsibleUserId }, select: { name: true } });
       if (!respUser) throw ApiError.badRequest('Selected responsible person not found');
+      responsibleUserName = respUser.name;
     }
 
     const cancelledOrder = await executeCancellation(tx, {
@@ -90,6 +92,8 @@ async function approveRequest(
       newTotal: request.newTotal != null ? Number(request.newTotal) : undefined,
       authorizedById: reviewerId,
       actingUserName: reviewerName,
+      penaltyAmount: finalPenaltyAmount,
+      responsibleUserName,
     });
 
     if (finalPenaltyAmount > 0 && finalResponsibleUserId) {

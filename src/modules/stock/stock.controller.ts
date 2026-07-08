@@ -598,11 +598,12 @@ export const updateTransferStatus = asyncHandler(async (req: Request, res: Respo
 
 /** GET /api/stock/waste */
 export const getWasteRecords = asyncHandler(async (req: Request, res: Response) => {
-  const { search, page = '1', limit = '50' } = req.query;
+  const { search, warehouseId, page = '1', limit = '50' } = req.query;
   const skip = (Number(page) - 1) * Number(limit);
 
   const where: any = {};
   if (search) where.itemName = { contains: String(search), mode: 'insensitive' };
+  if (warehouseId) where.warehouseId = String(warehouseId);
   const scope = resolveOutletScope(req);
   if (scope) where.outletId = scope;
 
@@ -616,7 +617,7 @@ export const getWasteRecords = asyncHandler(async (req: Request, res: Response) 
 
 /** POST /api/stock/waste */
 export const createWasteRecord = asyncHandler(async (req: Request, res: Response) => {
-  const { itemName, quantity, unit, reason, cost, ingredientId } = req.body;
+  const { itemName, quantity, unit, reason, cost, ingredientId, warehouseId } = req.body;
 
   if (!itemName?.trim()) throw ApiError.badRequest('Item name is required');
   const outletId = resolveCreateOutlet(req);
@@ -631,19 +632,27 @@ export const createWasteRecord = asyncHandler(async (req: Request, res: Response
         cost: cost ? Number(cost) : null,
         recordedBy: req.user?.name || null,
         outletId,
+        warehouseId: warehouseId || null,
         date: new Date(),
       },
     });
 
     // Deduct from ingredient stock if ingredientId provided
-    if (ingredientId) {
-      const ingredient = await tx.ingredient.findUnique({ where: { id: ingredientId } });
-      if (ingredient && quantity) {
-        await tx.ingredient.update({
-          where: { id: ingredientId },
-          data: { currentStock: { increment: -Number(quantity) } },
+    if (ingredientId && quantity) {
+      if (warehouseId) {
+        // Decrement stock in the specific warehouse
+        await tx.warehouseStock.upsert({
+          where: { warehouseId_ingredientId: { warehouseId, ingredientId } },
+          update: { currentStock: { decrement: Number(quantity) } },
+          create: { warehouseId, ingredientId, currentStock: -Number(quantity) }
         });
       }
+
+      // Also decrement global ingredient stock
+      await tx.ingredient.update({
+        where: { id: ingredientId },
+        data: { currentStock: { increment: -Number(quantity) } },
+      });
     }
 
     return waste;

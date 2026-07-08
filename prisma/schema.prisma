@@ -489,24 +489,27 @@ model Transfer {
 }
 
 model WasteRecord {
-  id         String   @id @default(uuid())
-  itemName   String?  @db.VarChar(100)
-  quantity   Decimal? @db.Decimal(10, 3)
-  unit       String?  @db.VarChar(20)
-  reason     String?
-  cost       Decimal? @db.Decimal(10, 2)
-  recordedBy String?  @db.VarChar(100)
-  outletId   String?
-  purchaseId String?
-  orderId    String?
-  date       DateTime @default(now())
+  id          String   @id @default(uuid())
+  itemName    String?  @db.VarChar(100)
+  quantity    Decimal? @db.Decimal(10, 3)
+  unit        String?  @db.VarChar(20)
+  reason      String?
+  cost        Decimal? @db.Decimal(10, 2)
+  recordedBy  String?  @db.VarChar(100)
+  outletId    String?
+  warehouseId String?
+  purchaseId  String?
+  orderId     String?
+  date        DateTime @default(now())
 
   // Relations
-  outlet     Outlet?   @relation(fields: [outletId], references: [id])
-  purchase   Purchase? @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
-  order      Order?    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  outlet    Outlet?    @relation(fields: [outletId], references: [id])
+  warehouse Warehouse? @relation(fields: [warehouseId], references: [id], onDelete: SetNull)
+  purchase  Purchase?  @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  order     Order?     @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   @@index([outletId])
+  @@index([warehouseId])
   @@index([purchaseId])
   @@index([orderId])
   @@map("waste_records")
@@ -520,6 +523,7 @@ model Warehouse {
   id        String        @id @default(uuid())
   name      String        @db.VarChar(100)
   code      String        @unique @db.VarChar(20)
+  address   String        @default("")
   type      WarehouseType
   outletId  String?
   managerId String?
@@ -541,6 +545,7 @@ model Warehouse {
   stockBatches             StockBatch[]
   productionBatches        ProductionBatch[]
   productionWarehouseStock ProductionWarehouseStock[]
+  wasteRecords             WasteRecord[]
 
   @@index([outletId, type])
   @@map("warehouses")

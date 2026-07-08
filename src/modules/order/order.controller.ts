@@ -579,11 +579,14 @@ export async function executeCancellation(
     newTotal?: number;
     authorizedById: string;
     actingUserName?: string | null;
+    penaltyAmount?: number;
+    responsibleUserName?: string | null;
   },
 ): Promise<any> {
   const {
     existing, itemIds, reason, refundAmount, refundMethod,
     newSubtotal, newTax, newTotal, authorizedById, actingUserName,
+    penaltyAmount, responsibleUserName,
   } = params;
   const id = existing.id;
 
@@ -620,30 +623,7 @@ export async function executeCancellation(
       const menuItemIds = targetItems.filter((i) => i.menuItemId).map((i) => i.menuItemId as string);
 
       if (menuItemIds.length > 0) {
-        const recipes = await tx.foodRecipe.findMany({
-          where: { menuItemId: { in: menuItemIds } },
-          select: { menuItemId: true, variantId: true, ingredientId: true, productionItemId: true, qtyPerUnit: true },
-        });
-
-        const wasteDeductions: Record<string, number> = {};
-        const wasteProdDeductions: Record<string, number> = {};
-        for (const item of targetItems) {
-          if (!item.menuItemId) continue;
-          const itemRecipes = recipes.filter((r) => {
-            if (r.menuItemId !== item.menuItemId) return false;
-            if (item.variantId) return r.variantId === item.variantId;
-            return !r.variantId;
-          });
-          for (const r of itemRecipes) {
-            const qty = Number(r.qtyPerUnit) * item.qty;
-            if (r.ingredientId) {
-              wasteDeductions[r.ingredientId] = (wasteDeductions[r.ingredientId] || 0) + qty;
-            } else if (r.productionItemId) {
-              wasteProdDeductions[r.productionItemId] = (wasteProdDeductions[r.productionItemId] || 0) + qty;
-            }
-          }
-        }
-
+        // Find kitchen warehouse id to retrieve latest production batch unit costs
         let kitchenWarehouseId: string | null = null;
         if (existing.outletId) {
           const kw = await tx.warehouse.findFirst({
@@ -653,71 +633,135 @@ export async function executeCancellation(
           kitchenWarehouseId = kw?.id ?? null;
         }
 
-        const ingredientIds = Object.keys(wasteDeductions);
+        // Fetch all recipes for these menu items
+        const recipes = await tx.foodRecipe.findMany({
+          where: { menuItemId: { in: menuItemIds } },
+          select: { menuItemId: true, variantId: true, ingredientId: true, productionItemId: true, qtyPerUnit: true },
+        });
+
+        // Get unique ingredient IDs and fetch their purchase prices, then override
+        // with the more-accurate latest stock-batch unit cost (set when goods are received).
+        const ingredientIds = [...new Set(recipes.map((r) => r.ingredientId).filter((id): id is string => id !== null))];
+        let priceById = new Map<string, number>();
         if (ingredientIds.length > 0) {
-          const ingredients = await tx.ingredient.findMany({
+          const ingredientList = await tx.ingredient.findMany({
             where: { id: { in: ingredientIds } },
-            select: { id: true, name: true, purchasePrice: true, unit: { select: { symbol: true } } },
+            select: { id: true, purchasePrice: true },
           });
-          const ingredientById = new Map(ingredients.map((i) => [i.id, i]));
+          priceById = new Map(ingredientList.map((i) => [i.id, Number(i.purchasePrice ?? 0)]));
 
-          for (const [ingredientId, qty] of Object.entries(wasteDeductions)) {
-            const ingredient = ingredientById.get(ingredientId);
-            if (!ingredient) continue;
-            let unitCost = Number(ingredient.purchasePrice ?? 0);
-            if (kitchenWarehouseId) {
-              const latestBatch = await tx.stockBatch.findFirst({
-                where: { ingredientId, warehouseId: kitchenWarehouseId, unitCost: { not: null } },
-                orderBy: { createdAt: 'desc' },
-                select: { unitCost: true },
-              });
-              if (latestBatch?.unitCost != null) unitCost = Number(latestBatch.unitCost);
-            }
-            await tx.wasteRecord.create({
-              data: {
-                itemName: ingredient.name,
-                quantity: qty,
-                unit: ingredient.unit?.symbol ?? null,
-                reason: 'Order cancelled after preparation',
-                cost: unitCost * qty,
-                recordedBy: actingUserName ?? null,
-                outletId: existing.outletId,
-                orderId: id,
-              },
-            });
-          }
-        }
-
-        const productionItemIds = Object.keys(wasteProdDeductions);
-        if (productionItemIds.length > 0 && kitchenWarehouseId) {
-          const productionItems = await tx.productionItem.findMany({
-            where: { id: { in: productionItemIds } },
-            select: { id: true, name: true, unit: true },
-          });
-          const productionItemById = new Map(productionItems.map((p) => [p.id, p]));
-
-          for (const [productionItemId, qty] of Object.entries(wasteProdDeductions)) {
-            const productionItem = productionItemById.get(productionItemId);
-            if (!productionItem) continue;
-            const latestBatch = await tx.productionBatch.findFirst({
-              where: { productionItemId, warehouseId: kitchenWarehouseId, unitCost: { not: null } },
+          // Override with actual stock-batch unit costs where available — these reflect
+          // the real price paid, whereas purchasePrice may not always be kept up to date.
+          for (const ingId of ingredientIds) {
+            const latestBatch = await tx.stockBatch.findFirst({
+              where: { ingredientId: ingId, unitCost: { not: null } },
               orderBy: { createdAt: 'desc' },
               select: { unitCost: true },
             });
-            const unitCost = latestBatch?.unitCost != null ? Number(latestBatch.unitCost) : 0;
-            await tx.wasteRecord.create({
-              data: {
-                itemName: productionItem.name,
-                quantity: qty,
-                unit: productionItem.unit,
-                reason: 'Order cancelled after preparation',
-                cost: unitCost * qty,
-                recordedBy: actingUserName ?? null,
-                outletId: existing.outletId,
-                orderId: id,
-              },
-            });
+            if (latestBatch?.unitCost != null && Number(latestBatch.unitCost) > 0) {
+              priceById.set(ingId, Number(latestBatch.unitCost));
+            }
           }
+        }
+
+        // Get unique production item IDs and fetch their unit costs from latest batch
+        const productionItemIds = [...new Set(recipes.map((r) => r.productionItemId).filter((id): id is string => id !== null))];
+        const prodPriceById = new Map<string, number>();
+        if (productionItemIds.length > 0 && kitchenWarehouseId) {
+          for (const pid of productionItemIds) {
+            const latestBatch = await tx.productionBatch.findFirst({
+              where: { productionItemId: pid, warehouseId: kitchenWarehouseId, unitCost: { not: null } },
+              orderBy: { createdAt: 'desc' },
+              select: { unitCost: true },
+            });
+            prodPriceById.set(pid, latestBatch?.unitCost != null ? Number(latestBatch.unitCost) : 0);
+          }
+        }
+
+        // Calculate recipe cost for each menu item in targetItems
+        let totalOrderWasteCost = 0;
+        const itemCosts: Record<string, number> = {};
+
+        for (const item of targetItems) {
+          if (!item.menuItemId) continue;
+          const itemRecipes = recipes.filter((r) => {
+            if (r.menuItemId !== item.menuItemId) return false;
+            if (item.variantId) return r.variantId === item.variantId;
+            return !r.variantId;
+          });
+
+          let unitPrepCost = 0;
+          for (const r of itemRecipes) {
+            if (r.ingredientId) {
+              const price = priceById.get(r.ingredientId) || 0;
+              unitPrepCost += Number(r.qtyPerUnit) * price;
+            } else if (r.productionItemId) {
+              const price = prodPriceById.get(r.productionItemId) || 0;
+              unitPrepCost += Number(r.qtyPerUnit) * price;
+            }
+          }
+
+          // Fallback: If recipe cost is 0 (or recipe not configured), use the item's selling price
+          if (unitPrepCost === 0 && item.price != null) {
+            unitPrepCost = Number(item.price);
+          }
+
+          const totalItemCost = unitPrepCost * item.qty;
+          itemCosts[item.id] = totalItemCost;
+          totalOrderWasteCost += totalItemCost;
+        }
+
+        // Penalty calculations
+        const totalPenalty = penaltyAmount || 0;
+        const menuItemTargetCount = targetItems.filter((i) => i.menuItemId).length;
+
+        for (const item of targetItems) {
+          if (!item.menuItemId) continue;
+          const rawItemCost = itemCosts[item.id] || 0;
+
+          // Proportional penalty allocation.
+          // If recipe cost is known: allocate proportionally by cost share.
+          // If recipe cost is 0 (recipe not defined / no prices): split equally — we still
+          // know the penalty amount and must record it accurately.
+          let allocatedPenalty = 0;
+          if (totalPenalty > 0) {
+            if (totalOrderWasteCost > 0) {
+              allocatedPenalty = (rawItemCost / totalOrderWasteCost) * totalPenalty;
+            } else if (menuItemTargetCount > 0) {
+              allocatedPenalty = totalPenalty / menuItemTargetCount;
+            }
+          }
+
+          const netCost = Math.max(0, rawItemCost - allocatedPenalty);
+
+          let reasonNote = 'Order cancelled after preparation';
+          if (totalPenalty > 0 && responsibleUserName) {
+            if (rawItemCost > 0) {
+              // Recipe cost is known — show full breakdown
+              if (allocatedPenalty >= rawItemCost) {
+                reasonNote = `Order cancelled. Full cost penalty of Rs. ${allocatedPenalty.toFixed(0)} charged to ${responsibleUserName}. Total cost: Rs. ${rawItemCost.toFixed(0)}. Net loss: Rs. 0.`;
+              } else {
+                reasonNote = `Order cancelled. Partial penalty of Rs. ${allocatedPenalty.toFixed(0)} charged to ${responsibleUserName}. Total cost: Rs. ${rawItemCost.toFixed(0)}. Net loss: Rs. ${netCost.toFixed(0)}.`;
+              }
+            } else {
+              // Recipe/prices not configured — still record penalty charged
+              reasonNote = `Order cancelled. Penalty of Rs. ${allocatedPenalty.toFixed(0)} charged to ${responsibleUserName}. (Recipe cost not available.)`;
+            }
+          }
+
+          await tx.wasteRecord.create({
+            data: {
+              itemName: item.name || 'Unknown Item',
+              quantity: item.qty,
+              unit: 'portion',
+              reason: reasonNote,
+              cost: netCost,
+              recordedBy: actingUserName ?? null,
+              outletId: existing.outletId,
+              warehouseId: kitchenWarehouseId,
+              orderId: id,
+            },
+          });
         }
       }
     }

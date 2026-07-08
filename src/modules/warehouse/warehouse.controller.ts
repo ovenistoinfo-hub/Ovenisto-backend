@@ -280,9 +280,10 @@ export const getWarehouseConsumption = asyncHandler(async (req: Request, res: Re
 
 /** POST /api/warehouses */
 export const createWarehouse = asyncHandler(async (req: Request, res: Response) => {
-  const { name, code, type, outletId, managerId } = req.body;
+  const { name, code, type, outletId, managerId, address } = req.body;
 
   if (!name?.trim()) throw ApiError.badRequest('Warehouse name is required');
+  if (!address?.trim()) throw ApiError.badRequest('Warehouse address is required');
   if (!type) throw ApiError.badRequest('Warehouse type is required');
 
   // Outlet-scoping invariant: BRANCH/KITCHEN warehouses must belong to an outlet;
@@ -308,6 +309,7 @@ export const createWarehouse = asyncHandler(async (req: Request, res: Response) 
     data: {
       name: name.trim(),
       code: finalCode,
+      address: address.trim(),
       type,
       outletId: outletId || null,
       managerId: managerId || null,
@@ -325,10 +327,14 @@ export const createWarehouse = asyncHandler(async (req: Request, res: Response) 
 /** PUT /api/warehouses/:id */
 export const updateWarehouse = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { name, code, outletId, managerId, isActive } = req.body;
+  const { name, code, outletId, managerId, isActive, address } = req.body;
 
   const existing = await prisma.warehouse.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Warehouse not found');
+
+  if (address !== undefined && !address.trim()) {
+    throw ApiError.badRequest('Warehouse address cannot be empty');
+  }
 
   if (code && code !== existing.code) {
     const codeTaken = await prisma.warehouse.findUnique({ where: { code } });
@@ -354,6 +360,7 @@ export const updateWarehouse = asyncHandler(async (req: Request, res: Response) 
       ...(outletId !== undefined && { outletId: outletId || null }),
       ...(managerId !== undefined && { managerId: managerId || null }),
       ...(isActive !== undefined && { isActive }),
+      ...(address !== undefined && { address: address.trim() }),
     },
     include: {
       outlet: { select: { id: true, name: true } },
@@ -390,3 +397,257 @@ export const deleteWarehouse = asyncHandler(async (req: Request, res: Response) 
 
   res.json(ApiResponse.success(null, 'Warehouse deleted'));
 });
+
+/** GET /api/warehouses/dashboard-stats */
+export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Response) => {
+  const { warehouseId, startDate, endDate } = req.query;
+
+  // 1. Date Filters
+  const dateFilter: any = {};
+  if (startDate || endDate) {
+    dateFilter.createdAt = {};
+    if (startDate) dateFilter.createdAt.gte = new Date(String(startDate));
+    if (endDate) {
+      const end = new Date(String(endDate));
+      end.setHours(23, 59, 59, 999);
+      dateFilter.createdAt.lte = end;
+    }
+  }
+
+  // 2. Warehouse Filter
+  const whStockFilter = warehouseId && warehouseId !== 'all' ? { warehouseId: String(warehouseId) } : {};
+
+  // 3. Fetch all active warehouses for the filter dropdown
+  const activeWarehouses = await prisma.warehouse.findMany({
+    where: { isActive: true },
+    select: { id: true, name: true, type: true }
+  });
+
+  // 4. Calculate total stock value (Inventory Value = sum of currentStock * purchasePrice)
+  const stockItems = await prisma.warehouseStock.findMany({
+    where: whStockFilter,
+    include: {
+      ingredient: {
+        select: {
+          id: true,
+          name: true,
+          purchasePrice: true,
+          lowStockLevel: true,
+          category: { select: { name: true } },
+          supplier: { select: { name: true } }
+        }
+      }
+    }
+  });
+
+  let totalInventoryValue = 0;
+  const stockCostingTable = stockItems.map(item => {
+    const currentStock = Number(item.currentStock) || 0;
+    const lowStockLevel = Number(item.lowStockLevel) || Number(item.ingredient.lowStockLevel) || 0;
+    const unitPrice = Number(item.ingredient.purchasePrice) || 0;
+    const totalVal = currentStock * unitPrice;
+    totalInventoryValue += totalVal;
+
+    return {
+      ingredientId: item.ingredient.id,
+      name: item.ingredient.name,
+      category: item.ingredient.category?.name || '—',
+      currentStock,
+      lowStockLevel,
+      unitPrice,
+      totalValue: totalVal,
+      vendorName: item.ingredient.supplier?.name || '—'
+    };
+  });
+
+  // Sort costing table by total value desc
+  stockCostingTable.sort((a, b) => b.totalValue - a.totalValue);
+
+  // 5. Purchases Metrics (Procurement side)
+  const purchaseWhere: any = { ...dateFilter };
+  if (warehouseId && warehouseId !== 'all') {
+    purchaseWhere.warehouseId = String(warehouseId);
+  }
+
+  const purchases = await prisma.purchase.findMany({
+    where: purchaseWhere,
+    select: { total: true, paid: true, tax: true }
+  });
+
+  const totalPurchasesCount = purchases.length;
+  const totalProcurementCost = purchases.reduce((s, p) => s + Number(p.total), 0);
+  const avgProcurementValue = totalPurchasesCount > 0 ? totalProcurementCost / totalPurchasesCount : 0;
+  const totalVendorPayments = purchases.reduce((s, p) => s + Number(p.paid), 0);
+  const totalUnpaidToVendors = purchases.reduce((s, p) => s + (Number(p.total) - Number(p.paid)), 0);
+  const totalGstOnPurchases = purchases.reduce((s, p) => s + Number(p.tax || 0), 0);
+
+  // Purchase Requests counts
+  const prWhere: any = { ...dateFilter };
+  if (warehouseId && warehouseId !== 'all') {
+    prWhere.warehouseId = String(warehouseId);
+  }
+  const purchaseRequests = await prisma.purchaseRequest.findMany({
+    where: prWhere,
+    select: { status: true }
+  });
+  const pendingRequestsCount = purchaseRequests.filter(pr => pr.status === 'PENDING').length;
+  const approvedRequestsCount = purchaseRequests.filter(pr => pr.status === 'APPROVED').length;
+
+  // 6. Demands & Challans Metrics (Distribution/Outflow side)
+  // Demands
+  const demandWhere: any = { ...dateFilter };
+  if (warehouseId && warehouseId !== 'all') {
+    demandWhere.supplyingWHId = String(warehouseId);
+  }
+  const demands = await prisma.stockDemand.findMany({
+    where: demandWhere,
+    select: { status: true }
+  });
+  const totalDemandsCount = demands.length;
+  const fulfilledDemandsCount = demands.filter(d => d.status === 'FULFILLED').length;
+  const pendingDemandsCount = demands.filter(d => d.status === 'PENDING').length;
+
+  // Challans
+  const challanWhere: any = { ...dateFilter };
+  if (warehouseId && warehouseId !== 'all') {
+    challanWhere.fromWarehouseId = String(warehouseId);
+  }
+  const challans = await prisma.stockChallan.findMany({
+    where: challanWhere,
+    include: {
+      items: {
+        include: {
+          ingredient: { select: { purchasePrice: true } }
+        }
+      }
+    }
+  });
+
+  const totalChallansCount = challans.length;
+  const dispatchedChallansCount = challans.filter(c => c.status === 'DISPATCHED').length;
+  const receivedChallansCount = challans.filter(c => c.status === 'RECEIVED').length;
+  const totalShippingCosts = challans.reduce((s, c) => s + Number(c.shippingCost || 0), 0);
+
+  // Compute Outflow Value of dispatched/received challans
+  let totalOutflowValue = 0;
+  for (const c of challans) {
+    for (const item of c.items) {
+      const qty = Number(item.qty) || 0;
+      const price = Number(item.ingredient.purchasePrice) || 0;
+      totalOutflowValue += qty * price;
+    }
+  }
+
+  // 7. Recent Transactions (Movements Log)
+  const recentTransactions: any[] = [];
+
+  // Recent Purchases
+  const recentPurchs = await prisma.purchase.findMany({
+    where: purchaseWhere,
+    orderBy: { createdAt: 'desc' },
+    take: 10,
+    include: {
+      supplier: { select: { name: true } },
+      warehouse: { select: { name: true } }
+    }
+  });
+  for (const p of recentPurchs) {
+    recentTransactions.push({
+      date: p.createdAt,
+      type: 'INBOUND',
+      module: 'Purchase',
+      description: `Purchased from ${p.supplier?.name || 'Unknown Supplier'}`,
+      target: p.warehouse?.name || '—',
+      value: Number(p.total)
+    });
+  }
+
+  // Recent Challans
+  const recentChalls = await prisma.stockChallan.findMany({
+    where: challanWhere,
+    orderBy: { createdAt: 'desc' },
+    take: 10,
+    include: {
+      fromWarehouse: { select: { name: true } },
+      toWarehouse: { select: { name: true } },
+      items: { include: { ingredient: { select: { purchasePrice: true } } } }
+    }
+  });
+  for (const c of recentChalls) {
+    let val = 0;
+    for (const item of c.items) {
+      val += (Number(item.qty) || 0) * (Number(item.ingredient.purchasePrice) || 0);
+    }
+    recentTransactions.push({
+      date: c.createdAt,
+      type: c.status === 'RECEIVED' ? 'RECEIVED' : 'OUTBOUND',
+      module: 'Challan',
+      description: `Stock Challan (${c.challanNo}) - ${c.status}`,
+      target: `${c.fromWarehouse.name} ➔ ${c.toWarehouse.name}`,
+      value: val
+    });
+  }
+
+  // Recent Waste (scoped by warehouseId if selected, otherwise all outlet waste)
+  const wasteWhere: any = dateFilter.createdAt ? { date: { gte: dateFilter.createdAt.gte, lte: dateFilter.createdAt.lte } } : {};
+  if (warehouseId && warehouseId !== 'all') {
+    wasteWhere.warehouseId = String(warehouseId);
+  } else {
+    // If no warehouse specified, limit to outlet scope
+    const scope = resolveOutletScope(req);
+    if (scope) wasteWhere.outletId = scope;
+  }
+  const recentWaste = await prisma.wasteRecord.findMany({
+    where: wasteWhere,
+    orderBy: { date: 'desc' },
+    take: 10,
+    select: {
+      date: true,
+      itemName: true,
+      reason: true,
+      cost: true,
+    }
+  });
+  for (const w of recentWaste) {
+    recentTransactions.push({
+      date: w.date,
+      type: 'OUTBOUND',
+      module: 'Waste',
+      description: `Waste: ${w.itemName || 'Unknown item'} — ${w.reason || 'No reason'}`,
+      target: '—',
+      value: Number(w.cost || 0)
+    });
+  }
+
+  // Sort recent transactions combined
+  recentTransactions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const finalTransactions = recentTransactions.slice(0, 15);
+
+  res.json(ApiResponse.success({
+    activeWarehouses,
+    inventoryValue: Math.round(totalInventoryValue),
+    costingTable: stockCostingTable,
+    recentTransactions: finalTransactions,
+    procurement: {
+      totalOrders: totalPurchasesCount,
+      procurementCost: Math.round(totalProcurementCost),
+      avgValue: Math.round(avgProcurementValue),
+      payments: Math.round(totalVendorPayments),
+      unpaid: Math.round(totalUnpaidToVendors),
+      gst: Math.round(totalGstOnPurchases),
+      pendingRequests: pendingRequestsCount,
+      approvedRequests: approvedRequestsCount
+    },
+    distribution: {
+      totalDemands: totalDemandsCount,
+      fulfilledDemands: fulfilledDemandsCount,
+      pendingDemands: pendingDemandsCount,
+      totalChallans: totalChallansCount,
+      dispatchedChallans: dispatchedChallansCount,
+      receivedChallans: receivedChallansCount,
+      outflowValue: Math.round(totalOutflowValue),
+      shippingCosts: Math.round(totalOutflowValue > 0 ? totalShippingCosts : 0)
+    }
+  }));
+});
+
