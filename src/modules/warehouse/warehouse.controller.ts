@@ -434,31 +434,70 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
           purchasePrice: true,
           lowStockLevel: true,
           category: { select: { name: true } },
-          supplier: { select: { name: true } }
+          supplier: { select: { name: true } },
+          unit: { select: { name: true, symbol: true } }
         }
       }
     }
   });
 
   let totalInventoryValue = 0;
-  const stockCostingTable = stockItems.map(item => {
-    const currentStock = Number(item.currentStock) || 0;
-    const lowStockLevel = Number(item.lowStockLevel) || Number(item.ingredient.lowStockLevel) || 0;
-    const unitPrice = Number(item.ingredient.purchasePrice) || 0;
-    const totalVal = currentStock * unitPrice;
-    totalInventoryValue += totalVal;
+  const stockCostingTable: any[] = [];
 
-    return {
-      ingredientId: item.ingredient.id,
-      name: item.ingredient.name,
-      category: item.ingredient.category?.name || '—',
-      currentStock,
-      lowStockLevel,
-      unitPrice,
-      totalValue: totalVal,
-      vendorName: item.ingredient.supplier?.name || '—'
-    };
-  });
+  if (warehouseId && warehouseId !== 'all') {
+    // Specific Warehouse: return its stock records directly
+    for (const item of stockItems) {
+      const currentStock = Number(item.currentStock) || 0;
+      const lowStockLevel = Number(item.lowStockLevel) || Number(item.ingredient.lowStockLevel) || 0;
+      const unitPrice = Number(item.ingredient.purchasePrice) || 0;
+      const totalVal = currentStock * unitPrice;
+      totalInventoryValue += totalVal;
+
+      stockCostingTable.push({
+        ingredientId: item.ingredient.id,
+        name: item.ingredient.name,
+        category: item.ingredient.category?.name || '—',
+        currentStock,
+        lowStockLevel,
+        unitPrice,
+        totalValue: totalVal,
+        vendorName: item.ingredient.supplier?.name || '—',
+        unitName: item.ingredient.unit?.name || '',
+        unitSymbol: item.ingredient.unit?.symbol || ''
+      });
+    }
+  } else {
+    // "All Warehouses": Aggregate stock quantity and total value per ingredient across all warehouses
+    const map = new Map<string, any>();
+    for (const item of stockItems) {
+      const currentStock = Number(item.currentStock) || 0;
+      const lowStockLevel = Number(item.lowStockLevel) || Number(item.ingredient.lowStockLevel) || 0;
+      const unitPrice = Number(item.ingredient.purchasePrice) || 0;
+      const totalVal = currentStock * unitPrice;
+      totalInventoryValue += totalVal;
+
+      const existing = map.get(item.ingredient.id);
+      if (existing) {
+        existing.currentStock += currentStock;
+        existing.totalValue += totalVal;
+        existing.lowStockLevel = Math.max(existing.lowStockLevel, lowStockLevel);
+      } else {
+        map.set(item.ingredient.id, {
+          ingredientId: item.ingredient.id,
+          name: item.ingredient.name,
+          category: item.ingredient.category?.name || '—',
+          currentStock,
+          lowStockLevel,
+          unitPrice,
+          totalValue: totalVal,
+          vendorName: item.ingredient.supplier?.name || '—',
+          unitName: item.ingredient.unit?.name || '',
+          unitSymbol: item.ingredient.unit?.symbol || ''
+        });
+      }
+    }
+    stockCostingTable.push(...map.values());
+  }
 
   // Sort costing table by total value desc
   stockCostingTable.sort((a, b) => b.totalValue - a.totalValue);
