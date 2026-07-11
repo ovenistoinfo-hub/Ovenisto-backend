@@ -77,9 +77,19 @@ export const createSettlement = asyncHandler(async (req: Request, res: Response)
   }
 
   const settlement = await prisma.$transaction(async (tx) => {
-    const updatedOutlet = await tx.outlet.update({
-      where: { id: req.params.outletId },
+    // Conditional on dueToMain >= amountNum to close the TOCTOU gap between the
+    // pre-transaction check above and this write — two concurrent requests reading
+    // the same stale balance could otherwise both pass validation and both decrement,
+    // driving dueToMain negative. Only one concurrent writer can match this predicate.
+    const { count } = await tx.outlet.updateMany({
+      where: { id: req.params.outletId, dueToMain: { gte: amountNum } },
       data: { dueToMain: { decrement: amountNum } },
+    });
+    if (count === 0) throw new ApiError('Amount exceeds outstanding balance', 400);
+
+    const updatedOutlet = await tx.outlet.findUniqueOrThrow({
+      where: { id: req.params.outletId },
+      select: { dueToMain: true },
     });
     return tx.warehouseSettlement.create({
       data: {
@@ -87,8 +97,8 @@ export const createSettlement = asyncHandler(async (req: Request, res: Response)
         type: 'PAYMENT',
         amount: amountNum,
         balanceAfter: updatedOutlet.dueToMain,
-        notes: notes || null,
-        recordedById: req.user?.id || null,
+        notes: notes ?? null,
+        recordedById: req.user?.id ?? null,
       },
       include: { recordedBy: { select: USER_SELECT }, challan: { select: { challanNo: true } } },
     });
