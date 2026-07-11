@@ -26,6 +26,7 @@ import { expensesRouter }  from '../modules/expenses/expense.routes.js';
 import { challansRouter } from '../modules/challans/challan.routes.js';
 import { demandsRouter }  from '../modules/demands/demand.routes.js';
 import { purchaseRequestsRouter } from '../modules/purchase-requests/purchase-request.routes.js';
+import { warehouseLedgerRouter } from '../modules/warehouse-ledger/warehouse-ledger.routes.js';
 import { reportsRouter } from '../modules/reports/reports.routes.js';
 import productionItemsRoutes from '../modules/production-items/production-items.routes.js';
 import { reservationsRouter } from '../modules/reservations/reservation.routes.js';
@@ -147,6 +148,7 @@ router.use('/purchases', purchasesRouter);
 router.use('/expenses',  expensesRouter);
 router.use('/challans',  challansRouter);
 router.use('/demands',   demandsRouter);
+router.use('/warehouse-ledger', warehouseLedgerRouter);
 router.use('/purchase-requests', purchaseRequestsRouter);
 
 // Phase 8: Delivery
