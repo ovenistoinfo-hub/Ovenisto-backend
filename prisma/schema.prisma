@@ -49,6 +49,9 @@ model Outlet {
   leaveRequests     LeaveRequest[]
   staffSchedules    StaffSchedule[]
   employees         Employee[]
+  warehouseSettlements WarehouseSettlement[]
+
+  dueToMain Decimal @default(0) @db.Decimal(10, 2)
 
   @@map("outlets")
 }
@@ -107,6 +110,7 @@ model User {
   purchasesCreated         Purchase[]        @relation("PurchaseCreatedBy")
   orderCancelAuthorizations OrderModificationLog[] @relation("OrderCancelAuthorizedBy")
   paymentLogsPaid          PaymentLog[]      @relation("PaymentLogPaidBy")
+  warehouseSettlementsRecorded WarehouseSettlement[] @relation("SettlementRecordedBy")
   cancelRequestsMade        OrderCancellationRequest[] @relation("CancelReqRequestedBy")
   cancelRequestsToApprove   OrderCancellationRequest[] @relation("CancelReqApprover")
   cancelRequestsResponsible OrderCancellationRequest[] @relation("CancelReqResponsible")
@@ -644,6 +648,12 @@ model StockChallan {
   notes           String?
   shippingCost    Decimal?      @db.Decimal(10, 2)
   miscAmount      Decimal?      @db.Decimal(10, 2)
+  tax             Decimal?      @db.Decimal(10, 2)
+  subtotal        Decimal?      @db.Decimal(10, 2)
+  total           Decimal?      @db.Decimal(10, 2)
+  paid            Decimal       @default(0) @db.Decimal(10, 2)
+  due             Decimal       @default(0) @db.Decimal(10, 2)
+  paymentStatus   String?       @db.VarChar(20) // 'paid' | 'partial' | 'unpaid' — set only for MAIN→BRANCH challans
   dispatchedAt    DateTime?
   receivedAt      DateTime?
   dispatchedById  String?
@@ -652,13 +662,14 @@ model StockChallan {
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
-  fromWarehouse Warehouse          @relation("ChallanFrom", fields: [fromWarehouseId], references: [id])
-  toWarehouse   Warehouse          @relation("ChallanTo", fields: [toWarehouseId], references: [id])
-  dispatchedBy  User?              @relation("ChallanDispatched", fields: [dispatchedById], references: [id])
-  receivedBy    User?              @relation("ChallanReceived", fields: [receivedById], references: [id])
-  createdBy     User?              @relation("ChallanCreated", fields: [createdById], references: [id])
+  fromWarehouse Warehouse             @relation("ChallanFrom", fields: [fromWarehouseId], references: [id])
+  toWarehouse   Warehouse             @relation("ChallanTo", fields: [toWarehouseId], references: [id])
+  dispatchedBy  User?                 @relation("ChallanDispatched", fields: [dispatchedById], references: [id])
+  receivedBy    User?                 @relation("ChallanReceived", fields: [receivedById], references: [id])
+  createdBy     User?                 @relation("ChallanCreated", fields: [createdById], references: [id])
   items         StockChallanItem[]
   demand        StockDemand?
+  settlements   WarehouseSettlement[]
 
   @@index([fromWarehouseId])
   @@index([toWarehouseId])
@@ -675,6 +686,7 @@ model StockChallanItem {
   receivedQty  Decimal? @db.Decimal(10, 3)
   wasteQty     Decimal? @db.Decimal(10, 3)
   wasteReason  String?
+  unitPrice    Decimal? @db.Decimal(10, 2) // snapshot of Ingredient.purchasePrice at receive time (MAIN→BRANCH only)
 
   challan    StockChallan @relation(fields: [challanId], references: [id], onDelete: Cascade)
   ingredient Ingredient   @relation(fields: [ingredientId], references: [id])
@@ -725,6 +737,26 @@ model StockDemandItem {
   ingredient Ingredient  @relation(fields: [ingredientId], references: [id])
 
   @@map("stock_demand_items")
+}
+
+model WarehouseSettlement {
+  id           String   @id @default(uuid())
+  outletId     String
+  type         String   @db.VarChar(10) // 'CHARGE' (from a received MAIN→BRANCH transfer) | 'PAYMENT' (manual settlement)
+  amount       Decimal  @db.Decimal(10, 2) // always positive; sign implied by type
+  balanceAfter Decimal  @db.Decimal(10, 2) // Outlet.dueToMain snapshot right after this entry
+  challanId    String?  // set only for CHARGE rows
+  notes        String?
+  recordedById String?
+  createdAt    DateTime @default(now())
+
+  outlet     Outlet        @relation(fields: [outletId], references: [id])
+  challan    StockChallan? @relation(fields: [challanId], references: [id])
+  recordedBy User?         @relation("SettlementRecordedBy", fields: [recordedById], references: [id])
+
+  @@index([outletId])
+  @@index([createdAt])
+  @@map("warehouse_settlements")
 }
 
 // =============================================
