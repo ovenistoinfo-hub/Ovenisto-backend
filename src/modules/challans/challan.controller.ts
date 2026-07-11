@@ -443,7 +443,7 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
 
     const effectiveShipping = shipIn !== undefined ? (Number(shipIn) || 0) : Number(challan.shippingCost ?? 0);
     const effectiveMisc     = miscIn !== undefined ? (Number(miscIn) || 0) : Number(challan.miscAmount ?? 0);
-    const effectiveTax      = taxIn  !== undefined ? (Number(taxIn)  || 0) : Number((challan as any).tax ?? 0);
+    const effectiveTax      = taxIn  !== undefined ? (Number(taxIn)  || 0) : Number(challan.tax ?? 0);
     const paidAmount = Number(paidIn) || 0;
 
     const settlement = isMainToBranch
@@ -455,6 +455,16 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
           paid: paidAmount,
         })
       : null;
+
+    // Guard BEFORE any write: if this is a MAIN→BRANCH settlement that owes
+    // money but the receiving warehouse has no outlet, the ledger-charge block
+    // below (Outlet.dueToMain increment + WarehouseSettlement CHARGE row) would
+    // be skipped while stockChallan.update below still marks the challan
+    // RECEIVED with due>0 — money silently vanishes from the ledger. Throwing
+    // here aborts the whole $transaction atomically, before any write happens.
+    if (isMainToBranch && settlement && settlement.due > 0 && !challan.toWarehouse?.outletId) {
+      throw new ApiError('Cannot settle transfer: receiving warehouse has no outlet assigned', 500);
+    }
 
     const result = await tx.stockChallan.update({
       where: { id: challan.id },
