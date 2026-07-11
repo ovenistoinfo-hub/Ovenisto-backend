@@ -8,6 +8,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { USER_SELECT, mapUser } from '../../utils/userHelpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
+import { computeChallanSettlement } from './challan.helpers.js';
 
 // B4b: throw 404 if the acting outlet owns neither warehouse of this challan.
 // scope === null (admins, central main-warehouse staff) → no restriction.
@@ -57,6 +58,12 @@ function mapChallan(c: any) {
     notes: c.notes,
     shippingCost: c.shippingCost !== null && c.shippingCost !== undefined ? Number(c.shippingCost) : null,
     miscAmount:   c.miscAmount   !== null && c.miscAmount   !== undefined ? Number(c.miscAmount)   : null,
+    tax:          c.tax          !== null && c.tax          !== undefined ? Number(c.tax)          : null,
+    subtotal:     c.subtotal     !== null && c.subtotal     !== undefined ? Number(c.subtotal)     : null,
+    total:        c.total        !== null && c.total        !== undefined ? Number(c.total)        : null,
+    paid: Number(c.paid ?? 0),
+    due:  Number(c.due ?? 0),
+    paymentStatus: c.paymentStatus ?? null,
     fromWarehouse: c.fromWarehouse ? {
       id: c.fromWarehouse.id,
       name: c.fromWarehouse.name,
@@ -85,6 +92,7 @@ function mapChallan(c: any) {
       receivedQty: i.receivedQty !== null && i.receivedQty !== undefined ? Number(i.receivedQty) : null,
       wasteQty: i.wasteQty !== null && i.wasteQty !== undefined ? Number(i.wasteQty) : null,
       wasteReason: i.wasteReason ?? null,
+      unitPrice: i.unitPrice !== null && i.unitPrice !== undefined ? Number(i.unitPrice) : null,
     })),
     demand: c.demand ? {
       id: c.demand.id,
@@ -329,7 +337,7 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
   const challan = await prisma.stockChallan.findUnique({
     where: { id: req.params.id },
     include: {
-      fromWarehouse: { select: { outletId: true } },
+      fromWarehouse: { select: { outletId: true, type: true } },
       toWarehouse:   { select: { outletId: true, type: true } },
     },
   });
@@ -345,7 +353,8 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
     throw new ApiError('Super Admin cannot receive challans — branch/kitchen staff must confirm receipt', 403);
   }
 
-  const { items: itemsInput, shippingCost: shipIn, miscAmount: miscIn } = req.body || {};
+  const { items: itemsInput, shippingCost: shipIn, miscAmount: miscIn, tax: taxIn, paid: paidIn } = req.body || {};
+  const isMainToBranch = challan.fromWarehouse?.type === 'MAIN';
 
   // Pre-transaction: load items with ingredient names for validation
   const items = await prisma.stockChallanItem.findMany({
@@ -365,6 +374,8 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
     }
   }
 
+  const settlementItems: { qty: number; unitPrice: number }[] = [];
+
   const updated = await prisma.$transaction(async (tx) => {
     for (const item of items) {
       const input = itemsInput?.find((i: any) => i.id === item.id);
@@ -373,7 +384,9 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
       const wasteReason = input?.wasteReason ?? null;
       const actualReceived = receivedQty - wasteQty; // net qty added to stock
 
-      const ing = await tx.ingredient.findUnique({ where: { id: item.ingredientId }, select: { lowStockLevel: true } });
+      const ing = await tx.ingredient.findUnique({ where: { id: item.ingredientId }, select: { lowStockLevel: true, purchasePrice: true } });
+      const unitPrice = isMainToBranch ? Number(ing?.purchasePrice ?? 0) : null;
+      if (isMainToBranch) settlementItems.push({ qty: Number(item.qty), unitPrice: unitPrice ?? 0 });
 
       // Update destination warehouse stock with net received (minus waste)
       if (actualReceived > 0) {
@@ -384,10 +397,10 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
         });
       }
 
-      // Update challan item with received qty, waste qty, waste reason
+      // Update challan item with received qty, waste qty, waste reason (+ price snapshot for MAIN→BRANCH)
       await tx.stockChallanItem.update({
         where: { id: item.id },
-        data: { receivedQty, wasteQty: wasteQty || null, wasteReason },
+        data: { receivedQty, wasteQty: wasteQty || null, wasteReason, ...(isMainToBranch && { unitPrice }) },
       });
 
       // Create batches in destination warehouse (FIFO from source, using actualReceived not full receivedQty)
@@ -428,7 +441,22 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
       }
     }
 
-    return tx.stockChallan.update({
+    const effectiveShipping = shipIn !== undefined ? (Number(shipIn) || 0) : Number(challan.shippingCost ?? 0);
+    const effectiveMisc     = miscIn !== undefined ? (Number(miscIn) || 0) : Number(challan.miscAmount ?? 0);
+    const effectiveTax      = taxIn  !== undefined ? (Number(taxIn)  || 0) : Number((challan as any).tax ?? 0);
+    const paidAmount = Number(paidIn) || 0;
+
+    const settlement = isMainToBranch
+      ? computeChallanSettlement({
+          items: settlementItems,
+          tax: effectiveTax,
+          shippingCost: effectiveShipping,
+          miscAmount: effectiveMisc,
+          paid: paidAmount,
+        })
+      : null;
+
+    const result = await tx.stockChallan.update({
       where: { id: challan.id },
       data: {
         status: 'RECEIVED',
@@ -436,9 +464,36 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
         receivedById: req.user?.id || null,
         ...(shipIn !== undefined && { shippingCost: Number(shipIn) || null }),
         ...(miscIn !== undefined && { miscAmount: Number(miscIn) || null }),
+        ...(isMainToBranch && settlement && {
+          tax: effectiveTax,
+          subtotal: settlement.subtotal,
+          total: settlement.total,
+          paid: paidAmount,
+          due: settlement.due,
+          paymentStatus: settlement.paymentStatus,
+        }),
       },
       include: CHALLAN_INCLUDE,
     });
+
+    if (isMainToBranch && settlement && settlement.due > 0 && challan.toWarehouse?.outletId) {
+      const updatedOutlet = await tx.outlet.update({
+        where: { id: challan.toWarehouse.outletId },
+        data: { dueToMain: { increment: settlement.due } },
+      });
+      await tx.warehouseSettlement.create({
+        data: {
+          outletId: challan.toWarehouse.outletId,
+          type: 'CHARGE',
+          amount: settlement.due,
+          balanceAfter: updatedOutlet.dueToMain,
+          challanId: challan.id,
+          recordedById: req.user?.id || null,
+        },
+      });
+    }
+
+    return result;
   }, { timeout: 60000 });
 
   return res.json(ApiResponse.success(mapChallan(updated), 'Challan received'));
