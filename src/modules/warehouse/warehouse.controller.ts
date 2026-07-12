@@ -420,8 +420,15 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
   // 3. Fetch all active warehouses for the filter dropdown
   const activeWarehouses = await prisma.warehouse.findMany({
     where: { isActive: true },
-    select: { id: true, name: true, type: true }
+    select: { id: true, name: true, type: true, outletId: true }
   });
+
+  // The selected warehouse's type/outletId drives which owner-dashboard cards apply:
+  // Receivable (Due to Main) only makes sense for MAIN; Invoices only makes sense for a
+  // warehouse that has an outlet (BRANCH/KITCHEN) — MAIN has none, so it stays zero.
+  const selectedWarehouse = warehouseId && warehouseId !== 'all'
+    ? activeWarehouses.find(w => w.id === String(warehouseId)) ?? null
+    : null;
 
   // 4. Calculate total stock value (Inventory Value = sum of currentStock * purchasePrice)
   const stockItems = await prisma.warehouseStock.findMany({
@@ -510,15 +517,22 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
 
   const purchases = await prisma.purchase.findMany({
     where: purchaseWhere,
-    select: { total: true, paid: true, tax: true }
+    select: { total: true, paid: true, due: true, tax: true, discount: true }
   });
 
   const totalPurchasesCount = purchases.length;
   const totalProcurementCost = purchases.reduce((s, p) => s + Number(p.total), 0);
   const avgProcurementValue = totalPurchasesCount > 0 ? totalProcurementCost / totalPurchasesCount : 0;
   const totalVendorPayments = purchases.reduce((s, p) => s + Number(p.paid), 0);
-  const totalUnpaidToVendors = purchases.reduce((s, p) => s + (Number(p.total) - Number(p.paid)), 0);
+  const totalUnpaidToVendors = purchases.reduce((s, p) => s + Number(p.due), 0);
   const totalGstOnPurchases = purchases.reduce((s, p) => s + Number(p.tax || 0), 0);
+  const totalDiscountOnPurchases = purchases.reduce((s, p) => s + Number(p.discount || 0), 0);
+
+  // Every Purchase enters stock instantly on creation (no separate "awaited" stage exists
+  // yet) — so "Stock Received" is simply every purchase, split by paid vs still-due.
+  const stockReceivedUnpaid = purchases.filter(p => Number(p.due) > 0);
+  const stockReceivedPaid = purchases.filter(p => Number(p.due) <= 0);
+  const unpaidToVendorsCount = stockReceivedUnpaid.length;
 
   // Purchase Requests counts
   const prWhere: any = { ...dateFilter };
@@ -531,6 +545,17 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
   });
   const pendingRequestsCount = purchaseRequests.filter(pr => pr.status === 'PENDING').length;
   const approvedRequestsCount = purchaseRequests.filter(pr => pr.status === 'APPROVED').length;
+
+  // 5b. Receivable — chain-wide amount branches owe Main for received stock transfers
+  // (the WarehouseSettlement/dueToMain ledger). Only meaningful when Main is the selected
+  // warehouse (or no warehouse is selected) — a Branch/Kitchen doesn't have this ledger.
+  let receivableValue = 0;
+  let receivableOutletsOwing = 0;
+  if (!selectedWarehouse || selectedWarehouse.type === 'MAIN') {
+    const outlets = await prisma.outlet.findMany({ select: { dueToMain: true } });
+    receivableValue = outlets.reduce((s, o) => s + Number(o.dueToMain), 0);
+    receivableOutletsOwing = outlets.filter(o => Number(o.dueToMain) > 0).length;
+  }
 
   // 6. Demands & Challans Metrics (Distribution/Outflow side)
   // Demands
@@ -636,6 +661,15 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
     const scope = resolveOutletScope(req);
     if (scope) wasteWhere.outletId = scope;
   }
+  // Waste total (top KPI) — same scope as the recent-waste list above.
+  const wasteAgg = await prisma.wasteRecord.aggregate({
+    where: wasteWhere,
+    _sum: { cost: true },
+    _count: { _all: true },
+  });
+  const wasteValue = Math.round(Number(wasteAgg._sum.cost ?? 0));
+  const wasteCount = wasteAgg._count._all;
+
   const recentWaste = await prisma.wasteRecord.findMany({
     where: wasteWhere,
     orderBy: { date: 'desc' },
@@ -665,6 +699,11 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
   res.json(ApiResponse.success({
     activeWarehouses,
     inventoryValue: Math.round(totalInventoryValue),
+    payable: Math.round(totalUnpaidToVendors),
+    receivable: Math.round(receivableValue),
+    receivableOutletsOwing,
+    waste: wasteValue,
+    wasteCount,
     costingTable: stockCostingTable,
     recentTransactions: finalTransactions,
     procurement: {
@@ -673,9 +712,15 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
       avgValue: Math.round(avgProcurementValue),
       payments: Math.round(totalVendorPayments),
       unpaid: Math.round(totalUnpaidToVendors),
+      unpaidCount: unpaidToVendorsCount,
+      discount: Math.round(totalDiscountOnPurchases),
       gst: Math.round(totalGstOnPurchases),
       pendingRequests: pendingRequestsCount,
-      approvedRequests: approvedRequestsCount
+      approvedRequests: approvedRequestsCount,
+      stockReceivedPaid: Math.round(stockReceivedPaid.reduce((s, p) => s + Number(p.total), 0)),
+      stockReceivedPaidCount: stockReceivedPaid.length,
+      stockReceivedUnpaid: Math.round(stockReceivedUnpaid.reduce((s, p) => s + Number(p.total), 0)),
+      stockReceivedUnpaidCount: stockReceivedUnpaid.length,
     },
     distribution: {
       totalDemands: totalDemandsCount,
@@ -686,7 +731,7 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
       receivedChallans: receivedChallansCount,
       outflowValue: Math.round(totalOutflowValue),
       shippingCosts: Math.round(totalOutflowValue > 0 ? totalShippingCosts : 0)
-    }
+    },
   }));
 });
 

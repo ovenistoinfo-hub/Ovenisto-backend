@@ -1079,6 +1079,7 @@ model Purchase {
   invoiceNumber String?  @db.VarChar(30)
   items         Json // [{name, qty, unit, price, total}]
   subtotal      Decimal? @db.Decimal(10, 2)
+  discount      Decimal  @default(0) @db.Decimal(10, 2)
   tax           Decimal? @db.Decimal(10, 2)
   shippingCost  Decimal? @db.Decimal(10, 2)
   miscAmount    Decimal? @db.Decimal(10, 2)

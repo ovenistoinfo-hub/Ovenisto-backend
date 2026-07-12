@@ -12,6 +12,7 @@ function mapPurchase(p: any) {
   return {
     ...p,
     subtotal: p.subtotal != null ? Number(p.subtotal) : null,
+    discount: Number(p.discount ?? 0),
     tax: p.tax != null ? Number(p.tax) : null,
     shippingCost: p.shippingCost != null ? Number(p.shippingCost) : null,
     miscAmount: p.miscAmount != null ? Number(p.miscAmount) : null,
@@ -75,7 +76,7 @@ export const getPurchase = asyncHandler(async (req: Request, res: Response) => {
 
 export const createPurchase = asyncHandler(async (req: Request, res: Response) => {
   const {
-    supplierId, invoiceNumber, date, items, subtotal, tax,
+    supplierId, invoiceNumber, date, items, subtotal, discount, tax,
     shippingCost, miscAmount,
     total, paid, status, notes, warehouseId, purchaseRequestId,
   } = req.body;
@@ -114,6 +115,7 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
         date: date ? new Date(date) : new Date(),
         items,
         subtotal: subtotal != null ? subtotal : null,
+        discount: Number(discount ?? 0),
         tax: tax != null ? tax : null,
         shippingCost: shippingCost != null ? shippingCost : null,
         miscAmount: miscAmount != null ? miscAmount : null,
