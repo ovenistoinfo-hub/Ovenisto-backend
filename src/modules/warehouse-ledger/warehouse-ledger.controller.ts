@@ -25,15 +25,23 @@ function mapSettlement(s: any) {
   };
 }
 
+// Super Admin's ledger view is chain-wide and independent of the header outlet-picker
+// (that picker is for acting-as-a-branch elsewhere in the app, e.g. creating a challan
+// on a branch's behalf — it has no bearing on "which outlet's balance can I see"). Every
+// other role stays pinned to their own outlet via the standard resolveOutletScope.
+function resolveLedgerViewScope(req: Request): string | null {
+  return req.user?.role === 'Super Admin' ? null : resolveOutletScope(req);
+}
+
 // Non-Super-Admin callers may only ever act on their own outlet — mirrors every
 // other by-id handler's 404-not-403 convention (never reveal existence of another outlet's row).
 function assertOutletInScope(req: Request, outletId: string): void {
-  const scope = resolveOutletScope(req);
+  const scope = resolveLedgerViewScope(req);
   if (scope && outletId !== scope) throw new ApiError('Outlet not found', 404);
 }
 
 export const getLedgerSummary = asyncHandler(async (req: Request, res: Response) => {
-  const scope = resolveOutletScope(req);
+  const scope = resolveLedgerViewScope(req);
   const where = scope ? { id: scope } : {};
   const outlets = await prisma.outlet.findMany({
     where,

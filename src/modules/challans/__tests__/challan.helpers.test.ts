@@ -36,7 +36,7 @@ describe('computeChallanSettlement', () => {
     expect(result.paymentStatus).toBe('paid');
   });
 
-  it('marks "partial" and computes the remainder when paid is less than total', () => {
+  it('marks "partial" and computes the remainder against subtotal, not total, when paid is less than subtotal', () => {
     const result = computeChallanSettlement({
       items: [{ qty: 10, unitPrice: 50 }],
       tax: 50,
@@ -44,9 +44,22 @@ describe('computeChallanSettlement', () => {
       miscAmount: 10,
       paid: 300,
     });
-    expect(result.total).toBe(580);
-    expect(result.due).toBe(280);
+    expect(result.total).toBe(580); // still subtotal + tax + shipping + misc, for display only
+    expect(result.due).toBe(200); // 500 (subtotal) - 300 (paid) — tax/shipping/misc excluded
     expect(result.paymentStatus).toBe('partial');
+  });
+
+  it('due ignores tax/shippingCost/miscAmount entirely — those are the deliverer\'s own cost, never owed to Main', () => {
+    const result = computeChallanSettlement({
+      items: [{ qty: 10, unitPrice: 50 }], // subtotal = 500
+      tax: 1000,
+      shippingCost: 1000,
+      miscAmount: 1000,
+      paid: 500, // covers subtotal exactly
+    });
+    expect(result.total).toBe(3500); // 500 + 1000 + 1000 + 1000
+    expect(result.due).toBe(0); // fully paid against subtotal despite a much larger total
+    expect(result.paymentStatus).toBe('paid');
   });
 
   it('marks "unpaid" when paid is zero and there is a due amount', () => {

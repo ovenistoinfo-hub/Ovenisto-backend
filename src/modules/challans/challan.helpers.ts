@@ -30,7 +30,11 @@ function round2(n: number): number {
 export function computeChallanSettlement(input: ChallanSettlementInput): ChallanSettlementResult {
   const subtotal = round2(input.items.reduce((sum, item) => sum + item.qty * item.unitPrice, 0));
   const total = round2(subtotal + input.tax + input.shippingCost + input.miscAmount);
-  const due = Math.max(0, round2(total - input.paid));
+  // `due`/`paymentStatus` are driven by the stock subtotal alone — that is the only amount
+  // owed to Main. Tax/shippingCost/miscAmount are delivery-side costs paid out of pocket by
+  // whoever delivers the transfer; they are never owed to Main, so they never feed the
+  // branch's Main-ledger balance. `total` stays subtotal+tax+shipping+misc purely for display.
+  const due = Math.max(0, round2(subtotal - input.paid));
   const paymentStatus: ChallanSettlementResult['paymentStatus'] =
     due <= 0 ? 'paid' : input.paid > 0 ? 'partial' : 'unpaid';
   return { subtotal, total, due, paymentStatus };
