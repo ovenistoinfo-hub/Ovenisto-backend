@@ -8,10 +8,13 @@ import { execSync } from 'child_process';
 const MAX_RETRIES = 6;
 const WAIT_MS = 6000;
 
+const acceptDataLoss = process.argv.includes('--accept-data-loss') || process.env.PRISMA_ACCEPT_DATA_LOSS === 'true';
+const pushCommand = acceptDataLoss ? 'npx prisma db push --accept-data-loss' : 'npx prisma db push';
+
 for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
   try {
-    console.log(`\n🔄 prisma db push — attempt ${attempt}/${MAX_RETRIES}`);
-    execSync('prisma db push', { stdio: 'inherit' });
+    console.log(`\n🔄 ${pushCommand} — attempt ${attempt}/${MAX_RETRIES}`);
+    execSync(pushCommand, { stdio: 'inherit' });
     console.log('\n✅ db push succeeded\n');
     process.exit(0);
   } catch {
