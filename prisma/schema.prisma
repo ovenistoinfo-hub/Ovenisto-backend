@@ -116,6 +116,7 @@ model User {
   cancelRequestsResponsible OrderCancellationRequest[] @relation("CancelReqResponsible")
   cancelRequestsReviewed    OrderCancellationRequest[] @relation("CancelReqReviewedBy")
   staffPenalties            StaffPenalty[]             @relation("StaffPenaltyUser")
+  purchasePayments          PurchasePayment[]
 
   @@map("users")
 }
@@ -1067,6 +1068,7 @@ model Supplier {
   purchases        Purchase[]
   ingredients      Ingredient[]
   purchaseRequests PurchaseRequest[]
+  purchasePayments PurchasePayment[]
 
   @@map("suppliers")
 }
@@ -1102,6 +1104,8 @@ model Purchase {
   createdBy       User?            @relation("PurchaseCreatedBy", fields: [createdById], references: [id])
   stockBatches    StockBatch[]
   wasteRecords    WasteRecord[]
+  paymentHistory  PurchasePayment[]
+  supplierDues    Json? // [{supplierId, supplierName, total, paid, due, status}]
 
   @@index([outletId])
   @@map("purchases")
@@ -1475,4 +1479,22 @@ model PaymentLog {
 
   @@unique([employeeId, startDate, endDate])
   @@map("payment_logs")
+}
+
+model PurchasePayment {
+  id           String   @id @default(uuid())
+  purchaseId   String
+  supplierId   String?
+  amount       Decimal  @db.Decimal(10, 2)
+  balanceAfter Decimal  @db.Decimal(10, 2)
+  note         String?
+  recordedById String?
+  createdAt    DateTime @default(now())
+
+  purchase   Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  recordedBy User?    @relation(fields: [recordedById], references: [id])
+  supplier   Supplier? @relation(fields: [supplierId], references: [id])
+
+  @@index([purchaseId])
+  @@map("purchase_payments")
 }

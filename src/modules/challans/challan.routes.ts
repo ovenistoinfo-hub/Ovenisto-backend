@@ -8,6 +8,7 @@ import {
   dispatchChallan,
   receiveChallan,
   cancelChallan,
+  getChallanStats,
 } from './challan.controller.js';
 
 const writeRoles = ['Super Admin', 'Admin', 'Manager', 'Store Manager'];
@@ -15,6 +16,7 @@ const receiveRoles = ['Admin', 'Manager', 'Kitchen Manager', 'Store Manager'];
 
 export const challansRouter = Router();
 
+challansRouter.get('/stats/summary', authenticate, getChallanStats);
 challansRouter.get('/',              authenticate, getChallans);
 challansRouter.get('/:id',           authenticate, getChallan);
 challansRouter.post('/',             authenticate, authorize(writeRoles), createChallan);

@@ -558,3 +558,63 @@ export const cancelChallan = asyncHandler(async (req: Request, res: Response) =>
 
   return res.json(ApiResponse.success(mapChallan(updated), 'Challan cancelled'));
 });
+
+export const getChallanStats = asyncHandler(async (req: Request, res: Response) => {
+  const { fromWarehouseId, toWarehouseId } = req.query as Record<string, string>;
+
+  const where: any = {};
+  if (fromWarehouseId) where.fromWarehouseId = fromWarehouseId;
+  if (toWarehouseId)   where.toWarehouseId   = toWarehouseId;
+
+  const scope = resolveOutletScope(req);
+  if (scope) {
+    where.OR = [
+      { fromWarehouse: { outletId: scope } },
+      { toWarehouse:   { outletId: scope } },
+    ];
+  }
+
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  
+  const startOfWeek = new Date(now);
+  startOfWeek.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+  const weekStart = new Date(startOfWeek.getFullYear(), startOfWeek.getMonth(), startOfWeek.getDate());
+
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  const [totalAgg, todayAgg, weeklyAgg, monthlyAgg] = await Promise.all([
+    prisma.stockChallan.aggregate({
+      where,
+      _sum: { total: true },
+    }),
+    prisma.stockChallan.aggregate({
+      where: {
+        ...where,
+        createdAt: { gte: todayStart },
+      },
+      _sum: { total: true },
+    }),
+    prisma.stockChallan.aggregate({
+      where: {
+        ...where,
+        createdAt: { gte: weekStart },
+      },
+      _sum: { total: true },
+    }),
+    prisma.stockChallan.aggregate({
+      where: {
+        ...where,
+        createdAt: { gte: monthStart },
+      },
+      _sum: { total: true },
+    }),
+  ]);
+
+  return res.json(ApiResponse.success({
+    total: Number(totalAgg._sum.total || 0),
+    today: Number(todayAgg._sum.total || 0),
+    weekly: Number(weeklyAgg._sum.total || 0),
+    monthly: Number(monthlyAgg._sum.total || 0),
+  }));
+});

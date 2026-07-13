@@ -16,12 +16,19 @@ import {
   deleteWarehouse,
   getWarehouseDashboard,
 } from './warehouse.controller.js';
+import { WAREHOUSE_DASHBOARD_ROLES } from './warehouse.access.js';
 
 const router = Router();
 const adminRoles = ['Super Admin', 'Admin', 'Manager', 'Store Manager'];
 
 router.get('/', authenticate, getWarehouses);
-router.get('/dashboard-stats', authenticate, getWarehouseDashboard);
+// Must stay registered BEFORE '/:id', or Express reads "dashboard-stats" as an id.
+router.get(
+  '/dashboard-stats',
+  authenticate,
+  authorize(WAREHOUSE_DASHBOARD_ROLES),
+  getWarehouseDashboard
+);
 router.get('/:id', authenticate, getWarehouse);
 router.get('/:id/stock',          authenticate, getWarehouseStock);
 router.get('/:id/expiry-summary', authenticate, getWarehouseExpirySummary);

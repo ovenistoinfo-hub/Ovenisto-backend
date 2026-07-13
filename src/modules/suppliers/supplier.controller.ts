@@ -105,3 +105,88 @@ export const getSupplierIngredients = asyncHandler(async (req: Request, res: Res
 
   return res.json(ApiResponse.success(ingredients));
 });
+
+export const getSupplierLedger = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const s = await prisma.supplier.findUnique({ where: { id } });
+  if (!s) throw new ApiError('Supplier not found', 404);
+
+  const purchases = await prisma.purchase.findMany({
+    where: {
+      OR: [
+        { supplierId: id },
+        {
+          supplierDues: {
+            array_contains: [{ supplierId: id }]
+          }
+        }
+      ]
+    },
+    orderBy: { createdAt: 'desc' },
+    select: {
+      id: true,
+      invoiceNumber: true,
+      date: true,
+      total: true,
+      paid: true,
+      due: true,
+      status: true,
+      createdAt: true,
+      supplierDues: true,
+      paymentHistory: {
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, amount: true, balanceAfter: true, note: true, createdAt: true, supplierId: true },
+      },
+    },
+  });
+
+  const totalPurchases = Number(s.totalPurchases);
+  const totalDue = Number(s.totalDue);
+  const totalPaid = totalPurchases - totalDue;
+
+  return res.json(ApiResponse.success({
+    supplier: mapSupplier(s),
+    totalPurchases,
+    totalPaid,
+    totalDue,
+    purchases: purchases.map(p => {
+      let total = Number(p.total ?? 0);
+      let paid = Number(p.paid);
+      let due = Number(p.due);
+      let status = p.status;
+
+      if (p.supplierDues && Array.isArray(p.supplierDues)) {
+        const sd = (p.supplierDues as any[]).find(d => d.supplierId === id);
+        if (sd) {
+          total = Number(sd.total ?? 0);
+          paid = Number(sd.paid ?? 0);
+          due = Number(sd.due ?? 0);
+          status = sd.status;
+        }
+      }
+
+      // Filter payment history for this specific supplier
+      const filteredPayments = p.paymentHistory
+        .filter((ph: any) => !ph.supplierId || ph.supplierId === id)
+        .map(ph => ({
+          id: ph.id,
+          amount: Number(ph.amount),
+          balanceAfter: Number(ph.balanceAfter),
+          note: ph.note,
+          createdAt: ph.createdAt,
+        }));
+
+      return {
+        id: p.id,
+        invoiceNumber: p.invoiceNumber,
+        date: p.date,
+        total,
+        paid,
+        due,
+        status,
+        createdAt: p.createdAt,
+        paymentHistory: filteredPayments,
+      };
+    }),
+  }));
+});

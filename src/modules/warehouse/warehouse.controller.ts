@@ -9,6 +9,26 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
+import {
+  canReadWarehouse,
+  resolveDashboardScope,
+  nullableWarehouseGate,
+  twoEndpointGate,
+} from './warehouse.access.js';
+
+/**
+ * Loads a warehouse and 404s if the caller may not read it — 404 rather than
+ * 403, so we never leak the existence of another outlet's warehouse.
+ */
+async function assertReadableWarehouse(req: Request, id: string): Promise<void> {
+  const warehouse = await prisma.warehouse.findUnique({
+    where: { id },
+    select: { type: true, outletId: true },
+  });
+  if (!warehouse || !canReadWarehouse(req.user?.role, req.user?.outletId, warehouse)) {
+    throw ApiError.notFound('Warehouse not found');
+  }
+}
 
 // ── Auto-generate warehouse code ──
 async function generateUniqueCode(type: string): Promise<string> {
@@ -80,7 +100,9 @@ export const getWarehouse = asyncHandler(async (req: Request, res: Response) => 
     },
   });
 
-  if (!warehouse) throw ApiError.notFound('Warehouse not found');
+  if (!warehouse || !canReadWarehouse(req.user?.role, req.user?.outletId, warehouse)) {
+    throw ApiError.notFound('Warehouse not found');
+  }
   res.json(ApiResponse.success(warehouse));
 });
 
@@ -90,7 +112,9 @@ export const getWarehouseStock = asyncHandler(async (req: Request, res: Response
   const { categoryId, search, lowStockOnly } = req.query;
 
   const warehouse = await prisma.warehouse.findUnique({ where: { id } });
-  if (!warehouse) throw ApiError.notFound('Warehouse not found');
+  if (!warehouse || !canReadWarehouse(req.user?.role, req.user?.outletId, warehouse)) {
+    throw ApiError.notFound('Warehouse not found');
+  }
 
   const where: any = { warehouseId: id };
 
@@ -157,6 +181,8 @@ export const getWarehouseStock = asyncHandler(async (req: Request, res: Response
 /** GET /api/warehouses/:id/expiry-summary */
 export const getWarehouseExpirySummary = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
+  await assertReadableWarehouse(req, id);
+
   const now = new Date();
   const nearExpiryThreshold = new Date();
   nearExpiryThreshold.setDate(now.getDate() + 7);
@@ -254,7 +280,9 @@ export const getWarehouseConsumption = asyncHandler(async (req: Request, res: Re
   const limit = Math.min(Number(req.query.limit) || 50, 200);
 
   const warehouse = await prisma.warehouse.findUnique({ where: { id } });
-  if (!warehouse) throw ApiError.notFound('Warehouse not found');
+  if (!warehouse || !canReadWarehouse(req.user?.role, req.user?.outletId, warehouse)) {
+    throw ApiError.notFound('Warehouse not found');
+  }
 
   const logs = await prisma.stockAdjustment.findMany({
     where: { warehouseId: id, type: 'deduct' },
@@ -414,21 +442,44 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
     }
   }
 
-  // 2. Warehouse Filter
-  const whStockFilter = warehouseId && warehouseId !== 'all' ? { warehouseId: String(warehouseId) } : {};
+  // 2. Who is asking → which warehouses may they see?
+  //    Super Admin    → all (honouring the X-Outlet-Id header)
+  //    Admin, Manager → own outlet: BRANCH + KITCHEN
+  //    Store Manager  → own outlet: BRANCH   |  Kitchen Manager → own outlet: KITCHEN
+  //    MAIN is Super-Admin-only, for free: BRANCH/KITCHEN always carry an outletId,
+  //    MAIN never does, so an `outletId` filter already excludes it.
+  const scope = resolveDashboardScope(req.user?.role, resolveOutletScope(req));
 
-  // 3. Fetch all active warehouses for the filter dropdown
+  // 3. The caller's visible warehouses — this IS the filter dropdown's source.
   const activeWarehouses = await prisma.warehouse.findMany({
-    where: { isActive: true },
+    where: scope.where,
     select: { id: true, name: true, type: true, outletId: true }
   });
+  const visibleIds = activeWarehouses.map(w => w.id);
+
+  // A client may only ask for a warehouse it can already see. 404, never 403 — a
+  // wrong id must not confirm that someone else's warehouse exists.
+  const selectedId = warehouseId && warehouseId !== 'all' ? String(warehouseId) : null;
+  if (selectedId && !visibleIds.includes(selectedId)) {
+    throw ApiError.notFound('Warehouse not found');
+  }
 
   // The selected warehouse's type/outletId drives which owner-dashboard cards apply:
   // Receivable (Due to Main) only makes sense for MAIN; Invoices only makes sense for a
   // warehouse that has an outlet (BRANCH/KITCHEN) — MAIN has none, so it stays zero.
-  const selectedWarehouse = warehouseId && warehouseId !== 'all'
-    ? activeWarehouses.find(w => w.id === String(warehouseId)) ?? null
+  const selectedWarehouse = selectedId
+    ? activeWarehouses.find(w => w.id === selectedId) ?? null
     : null;
+
+  // Every aggregate below is confined to these ids. An empty list (e.g. a Kitchen
+  // Manager whose outlet has no kitchen warehouse) yields `in: []` → an all-zero
+  // dashboard, which is the correct answer rather than an error.
+  const targetIds = selectedId ? [selectedId] : visibleIds;
+
+  // WarehouseStock.warehouseId is NOT nullable, so a plain IN is safe here.
+  const whStockFilter = scope.unrestricted && !selectedId
+    ? {}
+    : { warehouseId: { in: targetIds } };
 
   // 4. Calculate total stock value (Inventory Value = sum of currentStock * purchasePrice)
   const stockItems = await prisma.warehouseStock.findMany({
@@ -451,7 +502,7 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
   let totalInventoryValue = 0;
   const stockCostingTable: any[] = [];
 
-  if (warehouseId && warehouseId !== 'all') {
+  if (selectedId) {
     // Specific Warehouse: return its stock records directly
     for (const item of stockItems) {
       const currentStock = Number(item.currentStock) || 0;
@@ -510,10 +561,13 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
   stockCostingTable.sort((a, b) => b.totalValue - a.totalValue);
 
   // 5. Purchases Metrics (Procurement side)
-  const purchaseWhere: any = { ...dateFilter };
-  if (warehouseId && warehouseId !== 'all') {
-    purchaseWhere.warehouseId = String(warehouseId);
-  }
+  // Purchase.warehouseId is NULLABLE — a bare `IN (...)` would silently drop every
+  // purchase booked without a warehouse, so nullableWarehouseGate adds those back by
+  // their own outletId.
+  const purchaseWhere: any = {
+    ...dateFilter,
+    ...(nullableWarehouseGate(scope, visibleIds, selectedId) ?? {}),
+  };
 
   const purchases = await prisma.purchase.findMany({
     where: purchaseWhere,
@@ -534,10 +588,11 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
   const stockReceivedPaid = purchases.filter(p => Number(p.due) <= 0);
   const unpaidToVendorsCount = stockReceivedUnpaid.length;
 
-  // Purchase Requests counts
+  // Purchase Requests counts — PurchaseRequest.warehouseId is required, so a plain IN
+  // is safe (it has no outletId column; outlet is derived through the warehouse).
   const prWhere: any = { ...dateFilter };
-  if (warehouseId && warehouseId !== 'all') {
-    prWhere.warehouseId = String(warehouseId);
+  if (!(scope.unrestricted && !selectedId)) {
+    prWhere.warehouseId = { in: targetIds };
   }
   const purchaseRequests = await prisma.purchaseRequest.findMany({
     where: prWhere,
@@ -549,20 +604,30 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
   // 5b. Receivable — chain-wide amount branches owe Main for received stock transfers
   // (the WarehouseSettlement/dueToMain ledger). Only meaningful when Main is the selected
   // warehouse (or no warehouse is selected) — a Branch/Kitchen doesn't have this ledger.
+  // This is the CENTRAL store's ledger (what every branch owes Main), so it is Super
+  // Admin only — a branch role must not see chain-wide receivables. A Super Admin who
+  // has picked one outlet sees just that outlet's share.
   let receivableValue = 0;
   let receivableOutletsOwing = 0;
-  if (!selectedWarehouse || selectedWarehouse.type === 'MAIN') {
-    const outlets = await prisma.outlet.findMany({ select: { dueToMain: true } });
+  if (scope.isSuperAdmin && (!selectedWarehouse || selectedWarehouse.type === 'MAIN')) {
+    const outlets = await prisma.outlet.findMany({
+      where: scope.outletId ? { id: scope.outletId } : {},
+      select: { dueToMain: true },
+    });
     receivableValue = outlets.reduce((s, o) => s + Number(o.dueToMain), 0);
     receivableOutletsOwing = outlets.filter(o => Number(o.dueToMain) > 0).length;
   }
 
   // 6. Demands & Challans Metrics (Distribution/Outflow side)
-  // Demands
-  const demandWhere: any = { ...dateFilter };
-  if (warehouseId && warehouseId !== 'all') {
-    demandWhere.supplyingWHId = String(warehouseId);
-  }
+  // Both models have TWO warehouse endpoints. When one warehouse is selected we keep
+  // the existing metric semantics (demands key on supplyingWHId, challans on
+  // fromWarehouseId). With no selection, visibility is strict-endpoint — the row counts
+  // if EITHER end is a warehouse you can see — otherwise a branch would never see the
+  // inbound MAIN→BRANCH transfers it cares most about.
+  const demandWhere: any = {
+    ...dateFilter,
+    ...(twoEndpointGate(scope, visibleIds, selectedId, 'supplyingWHId', 'requestingWHId') ?? {}),
+  };
   const demands = await prisma.stockDemand.findMany({
     where: demandWhere,
     select: { status: true }
@@ -572,10 +637,10 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
   const pendingDemandsCount = demands.filter(d => d.status === 'PENDING').length;
 
   // Challans
-  const challanWhere: any = { ...dateFilter };
-  if (warehouseId && warehouseId !== 'all') {
-    challanWhere.fromWarehouseId = String(warehouseId);
-  }
+  const challanWhere: any = {
+    ...dateFilter,
+    ...(twoEndpointGate(scope, visibleIds, selectedId, 'fromWarehouseId', 'toWarehouseId') ?? {}),
+  };
   const challans = await prisma.stockChallan.findMany({
     where: challanWhere,
     include: {
@@ -588,9 +653,11 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
   });
 
   const totalChallansCount = challans.length;
+  const pendingChallansCount = challans.filter(c => c.status === 'PENDING').length;
   const dispatchedChallansCount = challans.filter(c => c.status === 'DISPATCHED').length;
   const receivedChallansCount = challans.filter(c => c.status === 'RECEIVED').length;
   const totalShippingCosts = challans.reduce((s, c) => s + Number(c.shippingCost || 0), 0);
+  const totalChallanPaid = challans.reduce((s, c) => s + Number(c.paid || 0), 0);
 
   // Compute Outflow Value of dispatched/received challans
   let totalOutflowValue = 0;
@@ -652,15 +719,13 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
     });
   }
 
-  // Recent Waste (scoped by warehouseId if selected, otherwise all outlet waste)
-  const wasteWhere: any = dateFilter.createdAt ? { date: { gte: dateFilter.createdAt.gte, lte: dateFilter.createdAt.lte } } : {};
-  if (warehouseId && warehouseId !== 'all') {
-    wasteWhere.warehouseId = String(warehouseId);
-  } else {
-    // If no warehouse specified, limit to outlet scope
-    const scope = resolveOutletScope(req);
-    if (scope) wasteWhere.outletId = scope;
-  }
+  // Recent Waste. WasteRecord.warehouseId is NULLABLE (waste can come from a sale or a
+  // purchase with no warehouse), so the same gate as purchases: warehouse-set match, or
+  // no warehouse but our outlet.
+  const wasteWhere: any = dateFilter.createdAt
+    ? { date: { gte: dateFilter.createdAt.gte, lte: dateFilter.createdAt.lte } }
+    : {};
+  Object.assign(wasteWhere, nullableWarehouseGate(scope, visibleIds, selectedId) ?? {});
   // Waste total (top KPI) — same scope as the recent-waste list above.
   const wasteAgg = await prisma.wasteRecord.aggregate({
     where: wasteWhere,
@@ -727,10 +792,12 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
       fulfilledDemands: fulfilledDemandsCount,
       pendingDemands: pendingDemandsCount,
       totalChallans: totalChallansCount,
+      pendingChallans: pendingChallansCount,
       dispatchedChallans: dispatchedChallansCount,
       receivedChallans: receivedChallansCount,
       outflowValue: Math.round(totalOutflowValue),
-      shippingCosts: Math.round(totalOutflowValue > 0 ? totalShippingCosts : 0)
+      shippingCosts: Math.round(totalOutflowValue > 0 ? totalShippingCosts : 0),
+      totalPaid: Math.round(totalChallanPaid)
     },
   }));
 });

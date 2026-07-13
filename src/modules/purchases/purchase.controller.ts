@@ -25,6 +25,20 @@ function mapPurchase(p: any) {
     createdByRole: p.createdBy?.role ?? null,
     createdByPhone: p.createdBy?.phone ?? null,
     createdByEmail: p.createdBy?.email ?? null,
+    paymentHistory: (p.paymentHistory ?? []).map((ph: any) => ({
+      id: ph.id,
+      amount: Number(ph.amount),
+      balanceAfter: Number(ph.balanceAfter),
+      note: ph.note,
+      createdAt: ph.createdAt,
+      supplierId: ph.supplierId,
+    })),
+    supplierDues: p.supplierDues != null ? (p.supplierDues as any[]).map((sd: any) => ({
+      ...sd,
+      total: Number(sd.total ?? 0),
+      paid: Number(sd.paid ?? 0),
+      due: Number(sd.due ?? 0),
+    })) : null,
     supplier: undefined,
     warehouse: undefined,
     createdBy: undefined,
@@ -66,6 +80,8 @@ export const getPurchase = asyncHandler(async (req: Request, res: Response) => {
     include: {
       supplier: { select: { name: true } },
       warehouse: { select: { name: true } },
+      createdBy: { select: { name: true, role: true, phone: true, email: true } },
+      paymentHistory: { orderBy: { createdAt: 'asc' } },
     },
   });
   if (!p) throw new ApiError('Purchase not found', 404);
@@ -79,6 +95,7 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
     supplierId, invoiceNumber, date, items, subtotal, discount, tax,
     shippingCost, miscAmount,
     total, paid, status, notes, warehouseId, purchaseRequestId,
+    supplierDues,
   } = req.body;
 
   if (!items || !Array.isArray(items) || items.length === 0) {
@@ -94,10 +111,14 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
     if (pr.status !== 'APPROVED') throw new ApiError('Purchase request is not approved', 400);
   }
 
-  const pWarehouse = warehouseId
-    ? await prisma.warehouse.findUnique({ where: { id: warehouseId }, select: { outletId: true } })
-    : null;
-  const outletId = resolveCreateOutlet(req, pWarehouse?.outletId);
+  let outletId: string | null = null;
+  if (warehouseId) {
+    const pWarehouse = await prisma.warehouse.findUnique({ where: { id: warehouseId }, select: { outletId: true } });
+    if (!pWarehouse) throw new ApiError('Warehouse not found', 404);
+    outletId = pWarehouse.outletId;
+  } else {
+    outletId = resolveCreateOutlet(req);
+  }
 
   const paidAmount = Number(paid ?? 0);
   const totalAmount = Number(total);
@@ -128,6 +149,7 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
         outletId,
         purchaseRequestId: purchaseRequestId || null,
         createdById: (req as any).user?.id || null,
+        supplierDues: supplierDues || null,
       },
       include: {
         supplier: { select: { name: true } },
@@ -204,8 +226,20 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
       }
     }
 
-    // Step 3: Update supplier totals if supplierId provided
-    if (supplierId) {
+    // Step 3: Update supplier totals if supplierDues or supplierId provided
+    if (supplierDues && Array.isArray(supplierDues)) {
+      for (const sd of supplierDues) {
+        if (sd.supplierId) {
+          await tx.supplier.update({
+            where: { id: sd.supplierId },
+            data: {
+              totalPurchases: { increment: Number(sd.total) },
+              totalDue: { increment: Number(sd.due) },
+            },
+          });
+        }
+      }
+    } else if (supplierId) {
       await tx.supplier.update({
         where: { id: supplierId },
         data: {
@@ -220,6 +254,34 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
       await tx.purchaseRequest.update({
         where: { id: purchaseRequestId },
         data: { status: 'PURCHASED' },
+      });
+    }
+
+    // Step 5: Create initial PurchasePayment ledger entry if any amount was paid
+    if (supplierDues && Array.isArray(supplierDues)) {
+      for (const sd of supplierDues) {
+        if (sd.supplierId && Number(sd.paid) > 0) {
+          await tx.purchasePayment.create({
+            data: {
+              purchaseId: p.id,
+              supplierId: sd.supplierId,
+              amount: Number(sd.paid),
+              balanceAfter: Number(sd.due),
+              note: `Initial payment at purchase creation (${sd.supplierName || 'Supplier'})`,
+              recordedById: (req as any).user?.id || null,
+            },
+          });
+        }
+      }
+    } else if (paidAmount > 0) {
+      await tx.purchasePayment.create({
+        data: {
+          purchaseId: p.id,
+          amount: paidAmount,
+          balanceAfter: due,
+          note: 'Initial payment at purchase creation',
+          recordedById: (req as any).user?.id || null,
+        },
       });
     }
 
@@ -316,7 +378,19 @@ export const deletePurchase = asyncHandler(async (req: Request, res: Response) =
     }
 
     // Reverse supplier totals
-    if (existing.supplierId) {
+    if (existing.supplierDues && Array.isArray(existing.supplierDues)) {
+      for (const sd of existing.supplierDues as any[]) {
+        if (sd.supplierId) {
+          await tx.supplier.update({
+            where: { id: sd.supplierId },
+            data: {
+              totalPurchases: { decrement: Number(sd.total) },
+              totalDue: { decrement: Number(sd.due) },
+            },
+          });
+        }
+      }
+    } else if (existing.supplierId) {
       await tx.supplier.update({
         where: { id: existing.supplierId },
         data: {
@@ -334,4 +408,168 @@ export const deletePurchase = asyncHandler(async (req: Request, res: Response) =
   });
 
   return res.json(ApiResponse.success(null, 'Purchase deleted'));
+});
+
+export const payPurchase = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { amount, note, supplierId } = req.body;
+
+  const payAmount = Number(amount);
+  if (!payAmount || payAmount <= 0) {
+    throw new ApiError('Valid payment amount required', 400);
+  }
+
+  const existing = await prisma.purchase.findUnique({ where: { id } });
+  if (!existing) throw new ApiError('Purchase not found', 404);
+
+  // If there are multiple supplier dues in this purchase
+  let updatedSupplierDues: any = null;
+  let targetSupplierId = supplierId || existing.supplierId;
+  let currentDue = 0;
+  let newPaid = 0;
+  let newDue = 0;
+
+  if (existing.supplierDues && Array.isArray(existing.supplierDues)) {
+    const dues = existing.supplierDues as any[];
+    // Find the due entry for the target supplier
+    let targetEntry = dues.find(d => d.supplierId === targetSupplierId);
+    if (!targetEntry) {
+      // If we didn't specify supplierId but there's only one supplier in dues, use that
+      const validDues = dues.filter(d => d.supplierId);
+      if (!targetSupplierId && validDues.length === 1) {
+        targetSupplierId = validDues[0].supplierId;
+        targetEntry = validDues[0];
+      } else {
+        throw new ApiError('Supplier ID is required for multi-supplier purchases', 400);
+      }
+    }
+
+    currentDue = Number(targetEntry.due);
+    if (currentDue <= 0) {
+      throw new ApiError('This supplier has no outstanding balance on this purchase', 400);
+    }
+    if (payAmount > currentDue) {
+      throw new ApiError(`Payment amount (${payAmount}) cannot exceed supplier due (${currentDue})`, 400);
+    }
+
+    // Update this supplier's entry
+    targetEntry.paid = Number(targetEntry.paid) + payAmount;
+    targetEntry.due = currentDue - payAmount;
+    targetEntry.status = targetEntry.due <= 0 ? 'paid' : 'partial';
+    updatedSupplierDues = dues;
+
+    // Recalculate overall paid and due
+    newDue = dues.reduce((sum, d) => sum + Number(d.due), 0);
+    newPaid = Number(existing.total) - newDue;
+  } else {
+    // Fallback old single-supplier logic
+    currentDue = Number(existing.due);
+    if (currentDue <= 0) {
+      throw new ApiError('This purchase has no outstanding balance', 400);
+    }
+    if (payAmount > currentDue) {
+      throw new ApiError(`Payment amount (${payAmount}) cannot exceed outstanding due (${currentDue})`, 400);
+    }
+    newPaid = Number(existing.paid) + payAmount;
+    newDue = currentDue - payAmount;
+  }
+
+  const newStatus = newDue <= 0 ? 'paid' : 'partial';
+
+  const updated = await prisma.$transaction(async (tx) => {
+    // Update purchase financials
+    const p = await tx.purchase.update({
+      where: { id },
+      data: {
+        paid: newPaid,
+        due: newDue,
+        status: newStatus,
+        ...(updatedSupplierDues && { supplierDues: updatedSupplierDues })
+      },
+      include: {
+        supplier: { select: { name: true } },
+        warehouse: { select: { name: true } },
+        createdBy: { select: { name: true, role: true, phone: true, email: true } },
+        paymentHistory: { orderBy: { createdAt: 'asc' } },
+      },
+    });
+
+    // Create payment ledger entry
+    await tx.purchasePayment.create({
+      data: {
+        purchaseId: id,
+        supplierId: targetSupplierId || null,
+        amount: payAmount,
+        balanceAfter: newDue,
+        note: note || null,
+        recordedById: (req as any).user?.id || null,
+      },
+    });
+
+    // Update supplier totalDue if targetSupplierId is linked
+    if (targetSupplierId) {
+      await tx.supplier.update({
+        where: { id: targetSupplierId },
+        data: { totalDue: { decrement: payAmount } },
+      });
+    }
+
+    return p;
+  });
+
+  return res.json(ApiResponse.success(mapPurchase(updated), 'Payment recorded'));
+});
+
+export const getPurchaseStats = asyncHandler(async (req: Request, res: Response) => {
+  const { supplierId } = req.query as Record<string, string>;
+
+  const where: any = {};
+  if (supplierId) where.supplierId = supplierId;
+
+  const scope = resolveOutletScope(req);
+  if (scope) where.outletId = scope;
+
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  
+  const startOfWeek = new Date(now);
+  startOfWeek.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+  const weekStart = new Date(startOfWeek.getFullYear(), startOfWeek.getMonth(), startOfWeek.getDate());
+
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  const [totalAgg, todayAgg, weeklyAgg, monthlyAgg] = await Promise.all([
+    prisma.purchase.aggregate({
+      where,
+      _sum: { total: true },
+    }),
+    prisma.purchase.aggregate({
+      where: {
+        ...where,
+        createdAt: { gte: todayStart },
+      },
+      _sum: { total: true },
+    }),
+    prisma.purchase.aggregate({
+      where: {
+        ...where,
+        createdAt: { gte: weekStart },
+      },
+      _sum: { total: true },
+    }),
+    prisma.purchase.aggregate({
+      where: {
+        ...where,
+        createdAt: { gte: monthStart },
+      },
+      _sum: { total: true },
+    }),
+  ]);
+
+  return res.json(ApiResponse.success({
+    total: Number(totalAgg._sum.total || 0),
+    today: Number(todayAgg._sum.total || 0),
+    weekly: Number(weeklyAgg._sum.total || 0),
+    monthly: Number(monthlyAgg._sum.total || 0),
+  }));
 });

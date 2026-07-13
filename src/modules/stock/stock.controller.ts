@@ -58,10 +58,14 @@ export const createAdjustment = asyncHandler(async (req: Request, res: Response)
   const ingredient = await prisma.ingredient.findUnique({ where: { id: ingredientId } });
   if (!ingredient) throw ApiError.notFound('Ingredient not found');
 
-  const adjWarehouse = warehouseId
-    ? await prisma.warehouse.findUnique({ where: { id: warehouseId }, select: { outletId: true } })
-    : null;
-  const outletId = resolveCreateOutlet(req, adjWarehouse?.outletId);
+  let outletId: string | null = null;
+  if (warehouseId) {
+    const adjWarehouse = await prisma.warehouse.findUnique({ where: { id: warehouseId }, select: { outletId: true } });
+    if (!adjWarehouse) throw ApiError.notFound('Warehouse not found');
+    outletId = adjWarehouse.outletId;
+  } else {
+    outletId = resolveCreateOutlet(req);
+  }
 
   const adjustedById = req.user?.id;
   const stockChange = ['add', 'correction'].includes(type) ? Number(quantity) : -Number(quantity);
@@ -620,7 +624,14 @@ export const createWasteRecord = asyncHandler(async (req: Request, res: Response
   const { itemName, quantity, unit, reason, cost, ingredientId, warehouseId } = req.body;
 
   if (!itemName?.trim()) throw ApiError.badRequest('Item name is required');
-  const outletId = resolveCreateOutlet(req);
+  let outletId: string | null = null;
+  if (warehouseId) {
+    const pWarehouse = await prisma.warehouse.findUnique({ where: { id: warehouseId }, select: { outletId: true } });
+    if (!pWarehouse) throw ApiError.notFound('Warehouse not found');
+    outletId = pWarehouse.outletId;
+  } else {
+    outletId = resolveCreateOutlet(req);
+  }
 
   const record = await prisma.$transaction(async (tx) => {
     const waste = await tx.wasteRecord.create({
@@ -814,7 +825,7 @@ export const wasteDoughBatch = asyncHandler(async (req: Request, res: Response) 
     if (!batch) throw ApiError.notFound('Batch not found');
     const scope = resolveOutletScope(req);
     if (scope && batch.warehouse?.outletId !== scope) throw ApiError.notFound('Batch not found');
-    const wasteOutletId = resolveCreateOutlet(req, batch.warehouse?.outletId);
+    const wasteOutletId = batch.warehouse?.outletId || null;
     const remaining = Number(batch.remainingQty);
     if (remaining <= 0) throw ApiError.badRequest('Batch already empty');
 
