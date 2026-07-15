@@ -146,16 +146,46 @@ export const getSupplierLedger = asyncHandler(async (req: Request, res: Response
   if (!supplier) throw new ApiError('Supplier not found', 404);
   checkSupplierAccess(req, supplier.outletId);
 
-  // Fetch ledger entries (purchases and payments)
-  const [purchases, payments] = await Promise.all([
-    prisma.purchase.findMany({ where: { supplierId: id }, orderBy: { createdAt: 'desc' } }),
-    prisma.purchasePayment.findMany({ where: { supplierId: id }, orderBy: { createdAt: 'desc' } }),
-  ]);
+  // Fetch purchases with payment history
+  const purchases = await prisma.purchase.findMany({
+    where: { supplierId: id },
+    orderBy: { createdAt: 'desc' },
+    include: {
+      paymentHistory: {
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, amount: true, balanceAfter: true, note: true, createdAt: true },
+      },
+    },
+  });
 
-  const entries = [
-    ...purchases.map(p => ({ id: p.id, type: 'Purchase', date: p.createdAt, ref: p.invoiceNumber || '—', amount: Number(p.total), balance: 0 })),
-    ...payments.map(p => ({ id: p.id, type: 'Payment', date: p.createdAt, ref: p.note || 'Payment', amount: -Number(p.amount), balance: Number(p.balanceAfter) })),
-  ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const ledgerPurchases = purchases.map(p => ({
+    id: p.id,
+    invoiceNumber: p.invoiceNumber,
+    date: p.createdAt,
+    total: Number(p.total),
+    paid: Number(p.paid),
+    due: Math.max(0, Number(p.total) - Number(p.paid)),
+    status: p.status,
+    createdAt: p.createdAt,
+    paymentHistory: (p.paymentHistory ?? []).map(ph => ({
+      id: ph.id,
+      amount: Number(ph.amount),
+      balanceAfter: Number(ph.balanceAfter),
+      note: ph.note,
+      createdAt: ph.createdAt,
+    })),
+  }));
 
-  return res.json(ApiResponse.success(entries));
+  const totalPurchases = ledgerPurchases.reduce((s, p) => s + p.total, 0);
+  const totalPaid = ledgerPurchases.reduce((s, p) => s + p.paid, 0);
+  const totalDue = Math.max(0, totalPurchases - totalPaid);
+
+  return res.json(ApiResponse.success({
+    supplier: mapSupplier(supplier),
+    totalPurchases,
+    totalPaid,
+    totalDue,
+    purchases: ledgerPurchases,
+  }));
 });
+
