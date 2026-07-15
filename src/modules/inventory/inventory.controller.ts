@@ -415,6 +415,16 @@ export const deleteIngredient = asyncHandler(async (req: Request, res: Response)
   res.json(ApiResponse.success(null, 'Ingredient deleted'));
 });
 
+/** GET /api/inventory/ingredients/names */
+export const getIngredientNames = asyncHandler(async (req: Request, res: Response) => {
+  const ingredients = await prisma.ingredient.findMany({
+    select: { name: true },
+    orderBy: { name: 'asc' },
+  });
+  const uniqueNames = Array.from(new Set(ingredients.map(i => i.name).filter(Boolean)));
+  return res.json(ApiResponse.success(uniqueNames));
+});
+
 // ============================================================
 // PRE-MADE FOOD
 // ============================================================

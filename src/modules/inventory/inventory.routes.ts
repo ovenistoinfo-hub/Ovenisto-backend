@@ -9,7 +9,7 @@ import { authorize } from '../../middleware/authorize.js';
 import {
   getUnits, createUnit, updateUnit, deleteUnit,
   getIngredientCategories, createIngredientCategory, updateIngredientCategory, deleteIngredientCategory,
-  getIngredients, getIngredient, createIngredient, updateIngredient, deleteIngredient,
+  getIngredients, getIngredient, getIngredientNames, createIngredient, updateIngredient, deleteIngredient,
   getPreMadeFood, createPreMadeFood, updatePreMadeFood, deletePreMadeFood,
 } from './inventory.controller.js';
 
@@ -30,6 +30,7 @@ router.delete('/ingredient-categories/:id', authenticate, authorize(adminRoles),
 
 // ── Ingredients ──
 router.get('/ingredients', authenticate, getIngredients);
+router.get('/ingredients/names', authenticate, getIngredientNames);
 router.get('/ingredients/:id', authenticate, getIngredient);
 router.post('/ingredients', authenticate, authorize(adminRoles), createIngredient);
 router.put('/ingredients/:id', authenticate, authorize(adminRoles), updateIngredient);
