@@ -624,10 +624,24 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
   // fromWarehouseId). With no selection, visibility is strict-endpoint — the row counts
   // if EITHER end is a warehouse you can see — otherwise a branch would never see the
   // inbound MAIN→BRANCH transfers it cares most about.
-  const demandWhere: any = {
-    ...dateFilter,
-    ...(twoEndpointGate(scope, visibleIds, selectedId, 'supplyingWHId', 'requestingWHId') ?? {}),
-  };
+  let demandWhere: any = { ...dateFilter };
+  if (selectedId) {
+    if (selectedWarehouse?.type === 'MAIN') {
+      demandWhere.supplyingWHId = selectedId;
+    } else if (selectedWarehouse?.type === 'KITCHEN') {
+      demandWhere.requestingWHId = selectedId;
+    } else {
+      demandWhere.OR = [
+        { supplyingWHId: selectedId },
+        { requestingWHId: selectedId }
+      ];
+    }
+  } else {
+    demandWhere = {
+      ...dateFilter,
+      ...(twoEndpointGate(scope, visibleIds, selectedId, 'supplyingWHId', 'requestingWHId') ?? {}),
+    };
+  }
   const demands = await prisma.stockDemand.findMany({
     where: demandWhere,
     select: { status: true }
