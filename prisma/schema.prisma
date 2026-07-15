@@ -50,6 +50,8 @@ model Outlet {
   staffSchedules    StaffSchedule[]
   employees         Employee[]
   warehouseSettlements WarehouseSettlement[]
+  suppliers        Supplier[]
+  ingredients      Ingredient[]
 
   dueToMain Decimal @default(0) @db.Decimal(10, 2)
 
@@ -347,8 +349,10 @@ model Ingredient {
   status         String   @default("active") @db.VarChar(20)
   shelfLifeHours Int? // null = normal; set (e.g. 8) = short-life ingredient (dough) with batch + countdown tracking
   supplierId     String?  // Associated vendor
+  outletId       String?
 
   // Relations
+  outlet               Outlet?               @relation(fields: [outletId], references: [id])
   category             IngredientCategory?   @relation(fields: [categoryId], references: [id])
   unit                 IngredientUnit?       @relation(fields: [unitId], references: [id])
   supplier             Supplier?             @relation(fields: [supplierId], references: [id])
@@ -1063,8 +1067,10 @@ model Supplier {
   totalPurchases Decimal  @default(0) @db.Decimal(12, 2)
   totalDue       Decimal  @default(0) @db.Decimal(10, 2)
   createdAt      DateTime @default(now())
+  outletId       String?
 
   // Relations
+  outlet           Outlet?           @relation(fields: [outletId], references: [id])
   purchases        Purchase[]
   ingredients      Ingredient[]
   purchaseRequests PurchaseRequest[]
