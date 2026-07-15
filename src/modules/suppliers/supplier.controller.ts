@@ -6,6 +6,7 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import { resolveOutletScope } from '../../middleware/outletScope.js';
 
 function mapSupplier(s: any) {
   return {
@@ -13,6 +14,19 @@ function mapSupplier(s: any) {
     totalPurchases: Number(s.totalPurchases),
     totalDue: Number(s.totalDue),
   };
+}
+
+export function checkSupplierAccess(req: Request, supplierOutletId: string | null) {
+  if (req.user?.role === 'Super Admin') {
+    if (supplierOutletId !== null) {
+      throw new ApiError('Supplier not found', 404);
+    }
+  } else {
+    const scope = resolveOutletScope(req);
+    if (!scope || supplierOutletId !== scope) {
+      throw new ApiError('Supplier not found', 404);
+    }
+  }
 }
 
 export const getSuppliers = asyncHandler(async (req: Request, res: Response) => {
@@ -26,6 +40,15 @@ export const getSuppliers = asyncHandler(async (req: Request, res: Response) => 
     ];
   }
 
+  const scope = resolveOutletScope(req);
+  if (req.user?.role === 'Super Admin') {
+    where.outletId = null;
+  } else if (scope) {
+    where.outletId = scope;
+  } else {
+    where.outletId = 'none';
+  }
+
   const data = await prisma.supplier.findMany({ where, orderBy: { name: 'asc' } });
   return res.json(ApiResponse.success(data.map(mapSupplier)));
 });
@@ -33,18 +56,23 @@ export const getSuppliers = asyncHandler(async (req: Request, res: Response) => 
 export const getSupplier = asyncHandler(async (req: Request, res: Response) => {
   const s = await prisma.supplier.findUnique({ where: { id: req.params.id } });
   if (!s) throw new ApiError('Supplier not found', 404);
+  checkSupplierAccess(req, s.outletId);
   return res.json(ApiResponse.success(mapSupplier(s)));
 });
 
 export const createSupplier = asyncHandler(async (req: Request, res: Response) => {
   const { name, company, phone, email } = req.body;
   if (!name) throw new ApiError('Name is required', 400);
+
+  const outletId = req.user?.role === 'Super Admin' ? null : (req.user?.outletId ?? null);
+
   const s = await prisma.supplier.create({
     data: {
       name,
       company: company || null,
       phone: phone || null,
       email: email || null,
+      outletId,
     },
   });
   return res.status(201).json(ApiResponse.created(mapSupplier(s), 'Supplier created'));
@@ -54,6 +82,8 @@ export const updateSupplier = asyncHandler(async (req: Request, res: Response) =
   const { name, company, phone, email } = req.body;
   const existing = await prisma.supplier.findUnique({ where: { id: req.params.id } });
   if (!existing) throw new ApiError('Supplier not found', 404);
+  checkSupplierAccess(req, existing.outletId);
+
   const s = await prisma.supplier.update({
     where: { id: req.params.id },
     data: { name, company, phone, email },
@@ -64,6 +94,8 @@ export const updateSupplier = asyncHandler(async (req: Request, res: Response) =
 export const deleteSupplier = asyncHandler(async (req: Request, res: Response) => {
   const s = await prisma.supplier.findUnique({ where: { id: req.params.id } });
   if (!s) throw new ApiError('Supplier not found', 404);
+  checkSupplierAccess(req, s.outletId);
+
   if (Number(s.totalDue) > 0) {
     throw new ApiError('Cannot delete supplier with outstanding dues', 400);
   }
@@ -72,13 +104,14 @@ export const deleteSupplier = asyncHandler(async (req: Request, res: Response) =
 });
 
 export const recordPayment = asyncHandler(async (req: Request, res: Response) => {
-  const { amount, paymentMethod } = req.body;
+  const { amount } = req.body;
   if (!amount || Number(amount) <= 0) {
     throw new ApiError('Valid payment amount is required', 400);
   }
 
   const s = await prisma.supplier.findUnique({ where: { id: req.params.id } });
   if (!s) throw new ApiError('Supplier not found', 404);
+  checkSupplierAccess(req, s.outletId);
 
   const newDue = Math.max(0, Number(s.totalDue) - Number(amount));
   const updated = await prisma.supplier.update({
@@ -93,6 +126,7 @@ export const getSupplierIngredients = asyncHandler(async (req: Request, res: Res
   const { id } = req.params;
   const supplier = await prisma.supplier.findUnique({ where: { id } });
   if (!supplier) throw new ApiError('Supplier not found', 404);
+  checkSupplierAccess(req, supplier.outletId);
 
   const ingredients = await prisma.ingredient.findMany({
     where: { supplierId: id, status: 'active' },
@@ -100,93 +134,28 @@ export const getSupplierIngredients = asyncHandler(async (req: Request, res: Res
     include: {
       category: { select: { id: true, name: true } },
       unit: { select: { id: true, name: true } },
+      supplier: { select: { id: true, name: true } },
     },
   });
-
   return res.json(ApiResponse.success(ingredients));
 });
 
 export const getSupplierLedger = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const s = await prisma.supplier.findUnique({ where: { id } });
-  if (!s) throw new ApiError('Supplier not found', 404);
+  const supplier = await prisma.supplier.findUnique({ where: { id } });
+  if (!supplier) throw new ApiError('Supplier not found', 404);
+  checkSupplierAccess(req, supplier.outletId);
 
-  const purchases = await prisma.purchase.findMany({
-    where: {
-      OR: [
-        { supplierId: id },
-        {
-          supplierDues: {
-            array_contains: [{ supplierId: id }]
-          }
-        }
-      ]
-    },
-    orderBy: { createdAt: 'desc' },
-    select: {
-      id: true,
-      invoiceNumber: true,
-      date: true,
-      total: true,
-      paid: true,
-      due: true,
-      status: true,
-      createdAt: true,
-      supplierDues: true,
-      paymentHistory: {
-        orderBy: { createdAt: 'asc' },
-        select: { id: true, amount: true, balanceAfter: true, note: true, createdAt: true, supplierId: true },
-      },
-    },
-  });
+  // Fetch ledger entries (purchases and payments)
+  const [purchases, payments] = await Promise.all([
+    prisma.purchase.findMany({ where: { supplierId: id }, orderBy: { createdAt: 'desc' } }),
+    prisma.purchasePayment.findMany({ where: { supplierId: id }, orderBy: { createdAt: 'desc' } }),
+  ]);
 
-  const totalPurchases = Number(s.totalPurchases);
-  const totalDue = Number(s.totalDue);
-  const totalPaid = totalPurchases - totalDue;
+  const entries = [
+    ...purchases.map(p => ({ id: p.id, type: 'Purchase', date: p.createdAt, ref: p.invoiceNumber || '—', amount: Number(p.total), balance: 0 })),
+    ...payments.map(p => ({ id: p.id, type: 'Payment', date: p.createdAt, ref: p.note || 'Payment', amount: -Number(p.amount), balance: Number(p.balanceAfter) })),
+  ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-  return res.json(ApiResponse.success({
-    supplier: mapSupplier(s),
-    totalPurchases,
-    totalPaid,
-    totalDue,
-    purchases: purchases.map(p => {
-      let total = Number(p.total ?? 0);
-      let paid = Number(p.paid);
-      let due = Number(p.due);
-      let status = p.status;
-
-      if (p.supplierDues && Array.isArray(p.supplierDues)) {
-        const sd = (p.supplierDues as any[]).find(d => d.supplierId === id);
-        if (sd) {
-          total = Number(sd.total ?? 0);
-          paid = Number(sd.paid ?? 0);
-          due = Number(sd.due ?? 0);
-          status = sd.status;
-        }
-      }
-
-      // Filter payment history for this specific supplier
-      const filteredPayments = p.paymentHistory
-        .filter((ph: any) => !ph.supplierId || ph.supplierId === id)
-        .map(ph => ({
-          id: ph.id,
-          amount: Number(ph.amount),
-          balanceAfter: Number(ph.balanceAfter),
-          note: ph.note,
-          createdAt: ph.createdAt,
-        }));
-
-      return {
-        id: p.id,
-        invoiceNumber: p.invoiceNumber,
-        date: p.date,
-        total,
-        paid,
-        due,
-        status,
-        createdAt: p.createdAt,
-        paymentHistory: filteredPayments,
-      };
-    }),
-  }));
+  return res.json(ApiResponse.success(entries));
 });
