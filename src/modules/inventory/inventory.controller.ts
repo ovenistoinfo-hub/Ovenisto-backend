@@ -8,6 +8,7 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import { resolveOutletScope } from '../../middleware/outletScope.js';
 
 // ============================================================
 // INGREDIENT UNITS (with symbol & conversions)
@@ -214,6 +215,19 @@ export const deleteIngredientCategory = asyncHandler(async (req: Request, res: R
 // INGREDIENTS
 // ============================================================
 
+export function checkIngredientAccess(req: Request, ingredientOutletId: string | null) {
+  if (req.user?.role === 'Super Admin') {
+    if (ingredientOutletId !== null) {
+      throw ApiError.notFound('Ingredient not found');
+    }
+  } else {
+    const scope = resolveOutletScope(req);
+    if (!scope || ingredientOutletId !== scope) {
+      throw ApiError.notFound('Ingredient not found');
+    }
+  }
+}
+
 /** GET /api/inventory/ingredients */
 export const getIngredients = asyncHandler(async (req: Request, res: Response) => {
   const { search, categoryId, status, lowStock, page, limit } = req.query;
@@ -223,6 +237,16 @@ export const getIngredients = asyncHandler(async (req: Request, res: Response) =
   if (categoryId) where.categoryId = String(categoryId);
   if (status) where.status = String(status);
   if (lowStock === 'true') where.AND = [{ currentStock: { lte: prisma.ingredient.fields.lowStockLevel } }];
+
+  // Apply scoping
+  const scope = resolveOutletScope(req);
+  if (req.user?.role === 'Super Admin') {
+    where.outletId = null;
+  } else if (scope) {
+    where.outletId = scope;
+  } else {
+    where.outletId = 'none';
+  }
 
   // OPT-IN pagination (perf #8): only paginate when `limit` is explicitly provided.
   // Without `limit` the response stays byte-identical to before — a top-level
@@ -281,6 +305,7 @@ export const getIngredient = asyncHandler(async (req: Request, res: Response) =>
     },
   });
   if (!ingredient) throw ApiError.notFound('Ingredient not found');
+  checkIngredientAccess(req, ingredient.outletId);
   res.json(ApiResponse.success(ingredient));
 });
 
@@ -288,6 +313,21 @@ export const getIngredient = asyncHandler(async (req: Request, res: Response) =>
 export const createIngredient = asyncHandler(async (req: Request, res: Response) => {
   const { name, brand, categoryId, unitId, purchasePrice, currentStock, lowStockLevel, status, supplierId } = req.body;
   if (!name?.trim()) throw ApiError.badRequest('Ingredient name is required');
+
+  // Scope checking for supplier if provided
+  if (supplierId) {
+    const supplier = await prisma.supplier.findUnique({ where: { id: supplierId } });
+    if (!supplier) throw ApiError.notFound('Linked supplier not found');
+    
+    const scope = resolveOutletScope(req);
+    if (req.user?.role === 'Super Admin') {
+      if (supplier.outletId !== null) throw ApiError.badRequest('Cannot link supplier from outside scope');
+    } else {
+      if (!scope || supplier.outletId !== scope) throw ApiError.badRequest('Cannot link supplier from outside scope');
+    }
+  }
+
+  const outletId = req.user?.role === 'Super Admin' ? null : (req.user?.outletId ?? null);
 
   const ingredient = await prisma.ingredient.create({
     data: {
@@ -300,6 +340,7 @@ export const createIngredient = asyncHandler(async (req: Request, res: Response)
       lowStockLevel: lowStockLevel ?? 0,
       status: status ?? 'active',
       supplierId: supplierId || null,
+      outletId,
     },
     include: {
       category: { select: { id: true, name: true } },
@@ -317,19 +358,33 @@ export const updateIngredient = asyncHandler(async (req: Request, res: Response)
 
   const existing = await prisma.ingredient.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Ingredient not found');
+  checkIngredientAccess(req, existing.outletId);
+
+  // Scope checking for supplier if provided
+  if (supplierId) {
+    const supplier = await prisma.supplier.findUnique({ where: { id: supplierId } });
+    if (!supplier) throw ApiError.notFound('Linked supplier not found');
+    
+    const scope = resolveOutletScope(req);
+    if (req.user?.role === 'Super Admin') {
+      if (supplier.outletId !== null) throw ApiError.badRequest('Cannot link supplier from outside scope');
+    } else {
+      if (!scope || supplier.outletId !== scope) throw ApiError.badRequest('Cannot link supplier from outside scope');
+    }
+  }
 
   const ingredient = await prisma.ingredient.update({
     where: { id },
     data: {
       ...(name && { name: name.trim() }),
-      ...(brand !== undefined && { brand: brand?.trim() || null }),
-      ...(categoryId !== undefined && { categoryId: categoryId || null }),
-      ...(unitId !== undefined && { unitId: unitId || null }),
-      ...(purchasePrice !== undefined && { purchasePrice: purchasePrice ?? null }),
-      ...(currentStock !== undefined && { currentStock }),
-      ...(lowStockLevel !== undefined && { lowStockLevel }),
-      ...(status && { status }),
-      ...(supplierId !== undefined && { supplierId: supplierId || null }),
+      brand: brand !== undefined ? (brand?.trim() || null) : undefined,
+      categoryId: categoryId !== undefined ? (categoryId || null) : undefined,
+      unitId: unitId !== undefined ? (unitId || null) : undefined,
+      purchasePrice: purchasePrice !== undefined ? purchasePrice : undefined,
+      currentStock: currentStock !== undefined ? currentStock : undefined,
+      lowStockLevel: lowStockLevel !== undefined ? lowStockLevel : undefined,
+      status: status !== undefined ? status : undefined,
+      supplierId: supplierId !== undefined ? (supplierId || null) : undefined,
     },
     include: {
       category: { select: { id: true, name: true } },
@@ -353,9 +408,11 @@ export const updateIngredient = asyncHandler(async (req: Request, res: Response)
 export const deleteIngredient = asyncHandler(async (req: Request, res: Response) => {
   const existing = await prisma.ingredient.findUnique({ where: { id: req.params.id } });
   if (!existing) throw ApiError.notFound('Ingredient not found');
+  checkIngredientAccess(req, existing.outletId);
+
   // Soft delete
   await prisma.ingredient.update({ where: { id: req.params.id }, data: { status: 'inactive' } });
-  res.json(ApiResponse.success(null, 'Ingredient deactivated'));
+  res.json(ApiResponse.success(null, 'Ingredient deleted'));
 });
 
 // ============================================================
