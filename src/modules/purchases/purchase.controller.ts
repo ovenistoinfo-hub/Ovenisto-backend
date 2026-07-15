@@ -41,8 +41,27 @@ function mapPurchase(p: any) {
     })) : null,
     supplier: undefined,
     warehouse: undefined,
-    createdBy: undefined,
   };
+}
+
+function checkPurchaseAccess(
+  req: Request,
+  purchase: { outletId: string | null; warehouseId: string | null; warehouse?: { outletId: string | null } | null }
+) {
+  const isSuperAdmin = req.user?.role === 'Super Admin';
+  const warehouseOutletId = purchase.warehouse ? purchase.warehouse.outletId : undefined;
+  const effectiveOutletId = purchase.warehouseId ? (warehouseOutletId ?? null) : purchase.outletId;
+
+  if (isSuperAdmin) {
+    if (effectiveOutletId !== null) {
+      throw new ApiError('Purchase not found', 404);
+    }
+  } else {
+    const scope = resolveOutletScope(req);
+    if (scope && effectiveOutletId !== scope) {
+      throw new ApiError('Purchase not found', 404);
+    }
+  }
 }
 
 export const getPurchases = asyncHandler(async (req: Request, res: Response) => {
@@ -54,7 +73,17 @@ export const getPurchases = asyncHandler(async (req: Request, res: Response) => 
   if (status) where.status = status;
 
   const scope = resolveOutletScope(req);
-  if (scope) where.outletId = scope;
+  if (req.user?.role === 'Super Admin') {
+    where.OR = [
+      { warehouse: { outletId: null } },
+      { AND: [ { warehouseId: null }, { outletId: null } ] }
+    ];
+  } else if (scope) {
+    where.OR = [
+      { warehouse: { outletId: scope } },
+      { AND: [ { warehouseId: null }, { outletId: scope } ] }
+    ];
+  }
 
   const [data, total] = await Promise.all([
     prisma.purchase.findMany({
@@ -64,7 +93,7 @@ export const getPurchases = asyncHandler(async (req: Request, res: Response) => 
       orderBy: { createdAt: 'desc' },
       include: {
         supplier: { select: { name: true } },
-        warehouse: { select: { name: true } },
+        warehouse: { select: { name: true, outletId: true } },
         createdBy: { select: { name: true, role: true, phone: true, email: true } },
       },
     }),
@@ -79,14 +108,13 @@ export const getPurchase = asyncHandler(async (req: Request, res: Response) => {
     where: { id: req.params.id },
     include: {
       supplier: { select: { name: true } },
-      warehouse: { select: { name: true } },
+      warehouse: { select: { name: true, outletId: true } },
       createdBy: { select: { name: true, role: true, phone: true, email: true } },
       paymentHistory: { orderBy: { createdAt: 'asc' } },
     },
   });
   if (!p) throw new ApiError('Purchase not found', 404);
-  const scope = resolveOutletScope(req);
-  if (scope && p.outletId !== scope) throw new ApiError('Purchase not found', 404);
+  checkPurchaseAccess(req, p);
   return res.json(ApiResponse.success(mapPurchase(p)));
 });
 
@@ -294,10 +322,12 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
 export const updatePurchase = asyncHandler(async (req: Request, res: Response) => {
   const { paid, status } = req.body;
 
-  const existing = await prisma.purchase.findUnique({ where: { id: req.params.id } });
+  const existing = await prisma.purchase.findUnique({
+    where: { id: req.params.id },
+    include: { warehouse: { select: { outletId: true } } }
+  });
   if (!existing) throw new ApiError('Purchase not found', 404);
-  const scope = resolveOutletScope(req);
-  if (scope && existing.outletId !== scope) throw new ApiError('Purchase not found', 404);
+  checkPurchaseAccess(req, existing);
 
   const totalAmount = Number(existing.total ?? 0);
   const paidAmount = Number(paid ?? 0);
@@ -314,7 +344,6 @@ export const updatePurchase = asyncHandler(async (req: Request, res: Response) =
       include: {
         supplier: { select: { name: true } },
         warehouse: { select: { name: true } },
-        createdBy: { select: { name: true, role: true, phone: true, email: true } },
       },
     });
 
@@ -332,10 +361,12 @@ export const updatePurchase = asyncHandler(async (req: Request, res: Response) =
 });
 
 export const deletePurchase = asyncHandler(async (req: Request, res: Response) => {
-  const existing = await prisma.purchase.findUnique({ where: { id: req.params.id } });
+  const existing = await prisma.purchase.findUnique({
+    where: { id: req.params.id },
+    include: { warehouse: { select: { outletId: true } } }
+  });
   if (!existing) throw new ApiError('Purchase not found', 404);
-  const scope = resolveOutletScope(req);
-  if (scope && existing.outletId !== scope) throw new ApiError('Purchase not found', 404);
+  checkPurchaseAccess(req, existing);
 
   const items = (existing.items as any[]) || [];
 
@@ -419,8 +450,12 @@ export const payPurchase = asyncHandler(async (req: Request, res: Response) => {
     throw new ApiError('Valid payment amount required', 400);
   }
 
-  const existing = await prisma.purchase.findUnique({ where: { id } });
+  const existing = await prisma.purchase.findUnique({
+    where: { id },
+    include: { warehouse: { select: { outletId: true } } }
+  });
   if (!existing) throw new ApiError('Purchase not found', 404);
+  checkPurchaseAccess(req, existing);
 
   // If there are multiple supplier dues in this purchase
   let updatedSupplierDues: any = null;
@@ -527,7 +562,17 @@ export const getPurchaseStats = asyncHandler(async (req: Request, res: Response)
   if (supplierId) where.supplierId = supplierId;
 
   const scope = resolveOutletScope(req);
-  if (scope) where.outletId = scope;
+  if (req.user?.role === 'Super Admin') {
+    where.OR = [
+      { warehouse: { outletId: null } },
+      { AND: [ { warehouseId: null }, { outletId: null } ] }
+    ];
+  } else if (scope) {
+    where.OR = [
+      { warehouse: { outletId: scope } },
+      { AND: [ { warehouseId: null }, { outletId: scope } ] }
+    ];
+  }
 
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());

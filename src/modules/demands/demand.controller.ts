@@ -8,6 +8,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { USER_SELECT, mapUser } from '../../utils/userHelpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
+import { getDemandScopeFilter } from '../warehouse/warehouse.access.js';
 
 function mapDemand(d: any) {
   return {
@@ -70,15 +71,10 @@ export const getDemands = asyncHandler(async (req: Request, res: Response) => {
   if (requestingWHId)  where.requestingWHId  = requestingWHId;
   if (supplyingWHId)   where.supplyingWHId   = supplyingWHId;
 
-  // B4b: strict-endpoint outlet scoping. Super Admin on "All" (scope===null)
-  // now sees BOTH demand directions; on a selected outlet, only that outlet's.
+  // Role-based and user-wise outlet scoping
   const scope = resolveOutletScope(req);
-  if (scope) {
-    where.OR = [
-      { requestingWH: { outletId: scope } },
-      { supplyingWH:  { outletId: scope } },
-    ];
-  }
+  const scopeFilter = getDemandScopeFilter(req.user?.role, scope);
+  Object.assign(where, scopeFilter);
 
   // OPT-IN pagination (perf #8): paginate only when `limit` is explicitly present.
   // Without `limit` the response is byte-identical to before — a top-level `data`
@@ -141,6 +137,14 @@ export const createDemand = asyncHandler(async (req: Request, res: Response) => 
   const scope = resolveOutletScope(req);
   if (scope && reqWH.outletId !== scope) {
     throw new ApiError('Requesting warehouse is not in your outlet', 403);
+  }
+
+  // Role-specific demand checks
+  if (req.user?.role === 'Kitchen Manager' && reqWH.type !== 'KITCHEN') {
+    throw new ApiError('Kitchen Managers can only create demands originating from a Kitchen warehouse', 403);
+  }
+  if (req.user?.role === 'Store Manager' && reqWH.type !== 'BRANCH') {
+    throw new ApiError('Store Managers can only create demands originating from a Branch warehouse', 403);
   }
 
   const VALID_DEMAND_PAIRS: Record<string, string> = { KITCHEN: 'BRANCH', BRANCH: 'MAIN' };

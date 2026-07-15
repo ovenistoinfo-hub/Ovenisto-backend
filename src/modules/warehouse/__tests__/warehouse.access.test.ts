@@ -5,6 +5,8 @@ import {
   nullableWarehouseGate,
   twoEndpointGate,
   WAREHOUSE_DASHBOARD_ROLES,
+  getDemandScopeFilter,
+  getChallanScopeFilter,
 } from '../warehouse.access.js';
 
 describe('WAREHOUSE_DASHBOARD_ROLES', () => {
@@ -153,3 +155,81 @@ describe('twoEndpointGate', () => {
     });
   });
 });
+
+describe('getDemandScopeFilter', () => {
+  it('Super Admin with All Outlets → BRANCH to MAIN', () => {
+    expect(getDemandScopeFilter('Super Admin', null)).toEqual({
+      requestingWH: { type: 'BRANCH' },
+      supplyingWH: { type: 'MAIN' },
+    });
+  });
+
+  it('Super Admin with specific Outlet → BRANCH in that outlet to MAIN', () => {
+    expect(getDemandScopeFilter('Super Admin', 'o1')).toEqual({
+      requestingWH: { type: 'BRANCH', outletId: 'o1' },
+      supplyingWH: { type: 'MAIN' },
+    });
+  });
+
+  it('Store Manager → BRANCH in their outlet', () => {
+    expect(getDemandScopeFilter('Store Manager', 'o1')).toEqual({
+      OR: [
+        { requestingWH: { type: 'BRANCH', outletId: 'o1' } },
+        { supplyingWH: { type: 'BRANCH', outletId: 'o1' } },
+      ],
+    });
+  });
+
+  it('Kitchen Manager → KITCHEN in their outlet', () => {
+    expect(getDemandScopeFilter('Kitchen Manager', 'o1')).toEqual({
+      OR: [
+        { requestingWH: { type: 'KITCHEN', outletId: 'o1' } },
+        { supplyingWH: { type: 'KITCHEN', outletId: 'o1' } },
+      ],
+    });
+  });
+
+  it('Admin / Manager → any warehouse in their outlet', () => {
+    expect(getDemandScopeFilter('Admin', 'o1')).toEqual({
+      OR: [
+        { requestingWH: { outletId: 'o1' } },
+        { supplyingWH: { outletId: 'o1' } },
+      ],
+    });
+  });
+});
+
+describe('getChallanScopeFilter', () => {
+  it('Super Admin with All Outlets → MAIN to BRANCH', () => {
+    expect(getChallanScopeFilter('Super Admin', null)).toEqual({
+      fromWarehouse: { type: 'MAIN' },
+      toWarehouse: { type: 'BRANCH' },
+    });
+  });
+
+  it('Super Admin with specific Outlet → MAIN to BRANCH in that outlet', () => {
+    expect(getChallanScopeFilter('Super Admin', 'o1')).toEqual({
+      fromWarehouse: { type: 'MAIN' },
+      toWarehouse: { type: 'BRANCH', outletId: 'o1' },
+    });
+  });
+
+  it('Store Manager → BRANCH in their outlet', () => {
+    expect(getChallanScopeFilter('Store Manager', 'o1')).toEqual({
+      OR: [
+        { fromWarehouse: { type: 'BRANCH', outletId: 'o1' } },
+        { toWarehouse: { type: 'BRANCH', outletId: 'o1' } },
+      ],
+    });
+  });
+
+  it('Kitchen Manager → KITCHEN in their outlet', () => {
+    expect(getChallanScopeFilter('Kitchen Manager', 'o1')).toEqual({
+      OR: [
+        { fromWarehouse: { type: 'KITCHEN', outletId: 'o1' } },
+        { toWarehouse: { type: 'KITCHEN', outletId: 'o1' } },
+      ],
+    });
+  });
+});
+

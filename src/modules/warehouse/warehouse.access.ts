@@ -75,6 +75,14 @@ export function resolveDashboardScope(
   }
 
   if (role === 'Super Admin') {
+    if (scopedOutletId === 'none') {
+      return {
+        where: { isActive: true, type: 'MAIN' },
+        outletId: 'none',
+        isSuperAdmin: true,
+        unrestricted: false,
+      };
+    }
     return {
       where: { isActive: true, ...(scopedOutletId ? { outletId: scopedOutletId } : {}) },
       outletId: scopedOutletId,
@@ -163,3 +171,88 @@ export function twoEndpointGate(
     OR: [{ [selectedField]: { in: visibleIds } }, { [otherField]: { in: visibleIds } }],
   };
 }
+
+/**
+ * Returns Prisma where filters for StockDemand based on user's role and outlet scope.
+ */
+export function getDemandScopeFilter(role: string | undefined, scope: string | null): Record<string, any> {
+  if (role === 'Super Admin') {
+    return {
+      requestingWH: { type: 'BRANCH', ...(scope ? { outletId: scope } : {}) },
+      supplyingWH: { type: 'MAIN' },
+    };
+  }
+
+  if (!scope) {
+    throw ApiError.forbidden('Your account is not assigned to an outlet');
+  }
+
+  if (role === 'Store Manager') {
+    return {
+      OR: [
+        { requestingWH: { type: 'BRANCH', outletId: scope } },
+        { supplyingWH: { type: 'BRANCH', outletId: scope } },
+      ],
+    };
+  }
+
+  if (role === 'Kitchen Manager') {
+    return {
+      OR: [
+        { requestingWH: { type: 'KITCHEN', outletId: scope } },
+        { supplyingWH: { type: 'KITCHEN', outletId: scope } },
+      ],
+    };
+  }
+
+  // Admin / Manager / other scoped role
+  return {
+    OR: [
+      { requestingWH: { outletId: scope } },
+      { supplyingWH: { outletId: scope } },
+    ],
+  };
+}
+
+/**
+ * Returns Prisma where filters for StockChallan based on user's role and outlet scope.
+ */
+export function getChallanScopeFilter(role: string | undefined, scope: string | null): Record<string, any> {
+  if (role === 'Super Admin') {
+    return {
+      fromWarehouse: { type: 'MAIN' },
+      toWarehouse: { type: 'BRANCH', ...(scope ? { outletId: scope } : {}) },
+    };
+  }
+
+  if (!scope) {
+    throw ApiError.forbidden('Your account is not assigned to an outlet');
+  }
+
+  if (role === 'Store Manager') {
+    return {
+      OR: [
+        { fromWarehouse: { type: 'BRANCH', outletId: scope } },
+        { toWarehouse: { type: 'BRANCH', outletId: scope } },
+      ],
+    };
+  }
+
+  if (role === 'Kitchen Manager') {
+    return {
+      OR: [
+        { fromWarehouse: { type: 'KITCHEN', outletId: scope } },
+        { toWarehouse: { type: 'KITCHEN', outletId: scope } },
+      ],
+    };
+  }
+
+  // Admin / Manager / other scoped role
+  return {
+    OR: [
+      { fromWarehouse: { outletId: scope } },
+      { toWarehouse: { outletId: scope } },
+    ],
+  };
+}
+

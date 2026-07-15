@@ -14,6 +14,8 @@ import {
   resolveDashboardScope,
   nullableWarehouseGate,
   twoEndpointGate,
+  getDemandScopeFilter,
+  getChallanScopeFilter,
 } from './warehouse.access.js';
 
 /**
@@ -57,7 +59,13 @@ export const getWarehouses = asyncHandler(async (req: Request, res: Response) =>
 
   if (ADMIN_ROLES.includes(req.user?.role || '')) {
     // Super Admin: apply outlet header scope if set; null = see everything
-    if (scope) where.outletId = scope;
+    if (scope) {
+      if (scope === 'none') {
+        where.type = 'MAIN';
+      } else {
+        where.outletId = scope;
+      }
+    }
   } else {
     // All other roles: own outlet's warehouses + MAIN (so MAIN is always
     // visible as a supply source for BRANCH→MAIN demand flow)
@@ -624,23 +632,29 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
   // fromWarehouseId). With no selection, visibility is strict-endpoint — the row counts
   // if EITHER end is a warehouse you can see — otherwise a branch would never see the
   // inbound MAIN→BRANCH transfers it cares most about.
-  let demandWhere: any = { ...dateFilter };
+  // Apply role-based and user-wise scoping filters (dashboard-specific: Super Admin is unrestricted)
+  const isSuperAdmin = req.user?.role === 'Super Admin';
+  const demandScope = isSuperAdmin ? (scope.outletId ? {
+    OR: [
+      { requestingWH: { outletId: scope.outletId } },
+      { supplyingWH: { outletId: scope.outletId } },
+    ],
+  } : {}) : getDemandScopeFilter(req.user?.role, scope.outletId);
+
+  const demandWhere: any = {
+    ...dateFilter,
+    ...demandScope,
+  };
   if (selectedId) {
-    if (selectedWarehouse?.type === 'MAIN') {
-      demandWhere.supplyingWHId = selectedId;
-    } else if (selectedWarehouse?.type === 'KITCHEN') {
-      demandWhere.requestingWHId = selectedId;
-    } else {
-      demandWhere.OR = [
-        { supplyingWHId: selectedId },
-        { requestingWHId: selectedId }
-      ];
-    }
-  } else {
-    demandWhere = {
-      ...dateFilter,
-      ...(twoEndpointGate(scope, visibleIds, selectedId, 'supplyingWHId', 'requestingWHId') ?? {}),
-    };
+    demandWhere.AND = [
+      ...(demandWhere.AND || []),
+      {
+        OR: [
+          { supplyingWHId: selectedId },
+          { requestingWHId: selectedId },
+        ],
+      },
+    ];
   }
   const demands = await prisma.stockDemand.findMany({
     where: demandWhere,
@@ -651,10 +665,28 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
   const pendingDemandsCount = demands.filter(d => d.status === 'PENDING').length;
 
   // Challans
+  const challanScope = isSuperAdmin ? (scope.outletId ? {
+    OR: [
+      { fromWarehouse: { outletId: scope.outletId } },
+      { toWarehouse: { outletId: scope.outletId } },
+    ],
+  } : {}) : getChallanScopeFilter(req.user?.role, scope.outletId);
+
   const challanWhere: any = {
     ...dateFilter,
-    ...(twoEndpointGate(scope, visibleIds, selectedId, 'fromWarehouseId', 'toWarehouseId') ?? {}),
+    ...challanScope,
   };
+  if (selectedId) {
+    challanWhere.AND = [
+      ...(challanWhere.AND || []),
+      {
+        OR: [
+          { fromWarehouseId: selectedId },
+          { toWarehouseId: selectedId },
+        ],
+      },
+    ];
+  }
   const challans = await prisma.stockChallan.findMany({
     where: challanWhere,
     include: {

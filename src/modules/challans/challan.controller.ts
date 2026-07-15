@@ -9,6 +9,7 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { USER_SELECT, mapUser } from '../../utils/userHelpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { computeChallanSettlement } from './challan.helpers.js';
+import { getChallanScopeFilter } from '../warehouse/warehouse.access.js';
 
 // B4b: throw 404 if the acting outlet owns neither warehouse of this challan.
 // scope === null (admins, central main-warehouse staff) → no restriction.
@@ -128,15 +129,10 @@ export const getChallans = asyncHandler(async (req: Request, res: Response) => {
   if (fromWarehouseId)  where.fromWarehouseId  = fromWarehouseId;
   if (toWarehouseId)    where.toWarehouseId    = toWarehouseId;
 
-  // B4b: strict-endpoint outlet scoping. scope===null (admins / central
-  // main-warehouse staff) → no filter, matching the Demand controller.
+  // Role-based and user-wise outlet scoping
   const scope = resolveOutletScope(req);
-  if (scope) {
-    where.OR = [
-      { fromWarehouse: { outletId: scope } },
-      { toWarehouse:   { outletId: scope } },
-    ];
-  }
+  const scopeFilter = getChallanScopeFilter(req.user?.role, scope);
+  Object.assign(where, scopeFilter);
 
   // OPT-IN pagination (perf #8): paginate only when `limit` is explicitly present.
   // Without `limit` the response is byte-identical to before — a top-level `data`
@@ -219,12 +215,25 @@ export const createChallan = asyncHandler(async (req: Request, res: Response) =>
     throw new ApiError('Branch can only transfer to its own outlet\'s kitchen', 400);
   }
 
-  // B4b: a scoped (non-admin) user may only originate transfers from their own
-  // outlet's warehouse. Central main-warehouse staff have no outletId → scope
-  // null → no restriction (preserves MAIN→branch dispatch creation).
-  const scope = resolveOutletScope(req);
-  if (scope && fromWH.outletId !== scope) {
-    throw new ApiError('From warehouse is not in your outlet', 403);
+  // Role-specific transfer validation
+  if (req.user?.role === 'Super Admin') {
+    if (fromWH.type !== 'MAIN' || toWH.type !== 'BRANCH') {
+      throw new ApiError('Super Admin can only create transfers from Main Warehouse to Branch Warehouses', 403);
+    }
+    const scope = resolveOutletScope(req);
+    if (scope && toWH.outletId !== scope) {
+      throw new ApiError('Destination warehouse is not in the selected outlet', 403);
+    }
+  } else {
+    if (fromWH.type !== 'BRANCH' || toWH.type !== 'KITCHEN') {
+      throw new ApiError('Branch-scoped users can only create transfers from Branch to Kitchen Warehouses', 403);
+    }
+    const scope = resolveOutletScope(req);
+    if (scope) {
+      if (fromWH.outletId !== scope || toWH.outletId !== scope) {
+        throw new ApiError('Both source and destination warehouses must belong to your outlet', 403);
+      }
+    }
   }
 
   // Auto-generate challan number: CHN-YYYYMMDD-XXXX
@@ -484,6 +493,15 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
         }),
       },
       include: CHALLAN_INCLUDE,
+    });
+
+    // Update linked demand status to FULFILLED
+    await tx.stockDemand.updateMany({
+      where: { challanId: challan.id },
+      data: {
+        status: 'FULFILLED',
+        fulfilledAt: new Date(),
+      },
     });
 
     if (isMainToBranch && settlement && settlement.due > 0 && challan.toWarehouse?.outletId) {
