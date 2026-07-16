@@ -9,6 +9,7 @@ import app from './app.js';
 import { env } from './config/env.js';
 import { connectDatabase, disconnectDatabase } from './config/database.js';
 import { registerIO } from './socket.js';
+import { socketAuth } from './middleware/socketAuth.js';
 
 // Create HTTP server
 const server = http.createServer(app);
@@ -25,9 +26,18 @@ const io = new SocketServer(server, {
 // Make io available to controllers via socket.ts (emitOrderEvent), no circular import.
 registerIO(io);
 
+// Authenticate every socket handshake and join it to its outlet room, so
+// outlet-scoped events (challan:*, demand:*) only reach the right branch.
+io.use(socketAuth);
+
 // Socket.IO connection handler
 io.on('connection', (socket) => {
-  console.log(`🔌 Client connected: ${socket.id}`);
+  const { userId, role, outletId } = socket.data as {
+    userId: string;
+    role: string;
+    outletId: string | null;
+  };
+  console.log(`🔌 Client connected: ${socket.id} (user=${userId} role=${role} outlet=${outletId ?? '-'})`);
 
   socket.on('disconnect', () => {
     console.log(`🔌 Client disconnected: ${socket.id}`);
