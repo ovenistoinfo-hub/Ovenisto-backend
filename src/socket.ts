@@ -46,3 +46,68 @@ export function emitCancellationRequestEvent(event: CancellationRequestEventType
     // Real-time delivery is non-critical; swallow so the API response is unaffected.
   }
 }
+
+export type ChallanEventType = 'challan:created' | 'challan:updated';
+export type DemandEventType  = 'demand:created'  | 'demand:updated';
+
+/** The room every Super Admin socket joins — they see chain-wide activity. */
+const SUPER_ADMIN_ROOM = 'super-admin';
+
+/**
+ * Compute the Socket.IO rooms an outlet-scoped event should go to.
+ *
+ * Pure and io-free so it stays unit-testable (see __tests__/socket.test.ts).
+ *
+ * - null/undefined ids are dropped: the central MAIN warehouse has outletId null
+ *   and has no outlet-scoped users, so there is no room to target for that side.
+ * - Ids are deduped: a same-outlet Branch→Kitchen transfer names one outlet twice
+ *   and must not emit twice.
+ * - Super Admin always receives the event, regardless of outlet.
+ */
+export function resolveEventRooms(outletIds: (string | null | undefined)[]): string[] {
+  const rooms = new Set<string>();
+  for (const id of outletIds) {
+    if (id) rooms.add(`outlet:${id}`);
+  }
+  rooms.add(SUPER_ADMIN_ROOM);
+  return [...rooms];
+}
+
+/**
+ * Emit an event to only the outlets it concerns (plus Super Admins).
+ * Best-effort and non-throwing — a socket failure must never break the HTTP request.
+ */
+function emitToOutlets(
+  event: string,
+  payload: unknown,
+  outletIds: (string | null | undefined)[]
+): void {
+  try {
+    const io = getIO();
+    if (!io) return;
+    for (const room of resolveEventRooms(outletIds)) {
+      io.to(room).emit(event, payload);
+    }
+  } catch {
+    // Real-time delivery is non-critical; swallow so the API response is unaffected.
+  }
+}
+
+/** Push a challan change to the source/destination outlets so Transfers pages update live. */
+export function emitChallanEvent(
+  event: ChallanEventType,
+  payload: unknown,
+  outletIds: (string | null | undefined)[]
+): void {
+  emitToOutlets(event, payload, outletIds);
+}
+
+/** Push a demand change to the requesting/supplying outlets so Demands pages update live. */
+export function emitDemandEvent(
+  event: DemandEventType,
+  payload: unknown,
+  outletIds: (string | null | undefined)[]
+): void {
+  emitToOutlets(event, payload, outletIds);
+}
+
