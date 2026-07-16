@@ -9,6 +9,7 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { USER_SELECT, mapUser } from '../../utils/userHelpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { getDemandScopeFilter } from '../warehouse/warehouse.access.js';
+import { emitDemandEvent, emitChallanEvent } from '../../socket.js';
 
 function mapDemand(d: any) {
   return {
@@ -191,7 +192,9 @@ export const createDemand = asyncHandler(async (req: Request, res: Response) => 
     include: INCLUDE,
   });
 
-  return res.status(201).json(ApiResponse.created(mapDemand(demand), 'Demand created'));
+  const created = mapDemand(demand);
+  emitDemandEvent('demand:created', created, [reqWH.outletId, supWH.outletId]);
+  return res.status(201).json(ApiResponse.created(created, 'Demand created'));
 });
 
 export const approveDemand = asyncHandler(async (req: Request, res: Response) => {
@@ -285,8 +288,14 @@ export const approveDemand = asyncHandler(async (req: Request, res: Response) =>
     return { d, challanNo };
   }, { timeout: 60000 });
 
+  const approved = { ...mapDemand(updated.d), challanNo: updated.challanNo };
+  const demandOutlets = [demand.requestingWH?.outletId, demand.supplyingWH?.outletId];
+  emitDemandEvent('demand:updated', approved, demandOutlets);
+  // The approval also created a challan (supplying → requesting), which shows on
+  // the Transfers page — announce it to the same outlets so it appears live there too.
+  emitChallanEvent('challan:created', { challanNo: updated.challanNo }, demandOutlets);
   return res.json(ApiResponse.success(
-    { ...mapDemand(updated.d), challanNo: updated.challanNo },
+    approved,
     `Demand approved and challan ${updated.challanNo} created`
   ));
 });
@@ -322,7 +331,12 @@ export const rejectDemand = asyncHandler(async (req: Request, res: Response) => 
     include: INCLUDE,
   });
 
-  return res.json(ApiResponse.success(mapDemand(updated), 'Demand rejected'));
+  const rejected = mapDemand(updated);
+  emitDemandEvent('demand:updated', rejected, [
+    demand.requestingWH?.outletId,
+    demand.supplyingWH?.outletId,
+  ]);
+  return res.json(ApiResponse.success(rejected, 'Demand rejected'));
 });
 
 export const cancelDemand = asyncHandler(async (req: Request, res: Response) => {
@@ -345,5 +359,10 @@ export const cancelDemand = asyncHandler(async (req: Request, res: Response) => 
     include: INCLUDE,
   });
 
-  return res.json(ApiResponse.success(mapDemand(updated), 'Demand cancelled'));
+  const cancelled = mapDemand(updated);
+  emitDemandEvent('demand:updated', cancelled, [
+    demand.requestingWH?.outletId,
+    demand.supplyingWH?.outletId,
+  ]);
+  return res.json(ApiResponse.success(cancelled, 'Demand cancelled'));
 });
