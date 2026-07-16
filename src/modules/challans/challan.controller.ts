@@ -10,6 +10,7 @@ import { USER_SELECT, mapUser } from '../../utils/userHelpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { computeChallanSettlement } from './challan.helpers.js';
 import { getChallanScopeFilter } from '../warehouse/warehouse.access.js';
+import { emitChallanEvent } from '../../socket.js';
 
 // B4b: throw 404 if the acting outlet owns neither warehouse of this challan.
 // scope === null (admins, central main-warehouse staff) → no restriction.
@@ -262,7 +263,9 @@ export const createChallan = asyncHandler(async (req: Request, res: Response) =>
     include: CHALLAN_INCLUDE,
   });
 
-  return res.status(201).json(ApiResponse.created(mapChallan(challan), 'Challan created'));
+  const created = mapChallan(challan);
+  emitChallanEvent('challan:created', created, [fromWH.outletId, toWH.outletId]);
+  return res.status(201).json(ApiResponse.created(created, 'Challan created'));
 });
 
 export const dispatchChallan = asyncHandler(async (req: Request, res: Response) => {
@@ -339,7 +342,12 @@ export const dispatchChallan = asyncHandler(async (req: Request, res: Response) 
     });
   }, { timeout: 60000 });
 
-  return res.json(ApiResponse.success(mapChallan(updated), 'Challan dispatched'));
+  const dispatched = mapChallan(updated);
+  emitChallanEvent('challan:updated', dispatched, [
+    challan.fromWarehouse?.outletId,
+    challan.toWarehouse?.outletId,
+  ]);
+  return res.json(ApiResponse.success(dispatched, 'Challan dispatched'));
 });
 
 export const receiveChallan = asyncHandler(async (req: Request, res: Response) => {
@@ -524,7 +532,12 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
     return result;
   }, { timeout: 60000 });
 
-  return res.json(ApiResponse.success(mapChallan(updated), 'Challan received'));
+  const received = mapChallan(updated);
+  emitChallanEvent('challan:updated', received, [
+    challan.fromWarehouse?.outletId,
+    challan.toWarehouse?.outletId,
+  ]);
+  return res.json(ApiResponse.success(received, 'Challan received'));
 });
 
 export const cancelChallan = asyncHandler(async (req: Request, res: Response) => {
@@ -574,7 +587,12 @@ export const cancelChallan = asyncHandler(async (req: Request, res: Response) =>
     });
   }, { timeout: 60000 });
 
-  return res.json(ApiResponse.success(mapChallan(updated), 'Challan cancelled'));
+  const cancelled = mapChallan(updated);
+  emitChallanEvent('challan:updated', cancelled, [
+    challan.fromWarehouse?.outletId,
+    challan.toWarehouse?.outletId,
+  ]);
+  return res.json(ApiResponse.success(cancelled, 'Challan cancelled'));
 });
 
 export const getChallanStats = asyncHandler(async (req: Request, res: Response) => {
