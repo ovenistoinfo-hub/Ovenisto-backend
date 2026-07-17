@@ -200,11 +200,45 @@ async function main() {
   // ============================================
   // Create ingredient units
   // ============================================
-  const units = ['kg', 'g', 'L', 'ml', 'pcs', 'dozen', 'box', 'pack'];
-  for (const unit of units) {
-    await prisma.ingredientUnit.create({ data: { name: unit } });
+  const unitsData = [
+    { name: 'Kilogram', symbol: 'kg' },
+    { name: 'Gram', symbol: 'g' },
+    { name: 'Liter', symbol: 'L' },
+    { name: 'Milliliter', symbol: 'ml' },
+    { name: 'Piece', symbol: 'pcs' },
+    { name: 'Dozen', symbol: 'dz' },
+    { name: 'Box', symbol: 'box' },
+    { name: 'Pack', symbol: 'pack' },
+  ];
+
+  const unitMap = new Map<string, string>();
+  for (const u of unitsData) {
+    const created = await prisma.ingredientUnit.create({
+      data: { name: u.name, symbol: u.symbol },
+    });
+    unitMap.set(u.symbol, created.id);
   }
   console.log('✅ Created ingredient units');
+
+  // Seed conversions
+  const kgId = unitMap.get('kg')!;
+  const gId = unitMap.get('g')!;
+  const lId = unitMap.get('L')!;
+  const mlId = unitMap.get('ml')!;
+  const dzId = unitMap.get('dz')!;
+  const pcsId = unitMap.get('pcs')!;
+
+  await prisma.unitConversion.createMany({
+    data: [
+      { fromUnitId: kgId, toUnitId: gId, factor: 1000 },
+      { fromUnitId: gId, toUnitId: kgId, factor: 0.001 },
+      { fromUnitId: lId, toUnitId: mlId, factor: 1000 },
+      { fromUnitId: mlId, toUnitId: lId, factor: 0.001 },
+      { fromUnitId: dzId, toUnitId: pcsId, factor: 12 },
+      { fromUnitId: pcsId, toUnitId: dzId, factor: 0.08333333 },
+    ],
+  });
+  console.log('✅ Created unit conversions');
 
   // ============================================
   // Create ingredient categories
@@ -218,10 +252,42 @@ async function main() {
     { name: 'Sauces', description: 'Sauces and condiments' },
   ];
 
+  const catMap = new Map<string, string>();
   for (const cat of ingredientCategories) {
-    await prisma.ingredientCategory.create({ data: cat });
+    const created = await prisma.ingredientCategory.create({ data: cat });
+    catMap.set(cat.name, created.id);
   }
   console.log('✅ Created ingredient categories');
+
+  // ============================================
+  // Create sample ingredients without vendors
+  // ============================================
+  const sampleIngredients = [
+    { name: 'Beef Patty', brand: 'K&N\'s', catName: 'Meat', unitSymbol: 'pcs', lowStockLevel: 50 },
+    { name: 'Chicken Breast', brand: 'Dawn', catName: 'Meat', unitSymbol: 'kg', lowStockLevel: 10 },
+    { name: 'Namak', brand: 'National', catName: 'Spices', unitSymbol: 'g', lowStockLevel: 500 },
+    { name: 'Cheese Mozzarella', brand: 'Olper\'s', catName: 'Dairy', unitSymbol: 'kg', lowStockLevel: 5 },
+    { name: 'Butter', brand: 'Nurpur', catName: 'Dairy', unitSymbol: 'kg', lowStockLevel: 5 },
+    { name: 'Tomato', brand: 'Local Market', catName: 'Vegetables', unitSymbol: 'kg', lowStockLevel: 15 },
+    { name: 'Onion', brand: 'Local Market', catName: 'Vegetables', unitSymbol: 'kg', lowStockLevel: 20 },
+    { name: 'Podina', brand: 'Local Market', catName: 'Vegetables', unitSymbol: 'g', lowStockLevel: 100 },
+  ];
+
+  for (const ing of sampleIngredients) {
+    await prisma.ingredient.create({
+      data: {
+        name: ing.name,
+        brand: ing.brand,
+        categoryId: catMap.get(ing.catName) || null,
+        unitId: unitMap.get(ing.unitSymbol) || null,
+        lowStockLevel: ing.lowStockLevel,
+        currentStock: 0,
+        supplierId: null, // No Vendor
+        outletId: null, // Global catalog
+      },
+    });
+  }
+  console.log('✅ Created sample ingredients without vendors');
 
   // ============================================
   // Create default kitchen
