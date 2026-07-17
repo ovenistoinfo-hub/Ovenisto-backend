@@ -128,15 +128,46 @@ export const getSupplierIngredients = asyncHandler(async (req: Request, res: Res
   if (!supplier) throw new ApiError('Supplier not found', 404);
   checkSupplierAccess(req, supplier.outletId);
 
-  const ingredients = await prisma.ingredient.findMany({
-    where: { supplierId: id, status: 'active' },
-    orderBy: { name: 'asc' },
-    include: {
-      category: { select: { id: true, name: true } },
-      unit: { select: { id: true, name: true } },
-      supplier: { select: { id: true, name: true } },
-    },
-  });
+  let ingredients = [];
+  if (supplier.outletId === null) {
+    ingredients = await prisma.ingredient.findMany({
+      where: { supplierId: id, status: 'active' },
+      orderBy: { name: 'asc' },
+      include: {
+        category: { select: { id: true, name: true } },
+        unit: { select: { id: true, name: true } },
+        supplier: { select: { id: true, name: true, outletId: true } },
+      },
+    });
+  } else {
+    const mappings = await prisma.outletIngredientSupplier.findMany({
+      where: { supplierId: id },
+      include: {
+        ingredient: {
+          include: {
+            category: { select: { id: true, name: true } },
+            unit: { select: { id: true, name: true } },
+            supplier: { select: { id: true, name: true, outletId: true } },
+          },
+        },
+      },
+    });
+    ingredients = mappings
+      .map(m => m.ingredient)
+      .filter(ing => ing.status === 'active')
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    const localSupplierInfo = {
+      id: supplier.id,
+      name: supplier.name,
+      outletId: supplier.outletId,
+    };
+    for (const ing of ingredients) {
+      (ing as any).supplier = localSupplierInfo;
+      (ing as any).supplierId = supplier.id;
+    }
+  }
+
   return res.json(ApiResponse.success(ingredients));
 });
 
