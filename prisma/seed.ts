@@ -224,21 +224,6 @@ async function main() {
   console.log('✅ Created ingredient categories');
 
   // ============================================
-  // Create shift templates
-  // ============================================
-  const shiftTemplates = [
-    { name: 'Morning', startTime: '08:00', endTime: '16:00', color: '#22c55e' },
-    { name: 'Evening', startTime: '16:00', endTime: '00:00', color: '#3b82f6' },
-    { name: 'Night', startTime: '00:00', endTime: '08:00', color: '#8b5cf6' },
-    { name: 'Full Day', startTime: '10:00', endTime: '22:00', color: '#f59e0b' },
-  ];
-
-  for (const template of shiftTemplates) {
-    await prisma.shiftTemplate.create({ data: template });
-  }
-  console.log('✅ Created shift templates');
-
-  // ============================================
   // Create default kitchen
   // ============================================
   await prisma.kitchen.create({
