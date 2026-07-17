@@ -216,16 +216,8 @@ export const deleteIngredientCategory = asyncHandler(async (req: Request, res: R
 // ============================================================
 
 export function checkIngredientAccess(req: Request, ingredientOutletId: string | null) {
-  if (req.user?.role === 'Super Admin') {
-    if (ingredientOutletId !== null) {
-      throw ApiError.notFound('Ingredient not found');
-    }
-  } else {
-    const scope = resolveOutletScope(req);
-    if (!scope || ingredientOutletId !== scope) {
-      throw ApiError.notFound('Ingredient not found');
-    }
-  }
+  // Ingredients are global catalog items, so any authenticated user can read them,
+  // and any user with authorized roles (Super Admin, Admin, Manager) can manage them.
 }
 
 /** GET /api/inventory/ingredients */
@@ -237,16 +229,6 @@ export const getIngredients = asyncHandler(async (req: Request, res: Response) =
   if (categoryId) where.categoryId = String(categoryId);
   if (status) where.status = String(status);
   if (lowStock === 'true') where.AND = [{ currentStock: { lte: prisma.ingredient.fields.lowStockLevel } }];
-
-  // Apply scoping
-  const scope = resolveOutletScope(req);
-  if (req.user?.role === 'Super Admin') {
-    where.outletId = null;
-  } else if (scope) {
-    where.outletId = scope;
-  } else {
-    where.outletId = 'none';
-  }
 
   // OPT-IN pagination (perf #8): only paginate when `limit` is explicitly provided.
   // Without `limit` the response stays byte-identical to before — a top-level
@@ -266,7 +248,7 @@ export const getIngredients = asyncHandler(async (req: Request, res: Response) =
         include: {
           category: { select: { id: true, name: true } },
           unit: { select: { id: true, name: true } },
-          supplier: { select: { id: true, name: true } },
+          supplier: { select: { id: true, name: true, outletId: true } },
         },
         skip: (pageNum - 1) * limitNum!,
         take: limitNum!,
@@ -282,7 +264,7 @@ export const getIngredients = asyncHandler(async (req: Request, res: Response) =
     include: {
       category: { select: { id: true, name: true } },
       unit: { select: { id: true, name: true } },
-      supplier: { select: { id: true, name: true } },
+      supplier: { select: { id: true, name: true, outletId: true } },
     },
   });
 
@@ -301,7 +283,7 @@ export const getIngredient = asyncHandler(async (req: Request, res: Response) =>
     include: {
       category: { select: { id: true, name: true } },
       unit: { select: { id: true, name: true } },
-      supplier: { select: { id: true, name: true } },
+      supplier: { select: { id: true, name: true, outletId: true } },
     },
   });
   if (!ingredient) throw ApiError.notFound('Ingredient not found');
@@ -327,7 +309,7 @@ export const createIngredient = asyncHandler(async (req: Request, res: Response)
     }
   }
 
-  const outletId = req.user?.role === 'Super Admin' ? null : (req.user?.outletId ?? null);
+  const outletId = null;
 
   const ingredient = await prisma.ingredient.create({
     data: {
@@ -345,7 +327,7 @@ export const createIngredient = asyncHandler(async (req: Request, res: Response)
     include: {
       category: { select: { id: true, name: true } },
       unit: { select: { id: true, name: true } },
-      supplier: { select: { id: true, name: true } },
+      supplier: { select: { id: true, name: true, outletId: true } },
     },
   });
   res.status(201).json(ApiResponse.created(ingredient, 'Ingredient created'));
@@ -389,7 +371,7 @@ export const updateIngredient = asyncHandler(async (req: Request, res: Response)
     include: {
       category: { select: { id: true, name: true } },
       unit: { select: { id: true, name: true } },
-      supplier: { select: { id: true, name: true } },
+      supplier: { select: { id: true, name: true, outletId: true } },
     },
   });
 

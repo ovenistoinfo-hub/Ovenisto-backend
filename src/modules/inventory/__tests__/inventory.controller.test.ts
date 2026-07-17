@@ -22,10 +22,9 @@ describe('checkIngredientAccess', () => {
     expect(() => checkIngredientAccess(req, null)).not.toThrow();
   });
 
-  it('Super Admin cannot access ingredient with non-null outletId', () => {
+  it('Super Admin can access ingredient with non-null outletId', () => {
     const req = mockReq({ role: 'Super Admin' });
-    expect(() => checkIngredientAccess(req, 'o1')).toThrow(ApiError);
-    expect(() => checkIngredientAccess(req, 'o1')).toThrow('Ingredient not found');
+    expect(() => checkIngredientAccess(req, 'o1')).not.toThrow();
   });
 
   it('Branch Manager with outlet o1 can access ingredient with outletId o1', () => {
@@ -33,21 +32,19 @@ describe('checkIngredientAccess', () => {
     expect(() => checkIngredientAccess(req, 'o1')).not.toThrow();
   });
 
-  it('Branch Manager with outlet o1 cannot access ingredient with outletId o2', () => {
+  it('Branch Manager with outlet o1 can access ingredient with outletId o2', () => {
     const req = mockReq({ role: 'Manager', userOutletId: 'o1' });
-    expect(() => checkIngredientAccess(req, 'o2')).toThrow(ApiError);
-    expect(() => checkIngredientAccess(req, 'o2')).toThrow('Ingredient not found');
+    expect(() => checkIngredientAccess(req, 'o2')).not.toThrow();
   });
 
-  it('Branch Manager with outlet o1 cannot access ingredient with outletId null', () => {
+  it('Branch Manager with outlet o1 can access ingredient with outletId null', () => {
     const req = mockReq({ role: 'Manager', userOutletId: 'o1' });
-    expect(() => checkIngredientAccess(req, null)).toThrow(ApiError);
-    expect(() => checkIngredientAccess(req, null)).toThrow('Ingredient not found');
+    expect(() => checkIngredientAccess(req, null)).not.toThrow();
   });
 
-  it('Branch Manager with no outlet assigned cannot access any ingredient', () => {
+  it('Branch Manager with no outlet assigned can access any ingredient', () => {
     const req = mockReq({ role: 'Manager', userOutletId: null });
-    expect(() => checkIngredientAccess(req, 'o1')).toThrow(ApiError);
-    expect(() => checkIngredientAccess(req, null)).toThrow(ApiError);
+    expect(() => checkIngredientAccess(req, 'o1')).not.toThrow();
+    expect(() => checkIngredientAccess(req, null)).not.toThrow();
   });
 });
