@@ -31,7 +31,7 @@ const CHALLAN_INCLUDE = {
   toWarehouse:   { select: { id: true, name: true, type: true, outletId: true } },
   items: {
     include: {
-      ingredient: { select: { id: true, name: true, unit: { select: { symbol: true, name: true } }, category: { select: { name: true } } } },
+      ingredient: { select: { id: true, name: true, purchasePrice: true, unit: { select: { symbol: true, name: true } }, category: { select: { name: true } } } },
     },
   },
   dispatchedBy: { select: USER_SELECT },
@@ -95,6 +95,7 @@ function mapChallan(c: any) {
       wasteQty: i.wasteQty !== null && i.wasteQty !== undefined ? Number(i.wasteQty) : null,
       wasteReason: i.wasteReason ?? null,
       unitPrice: i.unitPrice !== null && i.unitPrice !== undefined ? Number(i.unitPrice) : null,
+      purchasePrice: i.ingredient.purchasePrice !== null ? Number(i.ingredient.purchasePrice) : 0,
     })),
     demand: c.demand ? {
       id: c.demand.id,
@@ -391,6 +392,28 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
     }
   }
 
+  const itemIngredientIds = items.map(i => i.ingredientId);
+
+  // 1. Fetch ingredients lowStockLevel and purchasePrice outside transaction
+  const ingredientsData = await prisma.ingredient.findMany({
+    where: { id: { in: itemIngredientIds } },
+    select: { id: true, lowStockLevel: true, purchasePrice: true },
+  });
+  const ingredientMap = new Map(ingredientsData.map(ig => [ig.id, ig]));
+
+  // 2. Fetch source warehouse batches outside transaction
+  const sourceBatches = await prisma.stockBatch.findMany({
+    where: { warehouseId: challan.fromWarehouseId, ingredientId: { in: itemIngredientIds } },
+    orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }],
+  });
+  const batchesByIngredient = new Map<string, typeof sourceBatches>();
+  for (const batch of sourceBatches) {
+    if (!batchesByIngredient.has(batch.ingredientId)) {
+      batchesByIngredient.set(batch.ingredientId, []);
+    }
+    batchesByIngredient.get(batch.ingredientId)!.push(batch);
+  }
+
   const settlementItems: { qty: number; unitPrice: number }[] = [];
 
   const updated = await prisma.$transaction(async (tx) => {
@@ -401,7 +424,7 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
       const wasteReason = input?.wasteReason ?? null;
       const actualReceived = receivedQty - wasteQty; // net qty added to stock
 
-      const ing = await tx.ingredient.findUnique({ where: { id: item.ingredientId }, select: { lowStockLevel: true, purchasePrice: true } });
+      const ing = ingredientMap.get(item.ingredientId);
       const unitPrice = isMainToBranch ? Number(ing?.purchasePrice ?? 0) : null;
       if (isMainToBranch) settlementItems.push({ qty: Number(item.qty), unitPrice: unitPrice ?? 0 });
 
@@ -422,13 +445,10 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
 
       // Create batches in destination warehouse (FIFO from source, using actualReceived not full receivedQty)
       if (actualReceived > 0) {
-        const sourceBatches = await tx.stockBatch.findMany({
-          where: { warehouseId: challan.fromWarehouseId, ingredientId: item.ingredientId },
-          orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }],
-        });
+        const ingredientBatches = batchesByIngredient.get(item.ingredientId) ?? [];
 
         let qtyToAllocate = actualReceived;
-        for (const srcBatch of sourceBatches) {
+        for (const srcBatch of ingredientBatches) {
           if (qtyToAllocate <= 0) break;
           const allocate = Math.min(Number(srcBatch.batchQty), qtyToAllocate);
           if (allocate <= 0) continue;
