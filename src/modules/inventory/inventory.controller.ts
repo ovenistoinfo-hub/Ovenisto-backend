@@ -227,7 +227,11 @@ export const getIngredients = asyncHandler(async (req: Request, res: Response) =
   const where: any = {};
   if (search) where.name = { contains: String(search), mode: 'insensitive' };
   if (categoryId) where.categoryId = String(categoryId);
-  if (status) where.status = String(status);
+  if (status && status !== 'all') {
+    where.status = String(status);
+  } else if (status !== 'all') {
+    where.status = 'active';
+  }
   if (lowStock === 'true') where.AND = [{ currentStock: { lte: prisma.ingredient.fields.lowStockLevel } }];
 
   // OPT-IN pagination (perf #8): only paginate when `limit` is explicitly provided.
