@@ -52,6 +52,7 @@ model Outlet {
   warehouseSettlements WarehouseSettlement[]
   suppliers        Supplier[]
   ingredients      Ingredient[]
+  outletIngredientSuppliers OutletIngredientSupplier[]
 
   dueToMain Decimal @default(0) @db.Decimal(10, 2)
 
@@ -364,6 +365,7 @@ model Ingredient {
   demandItems          StockDemandItem[]
   purchaseRequestItems PurchaseRequestItem[]
   stockBatches         StockBatch[]
+  outletIngredientSuppliers OutletIngredientSupplier[]
 
   @@map("ingredients")
 }
@@ -1075,6 +1077,7 @@ model Supplier {
   ingredients      Ingredient[]
   purchaseRequests PurchaseRequest[]
   purchasePayments PurchasePayment[]
+  outletIngredientSuppliers OutletIngredientSupplier[]
 
   @@map("suppliers")
 }
@@ -1503,4 +1506,18 @@ model PurchasePayment {
 
   @@index([purchaseId])
   @@map("purchase_payments")
+}
+
+model OutletIngredientSupplier {
+  id           String   @id @default(uuid())
+  outletId     String
+  ingredientId String
+  supplierId   String
+
+  outlet     Outlet     @relation(fields: [outletId], references: [id], onDelete: Cascade)
+  ingredient Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+  supplier   Supplier   @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@unique([outletId, ingredientId])
+  @@map("outlet_ingredient_suppliers")
 }

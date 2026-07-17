@@ -156,33 +156,44 @@ export const getWarehouseStock = asyncHandler(async (req: Request, res: Response
     filtered = filtered.filter(s => Number(s.currentStock) <= Number(s.lowStockLevel));
   }
 
+  const scope = warehouse.outletId;
+  const localSuppliers = scope ? await prisma.outletIngredientSupplier.findMany({
+    where: { outletId: scope },
+    include: { supplier: { select: { id: true, name: true, outletId: true } } },
+  }) : [];
+  const localSupplierMap = new Map(localSuppliers.map(ls => [ls.ingredientId, ls.supplier]));
+
   // Map response
-  const mapped = filtered.map(s => ({
-    id: s.id,
-    currentStock: Number(s.currentStock),
-    lowStockLevel: Number(s.lowStockLevel),
-    ingredient: {
-      id: s.ingredient.id,
-      name: s.ingredient.name,
-      brand: s.ingredient.brand || null,
-      purchasePrice: s.ingredient.purchasePrice ? Number(s.ingredient.purchasePrice) : null,
-      supplierId: s.ingredient.supplierId || null,
-      supplier: s.ingredient.supplier ? {
-        id: s.ingredient.supplier.id,
-        name: s.ingredient.supplier.name,
-        outletId: s.ingredient.supplier.outletId ?? null,
-      } : null,
-      unit: s.ingredient.unit ? {
-        id: s.ingredient.unit.id,
-        name: s.ingredient.unit.name,
-        symbol: s.ingredient.unit.symbol || '',
-      } : null,
-      category: s.ingredient.category ? {
-        id: s.ingredient.category.id,
-        name: s.ingredient.category.name,
-      } : null,
-    },
-  }));
+  const mapped = filtered.map(s => {
+    const localSupplier = scope ? localSupplierMap.get(s.ingredient.id) : null;
+    const finalSupplier = scope ? (localSupplier || null) : s.ingredient.supplier;
+    return {
+      id: s.id,
+      currentStock: Number(s.currentStock),
+      lowStockLevel: Number(s.lowStockLevel),
+      ingredient: {
+        id: s.ingredient.id,
+        name: s.ingredient.name,
+        brand: s.ingredient.brand || null,
+        purchasePrice: s.ingredient.purchasePrice ? Number(s.ingredient.purchasePrice) : null,
+        supplierId: finalSupplier?.id || null,
+        supplier: finalSupplier ? {
+          id: finalSupplier.id,
+          name: finalSupplier.name,
+          outletId: finalSupplier.outletId ?? null,
+        } : null,
+        unit: s.ingredient.unit ? {
+          id: s.ingredient.unit.id,
+          name: s.ingredient.unit.name,
+          symbol: s.ingredient.unit.symbol || '',
+        } : null,
+        category: s.ingredient.category ? {
+          id: s.ingredient.category.id,
+          name: s.ingredient.category.name,
+        } : null,
+      },
+    };
+  });
 
   res.json(ApiResponse.success(mapped));
 });
