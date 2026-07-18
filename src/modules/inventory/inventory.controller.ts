@@ -251,12 +251,40 @@ export const getIngredients = asyncHandler(async (req: Request, res: Response) =
   }) : [];
   const localSupplierMap = new Map(localSuppliers.map(ls => [ls.ingredientId, ls.supplier]));
 
-  const mapLocalSupplier = (i: any) => {
-    if (scope) {
-      i.supplier = localSupplierMap.get(i.id) || null;
-      i.supplierId = i.supplier?.id || null;
+  // Resolve local branch warehouse lowStockLevels if scoped
+  let localLowStockMap = new Map<string, number>();
+  if (scope) {
+    const branchWarehouse = await prisma.warehouse.findFirst({
+      where: { outletId: scope, type: 'BRANCH' },
+      select: { id: true }
+    });
+    if (branchWarehouse) {
+      const localStocks = await prisma.warehouseStock.findMany({
+        where: { warehouseId: branchWarehouse.id },
+        select: { ingredientId: true, lowStockLevel: true }
+      });
+      localLowStockMap = new Map(localStocks.map(s => [s.ingredientId, Number(s.lowStockLevel)]));
     }
-    return i;
+  }
+
+  const mapLocalSupplier = (i: any) => {
+    const ingredientObj = {
+      ...i,
+      totalPurchases: Number(i.totalPurchases ?? 0),
+      totalDue: Number(i.totalDue ?? 0),
+      purchasePrice: i.purchasePrice ? Number(i.purchasePrice) : null,
+      currentStock: Number(i.currentStock ?? 0),
+      lowStockLevel: Number(i.lowStockLevel ?? 0),
+    };
+    if (scope) {
+      ingredientObj.supplier = localSupplierMap.get(i.id) || null;
+      ingredientObj.supplierId = ingredientObj.supplier?.id || null;
+      const localLow = localLowStockMap.get(i.id);
+      if (localLow !== undefined) {
+        ingredientObj.lowStockLevel = localLow;
+      }
+    }
+    return ingredientObj;
   };
 
   if (paginate) {
@@ -288,13 +316,14 @@ export const getIngredients = asyncHandler(async (req: Request, res: Response) =
     },
   });
 
+  const mappedIngredients = ingredients.map(mapLocalSupplier);
+
   // Filter low stock in JS since Prisma doesn't support column comparison in where
   const result = lowStock === 'true'
-    ? ingredients.filter(i => Number(i.currentStock) <= Number(i.lowStockLevel))
-    : ingredients;
+    ? mappedIngredients.filter(i => Number(i.currentStock) <= Number(i.lowStockLevel))
+    : mappedIngredients;
 
-  const mappedResult = result.map(mapLocalSupplier);
-  return res.json(ApiResponse.success(mappedResult));
+  return res.json(ApiResponse.success(result));
 });
 
 /** GET /api/inventory/ingredients/:id */
@@ -311,16 +340,39 @@ export const getIngredient = asyncHandler(async (req: Request, res: Response) =>
   checkIngredientAccess(req, ingredient.outletId);
 
   const scope = resolveOutletScope(req);
+  const ingredientObj = {
+    ...(ingredient as any),
+    totalPurchases: Number((ingredient as any).totalPurchases ?? 0),
+    totalDue: Number((ingredient as any).totalDue ?? 0),
+    purchasePrice: ingredient.purchasePrice ? Number(ingredient.purchasePrice) : null,
+    currentStock: Number(ingredient.currentStock ?? 0),
+    lowStockLevel: Number(ingredient.lowStockLevel ?? 0),
+  };
+
   if (scope) {
     const localLink = await prisma.outletIngredientSupplier.findUnique({
       where: { outletId_ingredientId: { outletId: scope, ingredientId: ingredient.id } },
       include: { supplier: { select: { id: true, name: true, outletId: true } } },
     });
-    (ingredient as any).supplier = localLink?.supplier || null;
-    (ingredient as any).supplierId = localLink?.supplier?.id || null;
+    ingredientObj.supplier = localLink?.supplier || null;
+    ingredientObj.supplierId = localLink?.supplier?.id || null;
+
+    const branchWarehouse = await prisma.warehouse.findFirst({
+      where: { outletId: scope, type: 'BRANCH' },
+      select: { id: true }
+    });
+    if (branchWarehouse) {
+      const whStock = await prisma.warehouseStock.findUnique({
+        where: { warehouseId_ingredientId: { warehouseId: branchWarehouse.id, ingredientId: ingredient.id } },
+        select: { lowStockLevel: true }
+      });
+      if (whStock) {
+        ingredientObj.lowStockLevel = Number(whStock.lowStockLevel);
+      }
+    }
   }
 
-  res.json(ApiResponse.success(ingredient));
+  res.json(ApiResponse.success(ingredientObj));
 });
 
 /** POST /api/inventory/ingredients */
@@ -376,6 +428,34 @@ export const createIngredient = asyncHandler(async (req: Request, res: Response)
     });
     (ingredient as any).supplier = localLink.supplier;
     (ingredient as any).supplierId = localLink.supplier.id;
+  }
+
+  // Create WarehouseStock records for the new ingredient across all active warehouses
+  const warehouses = await prisma.warehouse.findMany();
+  if (warehouses.length > 0) {
+    const mainWH = warehouses.find(w => w.type === 'MAIN');
+    await prisma.warehouseStock.createMany({
+      data: warehouses.map(w => {
+        let localLow = 0;
+        if (!isSuperAdmin && scope && w.outletId === scope && w.type === 'BRANCH') {
+          localLow = Number(lowStockLevel ?? 0);
+        } else if (isSuperAdmin && mainWH && w.id === mainWH.id) {
+          localLow = Number(lowStockLevel ?? 0);
+        } else {
+          localLow = Number(lowStockLevel ?? 0);
+        }
+        return {
+          warehouseId: w.id,
+          ingredientId: ingredient.id,
+          currentStock: 0,
+          lowStockLevel: localLow,
+        };
+      })
+    });
+  }
+
+  if (!isSuperAdmin && scope) {
+    (ingredient as any).lowStockLevel = Number(lowStockLevel ?? 0);
   }
 
   res.status(201).json(ApiResponse.created(ingredient, 'Ingredient created'));
@@ -439,7 +519,7 @@ export const updateIngredient = asyncHandler(async (req: Request, res: Response)
       unitId: unitId !== undefined ? (unitId || null) : undefined,
       purchasePrice: purchasePrice !== undefined ? purchasePrice : undefined,
       currentStock: currentStock !== undefined ? currentStock : undefined,
-      lowStockLevel: lowStockLevel !== undefined ? lowStockLevel : undefined,
+      lowStockLevel: (isSuperAdmin && lowStockLevel !== undefined) ? lowStockLevel : undefined,
       status: status !== undefined ? status : undefined,
       ...(isSuperAdmin && supplierId !== undefined && { supplierId: finalSupplierIdVal }),
     },
@@ -450,24 +530,80 @@ export const updateIngredient = asyncHandler(async (req: Request, res: Response)
     },
   });
 
+  const ingredientObj = {
+    ...(ingredient as any),
+    totalPurchases: Number((ingredient as any).totalPurchases ?? 0),
+    totalDue: Number((ingredient as any).totalDue ?? 0),
+    purchasePrice: ingredient.purchasePrice ? Number(ingredient.purchasePrice) : null,
+    currentStock: Number(ingredient.currentStock ?? 0),
+    lowStockLevel: Number(ingredient.lowStockLevel ?? 0),
+  };
+
   if (!isSuperAdmin && scope) {
     const localLink = await prisma.outletIngredientSupplier.findUnique({
       where: { outletId_ingredientId: { outletId: scope, ingredientId: ingredient.id } },
       include: { supplier: { select: { id: true, name: true, outletId: true } } },
     });
-    (ingredient as any).supplier = localLink?.supplier || null;
-    (ingredient as any).supplierId = localLink?.supplier?.id || null;
-  }
+    ingredientObj.supplier = localLink?.supplier || null;
+    ingredientObj.supplierId = localLink?.supplier?.id || null;
 
-  // Propagate lowStockLevel change to all WarehouseStock records
-  if (lowStockLevel !== undefined) {
-    await prisma.warehouseStock.updateMany({
-      where: { ingredientId: id },
-      data: { lowStockLevel },
+    if (lowStockLevel !== undefined) {
+      const branchWarehouse = await prisma.warehouse.findFirst({
+        where: { outletId: scope, type: 'BRANCH' },
+        select: { id: true }
+      });
+      if (branchWarehouse) {
+        await prisma.warehouseStock.upsert({
+          where: { warehouseId_ingredientId: { warehouseId: branchWarehouse.id, ingredientId: id } },
+          create: {
+            warehouseId: branchWarehouse.id,
+            ingredientId: id,
+            currentStock: 0,
+            lowStockLevel: Number(lowStockLevel),
+          },
+          update: {
+            lowStockLevel: Number(lowStockLevel),
+          }
+        });
+        ingredientObj.lowStockLevel = Number(lowStockLevel);
+      }
+    } else {
+      const branchWarehouse = await prisma.warehouse.findFirst({
+        where: { outletId: scope, type: 'BRANCH' },
+        select: { id: true }
+      });
+      if (branchWarehouse) {
+        const whStock = await prisma.warehouseStock.findUnique({
+          where: { warehouseId_ingredientId: { warehouseId: branchWarehouse.id, ingredientId: ingredient.id } },
+          select: { lowStockLevel: true }
+        });
+        if (whStock) {
+          ingredientObj.lowStockLevel = Number(whStock.lowStockLevel);
+        }
+      }
+    }
+  } else if (isSuperAdmin && lowStockLevel !== undefined) {
+    const mainWarehouse = await prisma.warehouse.findFirst({
+      where: { type: 'MAIN' },
+      select: { id: true }
     });
+    if (mainWarehouse) {
+      await prisma.warehouseStock.upsert({
+        where: { warehouseId_ingredientId: { warehouseId: mainWarehouse.id, ingredientId: id } },
+        create: {
+          warehouseId: mainWarehouse.id,
+          ingredientId: id,
+          currentStock: 0,
+          lowStockLevel: Number(lowStockLevel),
+        },
+        update: {
+          lowStockLevel: Number(lowStockLevel),
+        }
+      });
+    }
   }
 
-  res.json(ApiResponse.success(ingredient, 'Ingredient updated'));
+  res.json(ApiResponse.success(ingredientObj, 'Ingredient updated'));
 });
 
 /** DELETE /api/inventory/ingredients/:id */
