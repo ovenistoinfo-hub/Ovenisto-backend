@@ -342,6 +342,12 @@ export const createWarehouse = asyncHandler(async (req: Request, res: Response) 
   if (type === 'MAIN' && outletId) {
     throw ApiError.badRequest('A main (central) warehouse must not belong to an outlet');
   }
+  if (type === 'MAIN') {
+    const existingMain = await prisma.warehouse.findFirst({ where: { type: 'MAIN' } });
+    if (existingMain) {
+      throw ApiError.badRequest('A main (central) warehouse already exists. Only one Main warehouse is allowed.');
+    }
+  }
 
   // Auto-generate code if not provided
   let finalCode = code;
