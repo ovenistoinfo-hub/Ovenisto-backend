@@ -15,6 +15,21 @@ import { resolveCreateOutlet, resolveOutletScope } from '../../middleware/outlet
 // STOCK ADJUSTMENTS
 // ============================================================
 
+const applyStockScopeFilter = (req: Request, where: any) => {
+  const userRole = req.user?.role || '';
+  const scope = resolveOutletScope(req);
+
+  if (userRole === 'Super Admin') {
+    where.warehouse = { type: 'MAIN' };
+  } else if (userRole === 'Kitchen Manager') {
+    where.warehouse = { type: 'KITCHEN', outletId: scope || 'none' };
+  } else if (userRole === 'Store Manager') {
+    where.warehouse = { type: 'BRANCH', outletId: scope || 'none' };
+  } else {
+    where.outletId = scope || 'none';
+  }
+};
+
 /** GET /api/stock/adjustments */
 export const getAdjustments = asyncHandler(async (req: Request, res: Response) => {
   const { search, warehouseId, page = '1', limit = '50' } = req.query;
@@ -23,8 +38,7 @@ export const getAdjustments = asyncHandler(async (req: Request, res: Response) =
   const where: any = {};
   if (search) where.ingredient = { name: { contains: String(search), mode: 'insensitive' } };
   if (warehouseId) where.warehouseId = String(warehouseId);
-  const scope = resolveOutletScope(req);
-  if (scope) where.outletId = scope;
+  applyStockScopeFilter(req, where);
 
   const [adjustments, total] = await Promise.all([
     prisma.stockAdjustment.findMany({
@@ -608,8 +622,7 @@ export const getWasteRecords = asyncHandler(async (req: Request, res: Response) 
   const where: any = {};
   if (search) where.itemName = { contains: String(search), mode: 'insensitive' };
   if (warehouseId) where.warehouseId = String(warehouseId);
-  const scope = resolveOutletScope(req);
-  if (scope) where.outletId = scope;
+  applyStockScopeFilter(req, where);
 
   const [records, total] = await Promise.all([
     prisma.wasteRecord.findMany({ where, skip, take: Number(limit), orderBy: { date: 'desc' } }),
