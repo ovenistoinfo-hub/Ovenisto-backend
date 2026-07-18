@@ -635,18 +635,23 @@ export const cancelChallan = asyncHandler(async (req: Request, res: Response) =>
 export const getChallanStats = asyncHandler(async (req: Request, res: Response) => {
   const { fromWarehouseId, toWarehouseId } = req.query as Record<string, string>;
 
-  const where: any = {
-    status: { in: ['DISPATCHED', 'RECEIVED'] }
-  };
+  const where: any = {};
   if (fromWarehouseId) where.fromWarehouseId = fromWarehouseId;
   if (toWarehouseId)   where.toWarehouseId   = toWarehouseId;
 
   const scope = resolveOutletScope(req);
-  if (scope) {
-    where.OR = [
-      { fromWarehouse: { outletId: scope } },
-      { toWarehouse:   { outletId: scope } },
-    ];
+  const userRole = req.user?.role || '';
+
+  if (userRole === 'Super Admin') {
+    where.status = { in: ['DISPATCHED', 'RECEIVED'] };
+    where.fromWarehouse = { type: 'MAIN' };
+    where.toWarehouse = { type: 'BRANCH', ...(scope ? { outletId: scope } : {}) };
+  } else if (userRole === 'Kitchen Manager' || userRole === 'Kitchen Staff') {
+    where.id = 'none';
+  } else {
+    where.status = 'RECEIVED';
+    where.fromWarehouse = { type: 'MAIN' };
+    where.toWarehouse = { type: 'BRANCH', outletId: scope };
   }
 
   const now = new Date();
