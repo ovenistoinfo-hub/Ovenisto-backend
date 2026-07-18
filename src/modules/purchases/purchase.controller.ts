@@ -7,6 +7,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope, resolveCreateOutlet } from '../../middleware/outletScope.js';
+import { emitPurchaseEvent } from '../../socket.js';
 
 function mapPurchase(p: any) {
   return {
@@ -332,7 +333,9 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
     return p;
   }, { timeout: 30000 });
 
-  return res.status(201).json(ApiResponse.created(mapPurchase(purchase), 'Purchase created'));
+  const created = mapPurchase(purchase);
+  emitPurchaseEvent('purchase:created', created, [outletId]);
+  return res.status(201).json(ApiResponse.created(created, 'Purchase created'));
 });
 
 export const updatePurchase = asyncHandler(async (req: Request, res: Response) => {
@@ -373,7 +376,9 @@ export const updatePurchase = asyncHandler(async (req: Request, res: Response) =
     return p;
   });
 
-  return res.json(ApiResponse.success(mapPurchase(updated), 'Purchase updated'));
+  const updatedPayload = mapPurchase(updated);
+  emitPurchaseEvent('purchase:updated', updatedPayload, [getPurchaseOutletId(existing)]);
+  return res.json(ApiResponse.success(updatedPayload, 'Purchase updated'));
 });
 
 export const deletePurchase = asyncHandler(async (req: Request, res: Response) => {
@@ -454,6 +459,7 @@ export const deletePurchase = asyncHandler(async (req: Request, res: Response) =
     await tx.purchase.delete({ where: { id: req.params.id } });
   });
 
+  emitPurchaseEvent('purchase:deleted', { id: req.params.id }, [getPurchaseOutletId(existing)]);
   return res.json(ApiResponse.success(null, 'Purchase deleted'));
 });
 
@@ -568,7 +574,9 @@ export const payPurchase = asyncHandler(async (req: Request, res: Response) => {
     return p;
   });
 
-  return res.json(ApiResponse.success(mapPurchase(updated), 'Payment recorded'));
+  const updatedPayload = mapPurchase(updated);
+  emitPurchaseEvent('purchase:updated', updatedPayload, [getPurchaseOutletId(existing)]);
+  return res.json(ApiResponse.success(updatedPayload, 'Payment recorded'));
 });
 
 export const getPurchaseStats = asyncHandler(async (req: Request, res: Response) => {
