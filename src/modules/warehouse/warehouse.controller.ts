@@ -479,9 +479,9 @@ export const getWarehouseDashboard = asyncHandler(async (req: Request, res: Resp
 
   // A client may only ask for a warehouse it can already see. 404, never 403 — a
   // wrong id must not confirm that someone else's warehouse exists.
-  const selectedId = warehouseId && warehouseId !== 'all' ? String(warehouseId) : null;
+  let selectedId = warehouseId && warehouseId !== 'all' ? String(warehouseId) : null;
   if (selectedId && !visibleIds.includes(selectedId)) {
-    throw ApiError.notFound('Warehouse not found');
+    selectedId = null;
   }
 
   // The selected warehouse's type/outletId drives which owner-dashboard cards apply:
