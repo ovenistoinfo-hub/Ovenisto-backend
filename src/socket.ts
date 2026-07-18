@@ -36,17 +36,6 @@ export function emitOrderEvent(event: OrderEventType, payload: unknown): void {
   }
 }
 
-export type CancellationRequestEventType = 'cancellationRequest:created' | 'cancellationRequest:updated';
-
-/** Push a cancellation-request change (created/reviewed) so the approver inbox updates live. */
-export function emitCancellationRequestEvent(event: CancellationRequestEventType, payload: unknown): void {
-  try {
-    ioRef?.emit(event, payload);
-  } catch {
-    // Real-time delivery is non-critical; swallow so the API response is unaffected.
-  }
-}
-
 export type ChallanEventType = 'challan:created' | 'challan:updated';
 export type DemandEventType  = 'demand:created'  | 'demand:updated';
 
@@ -110,4 +99,25 @@ export function emitDemandEvent(
 ): void {
   emitToOutlets(event, payload, outletIds);
 }
+
+export type CancellationRequestEventType = 'cancellationRequest:created' | 'cancellationRequest:updated';
+
+/**
+ * Push a cancellation-request change (created/reviewed) so the approver inbox and
+ * the requesting cashier's POS update live.
+ *
+ * Outlet-scoped: an OrderCancellationRequest carries its own `outletId` (copied from
+ * the order at creation), so it targets exactly one room. Previously this broadcast
+ * to every connected client, which made managers in unrelated branches refetch and
+ * toast for a request they can't even see — the list endpoint is outlet-filtered.
+ */
+export function emitCancellationRequestEvent(
+  event: CancellationRequestEventType,
+  payload: unknown,
+  outletIds: (string | null | undefined)[]
+): void {
+  emitToOutlets(event, payload, outletIds);
+}
+
+
 

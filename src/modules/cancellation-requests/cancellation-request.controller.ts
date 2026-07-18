@@ -197,11 +197,11 @@ export const createCancellationRequest = asyncHandler(async (req: Request, res: 
     );
     const mappedOrder = mapOrderOut(cancelledOrder);
     emitOrderEvent('order:updated', mappedOrder);
-    emitCancellationRequestEvent('cancellationRequest:updated', mapRequestOut(updatedRequest));
+    emitCancellationRequestEvent('cancellationRequest:updated', mapRequestOut(updatedRequest), [request.outletId]);
     return res.status(201).json(ApiResponse.created(mapRequestOut(updatedRequest), 'Order cancelled'));
   }
 
-  emitCancellationRequestEvent('cancellationRequest:created', mapRequestOut(request));
+  emitCancellationRequestEvent('cancellationRequest:created', mapRequestOut(request), [request.outletId]);
   return res.status(201).json(ApiResponse.created(mapRequestOut(request), 'Cancellation request sent for approval'));
 });
 
@@ -260,7 +260,7 @@ export const reviewCancellationRequest = asyncHandler(async (req: Request, res: 
       },
       include: includeShape,
     });
-    emitCancellationRequestEvent('cancellationRequest:updated', mapRequestOut(rejected));
+    emitCancellationRequestEvent('cancellationRequest:updated', mapRequestOut(rejected), [existing.outletId]);
     return res.json(ApiResponse.success(mapRequestOut(rejected), 'Cancellation request rejected'));
   }
 
@@ -274,6 +274,6 @@ export const reviewCancellationRequest = asyncHandler(async (req: Request, res: 
 
   const mappedOrder = mapOrderOut(cancelledOrder);
   emitOrderEvent('order:updated', mappedOrder);
-  emitCancellationRequestEvent('cancellationRequest:updated', mapRequestOut(updatedRequest));
+  emitCancellationRequestEvent('cancellationRequest:updated', mapRequestOut(updatedRequest), [existing.outletId]);
   return res.json(ApiResponse.success(mapRequestOut(updatedRequest), 'Cancellation request approved'));
 });
