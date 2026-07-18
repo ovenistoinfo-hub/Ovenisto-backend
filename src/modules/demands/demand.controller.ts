@@ -239,7 +239,7 @@ export const approveDemand = asyncHandler(async (req: Request, res: Response) =>
   const ingredientIds = challanItems.map(ci => ci.ingredientId);
   const stockRecords = await prisma.warehouseStock.findMany({
     where: { warehouseId: demand.supplyingWHId, ingredientId: { in: ingredientIds } },
-    include: { ingredient: { select: { name: true } } },
+    include: { ingredient: { select: { name: true, purchasePrice: true } } },
   });
   const stockMap = new Map(stockRecords.map(ws => [ws.ingredientId, ws]));
   for (const ci of challanItems) {
@@ -253,6 +253,13 @@ export const approveDemand = asyncHandler(async (req: Request, res: Response) =>
     }
   }
 
+  const priceMap = new Map(stockRecords.map(ws => [ws.ingredientId, Number(ws.ingredient.purchasePrice || 0)]));
+  const subtotal = challanItems.reduce((sum, item) => {
+    const price = priceMap.get(item.ingredientId) ?? 0;
+    return sum + Number(item.qty) * price;
+  }, 0);
+  const total = subtotal;
+
   const updated = await prisma.$transaction(async (tx) => {
     // Create challan (supplying WH → requesting WH)
     const challan = await tx.stockChallan.create({
@@ -261,8 +268,16 @@ export const approveDemand = asyncHandler(async (req: Request, res: Response) =>
         fromWarehouseId: demand.supplyingWHId,
         toWarehouseId:   demand.requestingWHId,
         notes: `Auto-created from demand ${demand.demandNo}`,
+        subtotal: subtotal,
+        total: total,
         createdById: req.user?.id || null,
-        items: { create: challanItems },
+        items: {
+          create: challanItems.map(ci => ({
+            ingredientId: ci.ingredientId,
+            qty: ci.qty,
+            unitPrice: priceMap.get(ci.ingredientId) ?? 0,
+          })),
+        },
       },
     });
 

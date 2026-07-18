@@ -245,19 +245,36 @@ export const createChallan = asyncHandler(async (req: Request, res: Response) =>
   });
   const challanNo = `CHN-${today}-${String(count + 1).padStart(4, '0')}`;
 
+  const ingredientIds = items.map((item: any) => item.ingredientId);
+  const ingredients = await prisma.ingredient.findMany({
+    where: { id: { in: ingredientIds } },
+    select: { id: true, purchasePrice: true }
+  });
+  const priceMap = new Map(ingredients.map(ig => [ig.id, Number(ig.purchasePrice || 0)]));
+
+  const subtotal = items.reduce((sum: number, item: any) => {
+    const price = priceMap.get(item.ingredientId) ?? 0;
+    return sum + Number(item.qty) * price;
+  }, 0);
+
+  const total = subtotal + (Number(shippingCost) || 0) + (Number(miscAmount) || 0);
+
   const challan = await prisma.stockChallan.create({
     data: {
       challanNo,
       fromWarehouseId,
       toWarehouseId,
       notes: notes || null,
-      shippingCost: shippingCost != null ? shippingCost : null,
-      miscAmount:   miscAmount   != null ? miscAmount   : null,
+      shippingCost: shippingCost != null ? Number(shippingCost) : null,
+      miscAmount:   miscAmount   != null ? Number(miscAmount)   : null,
+      subtotal: subtotal,
+      total: total,
       createdById: req.user?.id || null,
       items: {
         create: items.map((item: any) => ({
           ingredientId: item.ingredientId,
           qty: item.qty,
+          unitPrice: priceMap.get(item.ingredientId) ?? 0,
         })),
       },
     },
@@ -618,7 +635,9 @@ export const cancelChallan = asyncHandler(async (req: Request, res: Response) =>
 export const getChallanStats = asyncHandler(async (req: Request, res: Response) => {
   const { fromWarehouseId, toWarehouseId } = req.query as Record<string, string>;
 
-  const where: any = {};
+  const where: any = {
+    status: { in: ['DISPATCHED', 'RECEIVED'] }
+  };
   if (fromWarehouseId) where.fromWarehouseId = fromWarehouseId;
   if (toWarehouseId)   where.toWarehouseId   = toWarehouseId;
 
