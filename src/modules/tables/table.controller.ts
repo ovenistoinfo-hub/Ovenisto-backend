@@ -9,6 +9,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope, resolveCreateOutlet } from '../../middleware/outletScope.js';
+import { emitTableEvent } from '../../socket.js';
 
 /** GET /api/tables */
 export const getTables = asyncHandler(async (req: Request, res: Response) => {
@@ -48,6 +49,8 @@ export const createTable = asyncHandler(async (req: Request, res: Response) => {
     },
   });
 
+  emitTableEvent('table:created', table, [table.outletId]);
+
   res.status(201).json(ApiResponse.created(table, 'Table created'));
 });
 
@@ -79,6 +82,8 @@ export const updateTable = asyncHandler(async (req: Request, res: Response) => {
     },
   });
 
+  emitTableEvent('table:updated', table, [table.outletId]);
+
   res.json(ApiResponse.success(table, 'Table updated'));
 });
 
@@ -90,5 +95,6 @@ export const deleteTable = asyncHandler(async (req: Request, res: Response) => {
   if (scope && existing.outletId !== scope) throw ApiError.notFound('Table not found');
 
   await prisma.restaurantTable.delete({ where: { id: req.params.id } });
+  emitTableEvent('table:deleted', existing, [existing.outletId]);
   res.json(ApiResponse.success(null, 'Table deleted'));
 });

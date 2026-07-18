@@ -20,7 +20,7 @@ export const rolePermissions: Record<string, string[]> = {
     'customer-display', 'outlets', 'items', 'production', 'stock', 'sales',
     'customers', 'customer-dues', 'purchases', 'suppliers', 'supplier-dues',
     'expenses', 'transfers', 'waste', 'attendance', 'reports', 'sms',
-    'settings', 'my-portal',
+    'settings', 'my-portal', 'table-layout',
   ],
   'Floor Manager': [
     'dashboard', 'waiter', 'order-status', 'customer-display', 'customers',

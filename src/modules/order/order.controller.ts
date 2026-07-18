@@ -9,7 +9,7 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { emitOrderEvent } from '../../socket.js';
+import { emitOrderEvent, emitTableEvent } from '../../socket.js';
 import { fifoDrawdown } from '../stock/dough.helpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 
@@ -52,6 +52,56 @@ const STATUS_TO_DISPLAY: Record<string, string> = {
   CANCELLED: 'cancelled',
   SCHEDULED: 'scheduled',
 };
+
+/**
+ * Helper to compute and update a table's status in the database based on active orders,
+ * then emit socket push notifications to sync all terminals.
+ */
+export async function updateTableStatusForOrder(
+  tx: any,
+  outletId: string | null,
+  tableNumber: number | null
+): Promise<void> {
+  if (!outletId || !tableNumber) return;
+
+  const tableNumStr = String(tableNumber);
+  const table = await tx.restaurantTable.findFirst({
+    where: { number: tableNumStr, outletId },
+  });
+  if (!table) return;
+
+  // Find if there are active dine-in or self-order orders for this table at this outlet
+  const activeOrders = await tx.order.findMany({
+    where: {
+      outletId,
+      tableNumber,
+      type: { in: ['DINE_IN', 'SELF_ORDER'] },
+      status: { in: ['PENDING', 'PREPARING', 'READY'] },
+    },
+  });
+
+  const hasActiveOrders = activeOrders.length > 0;
+
+  let newStatus = table.status;
+
+  if (hasActiveOrders) {
+    if (table.status !== 'bill-requested' && table.status !== 'occupied') {
+      newStatus = 'occupied';
+    }
+  } else {
+    if (table.status === 'occupied' || table.status === 'bill-requested') {
+      newStatus = 'available';
+    }
+  }
+
+  if (newStatus !== table.status) {
+    const updatedTable = await tx.restaurantTable.update({
+      where: { id: table.id },
+      data: { status: newStatus },
+    });
+    emitTableEvent('table:updated', updatedTable, [outletId]);
+  }
+}
 
 export function mapOrderOut(order: any): any {
   if (!order) return order;
@@ -245,6 +295,9 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   });
 
   const created = mapOrderOut(order);
+  if (order.tableNumber && (order.type === 'DINE_IN' || order.type === 'SELF_ORDER')) {
+    await updateTableStatusForOrder(prisma, order.outletId, order.tableNumber);
+  }
   emitOrderEvent('order:created', created);
   res.status(201).json(ApiResponse.created(created, 'Order created'));
 });
@@ -314,6 +367,12 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
   });
 
   const updatedOrder = mapOrderOut(order);
+  if (existing.tableNumber && (existing.type === 'DINE_IN' || existing.type === 'SELF_ORDER')) {
+    await updateTableStatusForOrder(prisma, existing.outletId, existing.tableNumber);
+  }
+  if (order.tableNumber && (order.type === 'DINE_IN' || order.type === 'SELF_ORDER')) {
+    await updateTableStatusForOrder(prisma, order.outletId, order.tableNumber);
+  }
   emitOrderEvent('order:updated', updatedOrder);
   res.json(ApiResponse.success(updatedOrder, 'Order updated'));
 });
@@ -523,6 +582,9 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
   });
 
   const statusUpdated = mapOrderOut(order);
+  if (order.tableNumber && (order.type === 'DINE_IN' || order.type === 'SELF_ORDER')) {
+    await updateTableStatusForOrder(prisma, order.outletId, order.tableNumber);
+  }
   emitOrderEvent('order:updated', statusUpdated);
   res.json(ApiResponse.success(statusUpdated, 'Order status updated'));
 });
@@ -569,7 +631,7 @@ export function validateCancellationTargets(
 export async function executeCancellation(
   tx: Prisma.TransactionClient,
   params: {
-    existing: { id: string; outletId: string | null; status: string; items: any[] };
+    existing: { id: string; outletId: string | null; status: string; items: any[]; tableNumber?: number | null; type?: string };
     itemIds?: string[];
     reason: string;
     refundAmount: number;
@@ -778,7 +840,7 @@ export async function executeCancellation(
     },
   });
 
-  return tx.order.findUnique({
+  const cancelled = await tx.order.findUnique({
     where: { id },
     include: {
       items: {
@@ -786,6 +848,12 @@ export async function executeCancellation(
       },
     },
   });
+
+  if (existing.tableNumber && (existing.type === 'DINE_IN' || existing.type === 'SELF_ORDER')) {
+    await updateTableStatusForOrder(tx, existing.outletId, existing.tableNumber);
+  }
+
+  return cancelled;
 }
 
 /** DELETE /api/orders/:id */
@@ -795,6 +863,9 @@ export const deleteOrder = asyncHandler(async (req: Request, res: Response) => {
   const scope = resolveOutletScope(req);
   if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
   await prisma.order.delete({ where: { id: req.params.id } });
+  if (existing.tableNumber && (existing.type === 'DINE_IN' || existing.type === 'SELF_ORDER')) {
+    await updateTableStatusForOrder(prisma, existing.outletId, existing.tableNumber);
+  }
   emitOrderEvent('order:deleted', { id: req.params.id });
   res.json(ApiResponse.success(null, 'Order deleted'));
 });
