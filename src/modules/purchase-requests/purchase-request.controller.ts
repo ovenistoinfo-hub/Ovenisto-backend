@@ -9,6 +9,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
+import { emitPurchaseRequestEvent } from '../../socket.js';
 
 // Auto-generate request number: PR-YYYYMMDD-XXXX
 async function generateRequestNo(): Promise<string> {
@@ -229,7 +230,9 @@ export const createPurchaseRequest = asyncHandler(async (req: Request, res: Resp
 
   const createIngIds = pr.items.map((i: any) => i.ingredientId);
   const createStockMap = createIngIds.length > 0 ? await getWarehouseStockMap(pr.warehouseId, createIngIds) : new Map();
-  res.status(201).json(ApiResponse.created(mapRequest(pr, createStockMap)));
+  const created = mapRequest(pr, createStockMap);
+  emitPurchaseRequestEvent('purchaseRequest:created', created, [warehouse.outletId]);
+  res.status(201).json(ApiResponse.created(created));
 });
 
 /** PATCH /api/purchase-requests/:id/approve */
@@ -285,7 +288,9 @@ export const approveRequest = asyncHandler(async (req: Request, res: Response) =
   if (updated) {
     const approveIngIds = updated.items.map((i: any) => i.ingredientId);
     const approveStockMap = approveIngIds.length > 0 ? await getWarehouseStockMap(updated.warehouseId, approveIngIds) : new Map();
-    res.json(ApiResponse.success(mapRequest(updated, approveStockMap)));
+    const approved = mapRequest(updated, approveStockMap);
+    emitPurchaseRequestEvent('purchaseRequest:updated', approved, [updated.warehouse?.outlet?.id]);
+    res.json(ApiResponse.success(approved));
   } else {
     res.json(ApiResponse.success(null));
   }
@@ -323,7 +328,9 @@ export const rejectRequest = asyncHandler(async (req: Request, res: Response) =>
 
   const rejectIngIds = updated.items.map((i: any) => i.ingredientId);
   const rejectStockMap = rejectIngIds.length > 0 ? await getWarehouseStockMap(updated.warehouseId, rejectIngIds) : new Map();
-  res.json(ApiResponse.success(mapRequest(updated, rejectStockMap)));
+  const rejected = mapRequest(updated, rejectStockMap);
+  emitPurchaseRequestEvent('purchaseRequest:updated', rejected, [updated.warehouse?.outlet?.id]);
+  res.json(ApiResponse.success(rejected));
 });
 
 /** PATCH /api/purchase-requests/:id/cancel */
@@ -352,5 +359,7 @@ export const cancelRequest = asyncHandler(async (req: Request, res: Response) =>
 
   const cancelIngIds = updated.items.map((i: any) => i.ingredientId);
   const cancelStockMap = cancelIngIds.length > 0 ? await getWarehouseStockMap(updated.warehouseId, cancelIngIds) : new Map();
-  res.json(ApiResponse.success(mapRequest(updated, cancelStockMap)));
+  const cancelled = mapRequest(updated, cancelStockMap);
+  emitPurchaseRequestEvent('purchaseRequest:updated', cancelled, [updated.warehouse?.outlet?.id]);
+  res.json(ApiResponse.success(cancelled));
 });
