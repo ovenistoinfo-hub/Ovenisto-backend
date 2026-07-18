@@ -119,5 +119,34 @@ export function emitCancellationRequestEvent(
   emitToOutlets(event, payload, outletIds);
 }
 
+export type TableEventType = 'table:created' | 'table:updated' | 'table:deleted';
 
+/** Push a table change to the outlet room so waiter panel and POS update live. */
+export function emitTableEvent(
+  event: TableEventType,
+  payload: unknown,
+  outletIds: (string | null | undefined)[]
+): void {
+  emitToOutlets(event, payload, outletIds);
+}
 
+export type PurchaseEventType = 'purchase:created' | 'purchase:updated' | 'purchase:deleted';
+export type PurchaseRequestEventType = 'purchaseRequest:created' | 'purchaseRequest:updated';
+
+/** Push a purchase change to the owning outlet so Purchases pages update live. */
+export function emitPurchaseEvent(
+  event: PurchaseEventType,
+  payload: unknown,
+  outletIds: (string | null | undefined)[]
+): void {
+  emitToOutlets(event, payload, outletIds);
+}
+
+/** Push a requisition change to the target warehouse's outlet. */
+export function emitPurchaseRequestEvent(
+  event: PurchaseRequestEventType,
+  payload: unknown,
+  outletIds: (string | null | undefined)[]
+): void {
+  emitToOutlets(event, payload, outletIds);
+}

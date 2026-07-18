@@ -44,13 +44,29 @@ function mapPurchase(p: any) {
   };
 }
 
-function checkPurchaseAccess(
-  req: Request,
-  purchase: { outletId: string | null; warehouseId: string | null; warehouse?: { outletId: string | null } | null }
-) {
-  const isSuperAdmin = req.user?.role === 'Super Admin';
+export interface PurchaseOutletShape {
+  outletId: string | null;
+  warehouseId: string | null;
+  warehouse?: { outletId: string | null } | null;
+}
+
+/**
+ * The outlet a purchase actually belongs to.
+ *
+ * A warehouse-linked purchase belongs to its WAREHOUSE's outlet — its own
+ * `outletId` column is not the authority for those rows. Only a purchase with no
+ * warehouse falls back to the column. Exported and used by BOTH the access check
+ * and the socket emit so the two can never drift: if they disagreed, an event
+ * would be delivered to an outlet that cannot open the row (or vice versa).
+ */
+export function getPurchaseOutletId(purchase: PurchaseOutletShape): string | null {
   const warehouseOutletId = purchase.warehouse ? purchase.warehouse.outletId : undefined;
-  const effectiveOutletId = purchase.warehouseId ? (warehouseOutletId ?? null) : purchase.outletId;
+  return purchase.warehouseId ? (warehouseOutletId ?? null) : purchase.outletId;
+}
+
+function checkPurchaseAccess(req: Request, purchase: PurchaseOutletShape) {
+  const isSuperAdmin = req.user?.role === 'Super Admin';
+  const effectiveOutletId = getPurchaseOutletId(purchase);
 
   if (isSuperAdmin) {
     if (effectiveOutletId !== null) {
