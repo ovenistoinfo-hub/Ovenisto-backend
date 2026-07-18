@@ -158,10 +158,25 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
 
   let outletId: string | null = null;
   if (warehouseId) {
-    const pWarehouse = await prisma.warehouse.findUnique({ where: { id: warehouseId }, select: { outletId: true } });
+    const pWarehouse = await prisma.warehouse.findUnique({ where: { id: warehouseId }, select: { outletId: true, type: true } });
     if (!pWarehouse) throw new ApiError('Warehouse not found', 404);
+    
+    const isSuperAdmin = req.user?.role === 'Super Admin';
+    if (isSuperAdmin && pWarehouse.type !== 'MAIN') {
+      throw new ApiError('Super Admin can only record purchases for the Main Warehouse', 400);
+    }
+    if (!isSuperAdmin && pWarehouse.type !== 'BRANCH') {
+      throw new ApiError('Branch users can only record purchases for branch warehouses', 400);
+    }
     outletId = pWarehouse.outletId;
   } else {
+    const isSuperAdmin = req.user?.role === 'Super Admin';
+    if (isSuperAdmin) {
+      // Find the main warehouse to link to by default if no warehouse is provided
+      const mainWh = await prisma.warehouse.findFirst({ where: { type: 'MAIN' } });
+      if (!mainWh) throw new ApiError('Main warehouse not found in system', 400);
+      throw new ApiError('Super Admin must specify the Main Warehouse for purchases', 400);
+    }
     outletId = resolveCreateOutlet(req);
   }
 
