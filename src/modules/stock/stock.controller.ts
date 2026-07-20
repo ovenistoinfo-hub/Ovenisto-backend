@@ -10,6 +10,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { effectiveExpiry, minutesRemaining, batchStatus } from './dough.helpers.js';
 import { resolveCreateOutlet, resolveOutletScope } from '../../middleware/outletScope.js';
+import { autoProcessExpiredBatches } from './autoExpiry.js';
 
 // ============================================================
 // STOCK ADJUSTMENTS
@@ -32,6 +33,7 @@ const applyStockScopeFilter = (req: Request, where: any) => {
 
 /** GET /api/stock/adjustments */
 export const getAdjustments = asyncHandler(async (req: Request, res: Response) => {
+  await autoProcessExpiredBatches();
   const { search, warehouseId, page = '1', limit = '50' } = req.query;
   const skip = (Number(page) - 1) * Number(limit);
 
@@ -616,6 +618,7 @@ export const updateTransferStatus = asyncHandler(async (req: Request, res: Respo
 
 /** GET /api/stock/waste */
 export const getWasteRecords = asyncHandler(async (req: Request, res: Response) => {
+  await autoProcessExpiredBatches();
   const { search, warehouseId, page = '1', limit = '50' } = req.query;
   const skip = (Number(page) - 1) * Number(limit);
 
@@ -691,6 +694,7 @@ export const createWasteRecord = asyncHandler(async (req: Request, res: Response
 
 /** GET /api/stock/production-stock */
 export const getProductionStock = asyncHandler(async (req: Request, res: Response) => {
+  await autoProcessExpiredBatches();
   const scope = resolveOutletScope(req);
 
   const warehouseWhere: any = { type: 'KITCHEN', isActive: true };
@@ -783,6 +787,7 @@ export const wasteProductionBatch = asyncHandler(async (req: Request, res: Respo
 
 /** GET /api/stock/dough-batches?outletId=<id|all> */
 export const getDoughBatches = asyncHandler(async (req: Request, res: Response) => {
+  await autoProcessExpiredBatches();
   const scope = resolveOutletScope(req);
   const now = new Date();
 

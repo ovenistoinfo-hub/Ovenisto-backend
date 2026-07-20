@@ -10,6 +10,12 @@ import { env } from './config/env.js';
 import { connectDatabase, disconnectDatabase } from './config/database.js';
 import { registerIO } from './socket.js';
 import { socketAuth } from './middleware/socketAuth.js';
+import { autoProcessExpiredBatches } from './modules/stock/autoExpiry.js';
+
+// Background auto-expiry processing (every 60s while server is running)
+setInterval(() => {
+  autoProcessExpiredBatches().catch((err) => console.error('Auto-expiry background error:', err));
+}, 60000);
 
 // Create HTTP server
 const server = http.createServer(app);

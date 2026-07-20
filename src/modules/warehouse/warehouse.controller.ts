@@ -9,6 +9,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
+import { autoProcessExpiredBatches } from '../stock/autoExpiry.js';
 import {
   canReadWarehouse,
   resolveDashboardScope,
@@ -116,6 +117,7 @@ export const getWarehouse = asyncHandler(async (req: Request, res: Response) => 
 
 /** GET /api/warehouses/:id/stock */
 export const getWarehouseStock = asyncHandler(async (req: Request, res: Response) => {
+  await autoProcessExpiredBatches();
   const { id } = req.params;
   const { categoryId, search, lowStockOnly } = req.query;
 
@@ -200,6 +202,7 @@ export const getWarehouseStock = asyncHandler(async (req: Request, res: Response
 
 /** GET /api/warehouses/:id/expiry-summary */
 export const getWarehouseExpirySummary = asyncHandler(async (req: Request, res: Response) => {
+  await autoProcessExpiredBatches();
   const { id } = req.params;
   await assertReadableWarehouse(req, id);
 

@@ -9,6 +9,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
+import { autoProcessExpiredBatches } from '../stock/autoExpiry.js';
 
 // ============================================================
 // INGREDIENT UNITS (with symbol & conversions)
@@ -222,6 +223,7 @@ export function checkIngredientAccess(req: Request, ingredientOutletId: string |
 
 /** GET /api/inventory/ingredients */
 export const getIngredients = asyncHandler(async (req: Request, res: Response) => {
+  await autoProcessExpiredBatches();
   const { search, categoryId, status, lowStock, page, limit } = req.query;
 
   const where: any = {};

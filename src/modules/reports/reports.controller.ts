@@ -12,6 +12,7 @@ import {
   displayOrderType,
 } from './reports.helpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
+import { autoProcessExpiredBatches } from '../stock/autoExpiry.js';
 
 const COMPLETED = 'COMPLETED'; // Prisma OrderStatus enum value for completed orders
 
@@ -216,6 +217,7 @@ const EXCLUDED_STATUSES = ['CANCELLED', 'SCHEDULED'] as const;
 
 /** GET /api/reports/dashboard?outletId=<id|all> */
 export const getDashboard = asyncHandler(async (req: Request, res: Response) => {
+  await autoProcessExpiredBatches();
   const outletId = resolveOutletScope(req) ?? undefined;
   const now = new Date();
   const day = dayBoundaries(now);
