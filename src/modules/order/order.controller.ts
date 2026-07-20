@@ -60,7 +60,8 @@ const STATUS_TO_DISPLAY: Record<string, string> = {
 export async function updateTableStatusForOrder(
   tx: any,
   outletId: string | null,
-  tableNumber: number | null
+  tableNumber: number | null,
+  staffUser?: { id: string; name: string | null; role: string | null } | null
 ): Promise<void> {
   if (!outletId || !tableNumber) return;
 
@@ -89,15 +90,41 @@ export async function updateTableStatusForOrder(
       newStatus = 'occupied';
     }
   } else {
-    if (table.status === 'occupied' || table.status === 'bill-requested') {
-      newStatus = 'available';
-    }
+    // Keep current status (occupied/bill-requested) on order completion until explicitly cleared via End Sitting
   }
 
-  if (newStatus !== table.status) {
+  let occupiedData: {
+    occupiedById?: string | null;
+    occupiedByName?: string | null;
+    occupiedByRole?: string | null;
+  } = {};
+  if (newStatus === 'occupied') {
+    occupiedData = {
+      occupiedById: table.occupiedById || staffUser?.id || null,
+      occupiedByName: table.occupiedByName || staffUser?.name || null,
+      occupiedByRole: table.occupiedByRole || staffUser?.role || null,
+    };
+  } else if (newStatus === 'available') {
+    occupiedData = {
+      occupiedById: null,
+      occupiedByName: null,
+      occupiedByRole: null,
+    };
+  }
+
+  const hasStatusChange = newStatus !== table.status;
+  const hasOwnerChange =
+    (occupiedData.occupiedById !== undefined && occupiedData.occupiedById !== table.occupiedById) ||
+    (occupiedData.occupiedByName !== undefined && occupiedData.occupiedByName !== table.occupiedByName) ||
+    (occupiedData.occupiedByRole !== undefined && occupiedData.occupiedByRole !== table.occupiedByRole);
+
+  if (hasStatusChange || hasOwnerChange) {
     const updatedTable = await tx.restaurantTable.update({
       where: { id: table.id },
-      data: { status: newStatus },
+      data: {
+        status: newStatus,
+        ...occupiedData,
+      },
     });
     emitTableEvent('table:updated', updatedTable, [outletId]);
   }
@@ -296,7 +323,7 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
 
   const created = mapOrderOut(order);
   if (order.tableNumber && (order.type === 'DINE_IN' || order.type === 'SELF_ORDER')) {
-    await updateTableStatusForOrder(prisma, order.outletId, order.tableNumber);
+    await updateTableStatusForOrder(prisma, order.outletId, order.tableNumber, req.user);
   }
   emitOrderEvent('order:created', created);
   res.status(201).json(ApiResponse.created(created, 'Order created'));
@@ -368,10 +395,10 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
 
   const updatedOrder = mapOrderOut(order);
   if (existing.tableNumber && (existing.type === 'DINE_IN' || existing.type === 'SELF_ORDER')) {
-    await updateTableStatusForOrder(prisma, existing.outletId, existing.tableNumber);
+    await updateTableStatusForOrder(prisma, existing.outletId, existing.tableNumber, req.user);
   }
   if (order.tableNumber && (order.type === 'DINE_IN' || order.type === 'SELF_ORDER')) {
-    await updateTableStatusForOrder(prisma, order.outletId, order.tableNumber);
+    await updateTableStatusForOrder(prisma, order.outletId, order.tableNumber, req.user);
   }
   emitOrderEvent('order:updated', updatedOrder);
   res.json(ApiResponse.success(updatedOrder, 'Order updated'));
@@ -579,11 +606,11 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
     }
 
     return updated;
-  });
+  }, { timeout: 30000 });
 
   const statusUpdated = mapOrderOut(order);
   if (order.tableNumber && (order.type === 'DINE_IN' || order.type === 'SELF_ORDER')) {
-    await updateTableStatusForOrder(prisma, order.outletId, order.tableNumber);
+    await updateTableStatusForOrder(prisma, order.outletId, order.tableNumber, req.user);
   }
   emitOrderEvent('order:updated', statusUpdated);
   res.json(ApiResponse.success(statusUpdated, 'Order status updated'));
@@ -850,7 +877,7 @@ export async function executeCancellation(
   });
 
   if (existing.tableNumber && (existing.type === 'DINE_IN' || existing.type === 'SELF_ORDER')) {
-    await updateTableStatusForOrder(tx, existing.outletId, existing.tableNumber);
+    await updateTableStatusForOrder(tx, existing.outletId, existing.tableNumber, { id: authorizedById, name: actingUserName || null, role: null });
   }
 
   return cancelled;
@@ -864,7 +891,7 @@ export const deleteOrder = asyncHandler(async (req: Request, res: Response) => {
   if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
   await prisma.order.delete({ where: { id: req.params.id } });
   if (existing.tableNumber && (existing.type === 'DINE_IN' || existing.type === 'SELF_ORDER')) {
-    await updateTableStatusForOrder(prisma, existing.outletId, existing.tableNumber);
+    await updateTableStatusForOrder(prisma, existing.outletId, existing.tableNumber, req.user);
   }
   emitOrderEvent('order:deleted', { id: req.params.id });
   res.json(ApiResponse.success(null, 'Order deleted'));

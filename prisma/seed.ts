@@ -295,7 +295,7 @@ async function main() {
   await prisma.kitchen.create({
     data: {
       name: 'Main Kitchen',
-      assignedCategories: ['Pizza', 'Burgers', 'Pasta', 'Appetizers'],
+      assignedCategories: ['Pizza', 'Burgers', 'Pasta', 'Appetizers', 'Beverages', 'Desserts'],
       status: 'active',
     },
   });

@@ -10,6 +10,8 @@ import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope, resolveCreateOutlet } from '../../middleware/outletScope.js';
 import { emitTableEvent } from '../../socket.js';
+import { rolePermissions } from '../../middleware/authorize.js';
+
 
 /** GET /api/tables */
 export const getTables = asyncHandler(async (req: Request, res: Response) => {
@@ -70,6 +72,43 @@ export const updateTable = asyncHandler(async (req: Request, res: Response) => {
     if (conflict) throw ApiError.badRequest(`Table ${number} already exists`);
   }
 
+  // Check if trying to edit layout/structural fields
+  const isEditingLayout = 
+    (number !== undefined && String(number) !== existing.number) ||
+    (capacity !== undefined && capacity !== existing.capacity) ||
+    (floor !== undefined && floor !== existing.floor) ||
+    (shape !== undefined && shape !== existing.shape);
+  if (isEditingLayout) {
+    const userRole = req.user?.role;
+    const permissions = rolePermissions[userRole || ''] || [];
+    if (!permissions.includes('*') && !permissions.includes('table-layout')) {
+      throw ApiError.forbidden("You don't have permission to modify table layout");
+    }
+  }
+
+  // Handle auto-populating session owner on operational status changes
+  let occupiedData: {
+    occupiedById?: string | null;
+    occupiedByName?: string | null;
+    occupiedByRole?: string | null;
+  } = {};
+
+  if (status !== undefined) {
+    if (status === 'occupied') {
+      occupiedData = {
+        occupiedById: req.user?.id || null,
+        occupiedByName: req.user?.name || null,
+        occupiedByRole: req.user?.role || null,
+      };
+    } else if (status === 'available') {
+      occupiedData = {
+        occupiedById: null,
+        occupiedByName: null,
+        occupiedByRole: null,
+      };
+    }
+  }
+
   const table = await prisma.restaurantTable.update({
     where: { id },
     data: {
@@ -79,6 +118,7 @@ export const updateTable = asyncHandler(async (req: Request, res: Response) => {
       ...(shape !== undefined && { shape: shape || null }),
       ...(status !== undefined && { status }),
       ...(currentOrderId !== undefined && { currentOrderId: currentOrderId || null }),
+      ...occupiedData,
     },
   });
 

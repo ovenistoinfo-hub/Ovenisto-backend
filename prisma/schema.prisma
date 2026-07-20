@@ -1394,6 +1394,9 @@ model RestaurantTable {
   currentOrderId String?
   reservationId  String?
   outletId       String?
+  occupiedById   String? @db.VarChar(50)
+  occupiedByName String? @db.VarChar(100)
+  occupiedByRole String? @db.VarChar(50)
 
   // Relations
   reservations Reservation[]

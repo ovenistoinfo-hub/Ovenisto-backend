@@ -14,7 +14,7 @@ router.get('/', authenticate, getTables);
 
 // Protected — table-layout permission required
 router.post('/', authenticate, requirePermission('table-layout'), createTable);
-router.put('/:id', authenticate, requirePermission('table-layout'), updateTable);
+router.put('/:id', authenticate, updateTable);
 router.delete('/:id', authenticate, requirePermission('table-layout'), deleteTable);
 
 export default router;
