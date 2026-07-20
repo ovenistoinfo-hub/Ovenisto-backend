@@ -270,29 +270,46 @@ export const getWarehouseExpirySummary = asyncHandler(async (req: Request, res: 
     return d >= now && d <= nearExpiryThreshold;
   });
 
-  const expiredTodayGroups = todayExpiredWastes.map((w) => ({
-    ingredientId: w.id,
-    ingredientName: w.itemName ?? 'Unknown Item',
-    brand: null,
-    unit: w.unit ?? '',
-    totalCurrentStock: 0,
-    affectedQty: Number(w.quantity ?? 0),
-    safeQty: 0,
-    batches: [
-      {
-        id: w.id,
-        ingredientId: w.id,
-        ingredientName: w.itemName ?? 'Unknown Item',
-        brand: null,
-        unit: w.unit ?? '',
-        batchQty: Number(w.quantity ?? 0),
-        remainingQty: Number(w.quantity ?? 0),
-        expiryDate: w.date.toISOString().split('T')[0],
-        purchasedAt: w.date.toISOString().split('T')[0],
-        totalCurrentStock: 0,
-      },
-    ],
-  }));
+  const expiredWasteNames = [...new Set(todayExpiredWastes.map(w => w.itemName).filter(Boolean))];
+  const matchedIngredients = expiredWasteNames.length > 0 ? await prisma.ingredient.findMany({
+    where: { name: { in: expiredWasteNames as string[] } },
+    select: { id: true, name: true },
+  }) : [];
+  const ingNameToIdMap = new Map(matchedIngredients.map(i => [i.name, i.id]));
+  const matchedIngIds = [...ingNameToIdMap.values()];
+  const currentStocksForExpired = matchedIngIds.length > 0 ? await prisma.warehouseStock.findMany({
+    where: { warehouseId: id, ingredientId: { in: matchedIngIds } },
+    select: { ingredientId: true, currentStock: true },
+  }) : [];
+  const currentStockByIngId = new Map(currentStocksForExpired.map(s => [s.ingredientId, Number(s.currentStock)]));
+
+  const expiredTodayGroups = todayExpiredWastes.map((w) => {
+    const ingId = w.itemName ? ingNameToIdMap.get(w.itemName) : null;
+    const stockVal = ingId ? (currentStockByIngId.get(ingId) ?? 0) : 0;
+    return {
+      ingredientId: w.id,
+      ingredientName: w.itemName ?? 'Unknown Item',
+      brand: null,
+      unit: w.unit ?? '',
+      totalCurrentStock: stockVal,
+      affectedQty: Number(w.quantity ?? 0),
+      safeQty: stockVal,
+      batches: [
+        {
+          id: w.id,
+          ingredientId: w.id,
+          ingredientName: w.itemName ?? 'Unknown Item',
+          brand: null,
+          unit: w.unit ?? '',
+          batchQty: Number(w.quantity ?? 0),
+          remainingQty: Number(w.quantity ?? 0),
+          expiryDate: w.date.toISOString().split('T')[0],
+          purchasedAt: w.date.toISOString().split('T')[0],
+          totalCurrentStock: stockVal,
+        },
+      ],
+    };
+  });
 
   // Group by ingredient for summary
   function groupByIngredient(items: typeof mapped) {
