@@ -21,6 +21,7 @@ export const updateSettingsSchema = z.object({
   reservationConfig: z.record(z.any()).optional(),
   shiftConfig: z.record(z.any()).optional(),
   graceMinutes: z.coerce.number().min(10).max(30).optional(),
+  paymentMethods: z.array(z.string()).optional(),
 });
 
 export type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>;

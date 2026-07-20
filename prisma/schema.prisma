@@ -197,6 +197,7 @@ model Settings {
   reservationConfig Json     @default("{}")
   shiftConfig       Json     @default("{}")
   graceMinutes      Int      @default(15)
+  paymentMethods    String[] @default(["Cash", "Credit Card", "Account", "JazzCash", "EasyPaisa"])
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
