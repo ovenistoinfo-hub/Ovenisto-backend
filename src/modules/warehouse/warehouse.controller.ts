@@ -251,11 +251,48 @@ export const getWarehouseExpirySummary = asyncHandler(async (req: Request, res: 
     totalCurrentStock: stockMap.get(b.ingredientId) ?? 0,
   }));
 
-  const expired = mapped.filter(b => new Date(b.expiryDate) < now);
+  const pktNowMs = Date.now() + 5 * 60 * 60 * 1000;
+  const pktDateStr = new Date(pktNowMs).toISOString().split('T')[0];
+  const startOfToday = new Date(`${pktDateStr}T00:00:00.000+05:00`);
+  const endOfToday = new Date(`${pktDateStr}T23:59:59.999+05:00`);
+
+  const todayExpiredWastes = await prisma.wasteRecord.findMany({
+    where: {
+      warehouseId: id,
+      date: { gte: startOfToday, lte: endOfToday },
+      reason: { startsWith: 'Expired' },
+    },
+    orderBy: { date: 'desc' },
+  });
+
   const nearExpiry = mapped.filter(b => {
     const d = new Date(b.expiryDate);
     return d >= now && d <= nearExpiryThreshold;
   });
+
+  const expiredTodayGroups = todayExpiredWastes.map((w) => ({
+    ingredientId: w.id,
+    ingredientName: w.itemName ?? 'Unknown Item',
+    brand: null,
+    unit: w.unit ?? '',
+    totalCurrentStock: 0,
+    affectedQty: Number(w.quantity ?? 0),
+    safeQty: 0,
+    batches: [
+      {
+        id: w.id,
+        ingredientId: w.id,
+        ingredientName: w.itemName ?? 'Unknown Item',
+        brand: null,
+        unit: w.unit ?? '',
+        batchQty: Number(w.quantity ?? 0),
+        remainingQty: Number(w.quantity ?? 0),
+        expiryDate: w.date.toISOString().split('T')[0],
+        purchasedAt: w.date.toISOString().split('T')[0],
+        totalCurrentStock: 0,
+      },
+    ],
+  }));
 
   // Group by ingredient for summary
   function groupByIngredient(items: typeof mapped) {
@@ -290,9 +327,9 @@ export const getWarehouseExpirySummary = asyncHandler(async (req: Request, res: 
   }
 
   res.json(ApiResponse.success({
-    expiredCount: expired.length,
+    expiredCount: todayExpiredWastes.length,
     nearExpiryCount: nearExpiry.length,
-    expired: groupByIngredient(expired),
+    expired: expiredTodayGroups,
     nearExpiry: groupByIngredient(nearExpiry),
   }));
 });
