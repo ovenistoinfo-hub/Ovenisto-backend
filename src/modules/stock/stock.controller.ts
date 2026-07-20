@@ -123,6 +123,25 @@ export const createAdjustment = asyncHandler(async (req: Request, res: Response)
           lowStockLevel: Number(ingredient.lowStockLevel),
         },
       });
+
+      if (stockChange < 0) {
+        const qtyToDeductAbs = Math.abs(stockChange);
+        const batches = await tx.stockBatch.findMany({
+          where: { warehouseId, ingredientId, remainingQty: { gt: 0 } },
+          orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }],
+        });
+        let qtyToDeduct = qtyToDeductAbs;
+        for (const batch of batches) {
+          if (qtyToDeduct <= 0) break;
+          const batchRemaining = Number(batch.remainingQty);
+          const deductFromBatch = Math.min(batchRemaining, qtyToDeduct);
+          await tx.stockBatch.update({
+            where: { id: batch.id },
+            data: { remainingQty: { decrement: deductFromBatch } },
+          });
+          qtyToDeduct -= deductFromBatch;
+        }
+      }
     }
 
     return adj;
@@ -673,6 +692,23 @@ export const createWasteRecord = asyncHandler(async (req: Request, res: Response
           update: { currentStock: { decrement: Number(quantity) } },
           create: { warehouseId, ingredientId, currentStock: -Number(quantity) }
         });
+
+        // FIFO: Deduct remainingQty from StockBatch in this warehouse so batch levels stay in sync
+        const batches = await tx.stockBatch.findMany({
+          where: { warehouseId, ingredientId, remainingQty: { gt: 0 } },
+          orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }],
+        });
+        let qtyToDeduct = Number(quantity);
+        for (const batch of batches) {
+          if (qtyToDeduct <= 0) break;
+          const batchRemaining = Number(batch.remainingQty);
+          const deductFromBatch = Math.min(batchRemaining, qtyToDeduct);
+          await tx.stockBatch.update({
+            where: { id: batch.id },
+            data: { remainingQty: { decrement: deductFromBatch } },
+          });
+          qtyToDeduct -= deductFromBatch;
+        }
       }
 
       // Also decrement global ingredient stock

@@ -11,6 +11,7 @@ import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { computeChallanSettlement } from './challan.helpers.js';
 import { getChallanScopeFilter } from '../warehouse/warehouse.access.js';
 import { emitChallanEvent } from '../../socket.js';
+import { autoProcessExpiredBatches } from '../stock/autoExpiry.js';
 
 // B4b: throw 404 if the acting outlet owns neither warehouse of this challan.
 // scope === null (admins, central main-warehouse staff) → no restriction.
@@ -287,6 +288,7 @@ export const createChallan = asyncHandler(async (req: Request, res: Response) =>
 });
 
 export const dispatchChallan = asyncHandler(async (req: Request, res: Response) => {
+  await autoProcessExpiredBatches();
   const challan = await prisma.stockChallan.findUnique({
     where: { id: req.params.id },
     include: {
@@ -369,6 +371,7 @@ export const dispatchChallan = asyncHandler(async (req: Request, res: Response) 
 });
 
 export const receiveChallan = asyncHandler(async (req: Request, res: Response) => {
+  await autoProcessExpiredBatches();
   const challan = await prisma.stockChallan.findUnique({
     where: { id: req.params.id },
     include: {
@@ -459,6 +462,23 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
         where: { id: item.id },
         data: { receivedQty, wasteQty: wasteQty || null, wasteReason, ...(isMainToBranch && { unitPrice }) },
       });
+
+      // Record transit waste in WasteRecord if wasteQty > 0
+      if (wasteQty > 0) {
+        await tx.wasteRecord.create({
+          data: {
+            itemName: item.ingredient.name,
+            quantity: wasteQty,
+            unit: null,
+            reason: wasteReason || 'Transit waste (Challan)',
+            cost: (unitPrice ?? Number(ing?.purchasePrice ?? 0)) * wasteQty,
+            recordedBy: req.user?.name || null,
+            outletId: challan.toWarehouse?.outletId ?? null,
+            warehouseId: challan.toWarehouseId,
+            date: new Date(),
+          },
+        });
+      }
 
       // Create batches in destination warehouse (FIFO from source, using actualReceived not full receivedQty)
       if (actualReceived > 0) {
