@@ -143,7 +143,7 @@ export const createCancellationRequest = asyncHandler(async (req: Request, res: 
   if (typeof refundAmount !== 'number' || refundAmount < 0) {
     throw ApiError.badRequest('Refund amount must be a non-negative number');
   }
-  if (!['cash', 'card', 'online', 'none'].includes(refundMethod)) {
+  if (typeof refundMethod !== 'string' || refundMethod.trim().length === 0) {
     throw ApiError.badRequest('Invalid refund method');
   }
   if (penaltyAmount != null && (typeof penaltyAmount !== 'number' || penaltyAmount < 0)) {
