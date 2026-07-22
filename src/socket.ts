@@ -130,6 +130,17 @@ export function emitTableEvent(
   emitToOutlets(event, payload, outletIds);
 }
 
+export type ReservationEventType = 'reservation:created' | 'reservation:updated' | 'reservation:deleted';
+
+/** Push a reservation change to the outlet room so Reservations page, POS, and Waiter Panel update live. */
+export function emitReservationEvent(
+  event: ReservationEventType,
+  payload: unknown,
+  outletIds: (string | null | undefined)[]
+): void {
+  emitToOutlets(event, payload, outletIds);
+}
+
 export type PurchaseEventType = 'purchase:created' | 'purchase:updated' | 'purchase:deleted';
 export type PurchaseRequestEventType = 'purchaseRequest:created' | 'purchaseRequest:updated';
 
