@@ -173,92 +173,95 @@ export const deleteReservation = asyncHandler(async (req: Request, res: Response
 /** POST /api/reservations/:id/convert-to-order */
 export const convertReservationToOrder = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const existing = await prisma.reservation.findUnique({ where: { id } });
-  if (!existing) throw ApiError.notFound('Reservation not found');
   const scope = resolveOutletScope(req);
-  if (scope && existing.outletId !== scope) throw ApiError.notFound('Reservation not found');
 
-  if (existing.orderId) {
-    const existingOrder = await prisma.order.findUnique({
-      where: { id: existing.orderId },
+  const { order, updatedRes } = await prisma.$transaction(async (tx) => {
+    const existing = await tx.reservation.findUnique({ where: { id } });
+    if (!existing) throw ApiError.notFound('Reservation not found');
+    if (scope && existing.outletId !== scope) throw ApiError.notFound('Reservation not found');
+
+    if (existing.orderId) {
+      const existingOrder = await tx.order.findUnique({
+        where: { id: existing.orderId },
+        include: { items: true },
+      });
+      if (existingOrder) {
+        return { order: existingOrder, updatedRes: existing };
+      }
+    }
+
+    const count = await tx.order.count();
+    const orderNumber = `ORD-${String(count + 1).padStart(5, '0')}`;
+
+    const typeMap: Record<string, any> = {
+      'Dine In': 'DINE_IN',
+      'Take Away': 'TAKE_AWAY',
+      'Delivery': 'DELIVERY',
+    };
+    const prismaType = typeMap[existing.orderType || 'Dine In'] || 'DINE_IN';
+
+    const rawItems = Array.isArray(existing.preOrderItems) ? (existing.preOrderItems as any[]) : [];
+    const itemsToCreate = rawItems.map((item: any) => ({
+      menuItemId: item.menuItemId || null,
+      variantId: item.variantId || null,
+      name: item.name || 'Custom Item',
+      price: item.price ?? 0,
+      qty: item.qty ?? 1,
+      discount: item.discount ?? 0,
+      modifiers: item.modifiers || [],
+      notes: item.notes || null,
+    }));
+
+    const order = await tx.order.create({
+      data: {
+        orderNumber,
+        outletId: existing.outletId,
+        customerName: existing.customerName,
+        phone: existing.customerPhone,
+        type: prismaType,
+        subtotal: existing.subtotal ? Number(existing.subtotal) : 0,
+        tax: existing.tax ? Number(existing.tax) : 0,
+        total: existing.totalAmount ? Number(existing.totalAmount) : (existing.subtotal ? Number(existing.subtotal) : 0),
+        status: 'PENDING',
+        paymentMethod: (existing.advancePaid && Number(existing.advancePaid) >= (existing.totalAmount ? Number(existing.totalAmount) : (existing.subtotal ? Number(existing.subtotal) : 0))) ? (existing.paymentMethod || 'Cash') : 'Pending',
+        date: new Date(),
+        time: existing.time,
+        tableNumber: existing.tableNumber ? parseInt(existing.tableNumber, 10) : null,
+        deliveryAddress: existing.deliveryAddress || null,
+        isFutureSale: existing.bookingType === 'future_order',
+        scheduledDate: existing.date,
+        scheduledTime: existing.time,
+        futureNotes: existing.specialRequests || null,
+        advancePayment: existing.advancePaid ? Number(existing.advancePaid) : 0,
+        orderSource: 'reservation',
+        items: itemsToCreate.length > 0 ? { create: itemsToCreate } : undefined,
+      },
       include: { items: true },
     });
-    if (existingOrder) {
-      res.json(ApiResponse.success(existingOrder, 'Reservation was already converted to order'));
-      return;
-    }
-  }
 
-  const count = await prisma.order.count();
-  const orderNumber = `ORD-${String(count + 1).padStart(5, '0')}`;
-
-  const typeMap: Record<string, any> = {
-    'Dine In': 'DINE_IN',
-    'Take Away': 'TAKE_AWAY',
-    'Delivery': 'DELIVERY',
-  };
-  const prismaType = typeMap[existing.orderType || 'Dine In'] || 'DINE_IN';
-
-  const rawItems = Array.isArray(existing.preOrderItems) ? (existing.preOrderItems as any[]) : [];
-  const itemsToCreate = rawItems.map((item: any) => ({
-    menuItemId: item.menuItemId || null,
-    variantId: item.variantId || null,
-    name: item.name || 'Custom Item',
-    price: item.price ?? 0,
-    qty: item.qty ?? 1,
-    discount: item.discount ?? 0,
-    modifiers: item.modifiers || [],
-    notes: item.notes || null,
-  }));
-
-  const order = await prisma.order.create({
-    data: {
-      orderNumber,
-      outletId: existing.outletId,
-      customerName: existing.customerName,
-      phone: existing.customerPhone,
-      type: prismaType,
-      subtotal: existing.subtotal ? Number(existing.subtotal) : 0,
-      tax: existing.tax ? Number(existing.tax) : 0,
-      total: existing.totalAmount ? Number(existing.totalAmount) : (existing.subtotal ? Number(existing.subtotal) : 0),
-      status: 'PENDING',
-      paymentMethod: (existing.advancePaid && Number(existing.advancePaid) >= (existing.totalAmount ? Number(existing.totalAmount) : (existing.subtotal ? Number(existing.subtotal) : 0))) ? (existing.paymentMethod || 'Cash') : 'Pending',
-      date: new Date(),
-      time: existing.time,
-      tableNumber: existing.tableNumber ? parseInt(existing.tableNumber, 10) : null,
-      deliveryAddress: existing.deliveryAddress || null,
-      isFutureSale: existing.bookingType === 'future_order',
-      scheduledDate: existing.date,
-      scheduledTime: existing.time,
-      futureNotes: existing.specialRequests || null,
-      advancePayment: existing.advancePaid ? Number(existing.advancePaid) : 0,
-      orderSource: 'reservation',
-      items: itemsToCreate.length > 0 ? { create: itemsToCreate } : undefined,
-    },
-    include: { items: true },
-  });
-
-  const updatedRes = await prisma.reservation.update({
-    where: { id },
-    data: {
-      orderId: order.id,
-      status: existing.bookingType === 'table_reservation' ? 'seated' : 'confirmed',
-    },
-  });
-
-  emitReservationEvent('reservation:updated', mapReservation(updatedRes), [existing.outletId]);
-
-  if (existing.tableId) {
-    await prisma.restaurantTable.update({
-      where: { id: existing.tableId },
+    const updatedRes = await tx.reservation.update({
+      where: { id },
       data: {
-        status: 'occupied',
-        currentOrderId: order.id,
-        reservationId: existing.id,
+        orderId: order.id,
+        status: existing.bookingType === 'table_reservation' ? 'seated' : 'confirmed',
       },
     });
-  }
 
+    if (existing.tableId) {
+      await tx.restaurantTable.update({
+        where: { id: existing.tableId },
+        data: {
+          status: 'occupied',
+          currentOrderId: order.id,
+          reservationId: existing.id,
+        },
+      });
+    }
+
+    return { order, updatedRes };
+  });
+
+  emitReservationEvent('reservation:updated', mapReservation(updatedRes), [updatedRes.outletId]);
   emitOrderEvent('order:created', order);
 
   res.json(ApiResponse.success(order, 'Reservation converted to active order successfully'));
