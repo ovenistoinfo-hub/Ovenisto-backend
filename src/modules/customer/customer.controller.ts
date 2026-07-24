@@ -6,7 +6,6 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { resolveOutletScope, resolveCreateOutlet } from '../../middleware/outletScope.js';
 
 function mapCustomer(c: any) {
   return {
@@ -20,9 +19,7 @@ export const getCustomers = asyncHandler(async (req: Request, res: Response) => 
   const { search, customerType, page = '1', limit = '100' } = req.query as Record<string, string>;
   const skip = (Number(page) - 1) * Number(limit);
 
-  const scope = resolveOutletScope(req);
   const where: any = {};
-  if (scope) where.outletId = scope;
   if (search) {
     where.OR = [
       { name: { contains: search, mode: 'insensitive' } },
@@ -32,12 +29,34 @@ export const getCustomers = asyncHandler(async (req: Request, res: Response) => 
   }
   if (customerType) where.customerType = customerType;
 
-  const [data, total] = await Promise.all([
-    prisma.customer.findMany({ where, skip, take: Number(limit), orderBy: { name: 'asc' } }),
-    prisma.customer.count({ where }),
-  ]);
+  const data = await prisma.customer.findMany({
+    where,
+    orderBy: { name: 'asc' },
+  });
 
-  return res.json(ApiResponse.paginated(data.map(mapCustomer), Number(page), Number(limit), total));
+  const deduplicatedMap = new Map<string, any>();
+  for (const c of data) {
+    const cleanPhone = c.phone ? c.phone.replace(/\D/g, '') : '';
+    const isDummy = !cleanPhone || cleanPhone === '00000000000' || cleanPhone === '11111111111' || cleanPhone === '12345678901';
+    const key = (!isDummy && cleanPhone.length >= 7)
+      ? `phone:${cleanPhone}`
+      : `name:${c.name.toLowerCase().trim()}`;
+
+    if (!deduplicatedMap.has(key)) {
+      deduplicatedMap.set(key, c);
+    } else {
+      const existing = deduplicatedMap.get(key)!;
+      if (!existing.phone && c.phone) existing.phone = c.phone;
+      if (!existing.email && c.email) existing.email = c.email;
+      if (!existing.address && c.address) existing.address = c.address;
+    }
+  }
+
+  const uniqueList = Array.from(deduplicatedMap.values());
+  const total = uniqueList.length;
+  const pagedList = uniqueList.slice(skip, skip + Number(limit));
+
+  return res.json(ApiResponse.paginated(pagedList.map(mapCustomer), Number(page), Number(limit), total));
 });
 
 export const getCustomer = asyncHandler(async (req: Request, res: Response) => {
@@ -49,8 +68,49 @@ export const getCustomer = asyncHandler(async (req: Request, res: Response) => {
 export const createCustomer = asyncHandler(async (req: Request, res: Response) => {
   const { name, phone, email, address, customerType } = req.body;
   if (!name) throw new ApiError('Name is required', 400);
+
+  const cleanPhone = phone ? String(phone).replace(/\D/g, '') : '';
+  const isDummyPhone = !cleanPhone || cleanPhone === '00000000000' || cleanPhone === '11111111111' || cleanPhone === '12345678901';
+
+  let existing = null;
+  if (!isDummyPhone && cleanPhone.length >= 7) {
+    existing = await prisma.customer.findFirst({
+      where: {
+        phone: { contains: cleanPhone },
+      },
+    });
+  }
+
+  if (!existing && name.trim()) {
+    existing = await prisma.customer.findFirst({
+      where: {
+        name: { equals: name.trim(), mode: 'insensitive' },
+      },
+    });
+  }
+
+  if (existing) {
+    const updated = await prisma.customer.update({
+      where: { id: existing.id },
+      data: {
+        name: name.trim() || existing.name,
+        phone: phone ? phone.trim() : existing.phone,
+        email: email ? email.trim() : existing.email,
+        address: address ? address.trim() : existing.address,
+        customerType: customerType || existing.customerType,
+      },
+    });
+    return res.status(200).json(ApiResponse.success(mapCustomer(updated), 'Customer updated'));
+  }
+
   const c = await prisma.customer.create({
-    data: { name, phone: phone || null, email: email || null, address: address || null, customerType: customerType || 'walk-in', outletId: resolveCreateOutlet(req) },
+    data: {
+      name: name.trim(),
+      phone: phone ? phone.trim() : null,
+      email: email ? email.trim() : null,
+      address: address ? address.trim() : null,
+      customerType: customerType || 'walk-in',
+    },
   });
   return res.status(201).json(ApiResponse.created(mapCustomer(c), 'Customer created'));
 });
