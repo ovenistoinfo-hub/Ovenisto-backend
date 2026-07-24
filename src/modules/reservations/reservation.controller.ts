@@ -6,7 +6,7 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope, resolveCreateOutlet } from '../../middleware/outletScope.js';
 import { emitOrderEvent, emitReservationEvent } from '../../socket.js';
 
-function mapReservation(r: any) {
+export function mapReservation(r: any) {
   return {
     ...r,
     date: r.date instanceof Date ? r.date.toISOString().split('T')[0] : r.date,

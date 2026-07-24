@@ -9,9 +9,10 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { emitOrderEvent, emitTableEvent } from '../../socket.js';
+import { emitOrderEvent, emitTableEvent, emitReservationEvent } from '../../socket.js';
 import { fifoDrawdown } from '../stock/dough.helpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
+import { mapReservation } from '../reservations/reservation.controller.js';
 
 // ── Enum conversion helpers ──
 
@@ -605,10 +606,37 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
       }
     }
 
+    if (prismaStatus === 'COMPLETED') {
+      await tx.reservation.updateMany({
+        where: {
+          OR: [
+            { orderId: id },
+            ...(existing.tableNumber ? [{ tableNumber: String(existing.tableNumber), status: 'seated' }] : [])
+          ],
+          status: { not: 'completed' }
+        },
+        data: { status: 'completed' }
+      });
+    }
+
     return updated;
   }, { timeout: 30000 });
 
   const statusUpdated = mapOrderOut(order);
+  if (prismaStatus === 'COMPLETED') {
+    const updatedReservations = await prisma.reservation.findMany({
+      where: {
+        OR: [
+          { orderId: id },
+          ...(existing.tableNumber ? [{ tableNumber: String(existing.tableNumber) }] : [])
+        ]
+      }
+    });
+    for (const resItem of updatedReservations) {
+      emitReservationEvent('reservation:updated', mapReservation(resItem), [resItem.outletId]);
+    }
+  }
+
   if (order.tableNumber && (order.type === 'DINE_IN' || order.type === 'SELF_ORDER')) {
     await updateTableStatusForOrder(prisma, order.outletId, order.tableNumber, req.user);
   }
