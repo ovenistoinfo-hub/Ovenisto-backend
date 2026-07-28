@@ -59,7 +59,7 @@ export const getSelfOrderMenu = asyncHandler(async (_req: Request, res: Response
 export const createSelfOrder = asyncHandler(async (req: Request, res: Response) => {
   const {
     tableId, customerName, customerPhone, guestCount,
-    items, subtotal, tax, total, specialInstructions,
+    items, specialInstructions,
   } = req.body;
 
   if (!tableId) throw ApiError.badRequest('tableId is required');
@@ -67,26 +67,72 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
   if (!customerPhone?.trim()) throw ApiError.badRequest('Phone number is required');
   if (!guestCount || Number(guestCount) < 1) throw ApiError.badRequest('Guest count is required');
   if (!items?.length) throw ApiError.badRequest('Order must have at least one item');
-  if (total === undefined || total === null) throw ApiError.badRequest('Total is required');
 
   const table = await prisma.restaurantTable.findUnique({ where: { id: tableId } });
   if (!table) throw ApiError.notFound('Table not found');
   if (!table.outletId) throw ApiError.badRequest('This table is not assigned to an outlet');
 
   // Validate every item against the live, available menu — never trust client-sent
-  // item existence (price/name are still client-computed today, matching how every
-  // other order-creation path in this app already works — see order.controller.ts's
-  // createOrder, which has the same trust model for authenticated staff orders).
+  // item existence, price, or modifier selection. Fetch full records so price can
+  // be recomputed server-side.
   const menuItemIds: string[] = items.map((i: any) => i.menuItemId).filter(Boolean);
   const availableMenuItems = menuItemIds.length
-    ? await prisma.foodMenuItem.findMany({ where: { id: { in: menuItemIds }, available: true } })
+    ? await prisma.foodMenuItem.findMany({
+        where: { id: { in: menuItemIds }, available: true },
+        include: { variants: true, modifiers: { include: { modifier: true } } },
+      })
     : [];
-  const availableIds = new Set(availableMenuItems.map((m) => m.id));
-  for (const item of items) {
-    if (item.menuItemId && !availableIds.has(item.menuItemId)) {
+  const menuItemById = new Map(availableMenuItems.map((m) => [m.id, m]));
+
+  const settings = (await prisma.settings.findFirst({ where: { outletId: table.outletId } }))
+    ?? (await prisma.settings.findFirst());
+  const taxRatePercent = settings ? Number(settings.taxRate) : 16;
+
+  let computedSubtotal = 0;
+  const itemsData = items.map((item: any, idx: number) => {
+    const menuItem = item.menuItemId ? menuItemById.get(item.menuItemId) : undefined;
+    if (item.menuItemId && !menuItem) {
       throw ApiError.badRequest(`Item "${item.name || 'unknown'}" is no longer available`);
     }
-  }
+
+    let unitPrice = menuItem ? Number(menuItem.price) : 0;
+    let variantId: string | null = null;
+    if (item.variantId && menuItem) {
+      const variant = menuItem.variants.find((v) => v.id === item.variantId);
+      if (!variant) throw ApiError.badRequest(`Selected size for "${menuItem.name}" is no longer available`);
+      unitPrice = Number(variant.price);
+      variantId = variant.id;
+    }
+
+    const modifierNames: string[] = [];
+    if (Array.isArray(item.modifierIds) && menuItem) {
+      for (const modId of item.modifierIds) {
+        const link = menuItem.modifiers.find((mm) => mm.modifier.id === modId);
+        if (!link) throw ApiError.badRequest(`Selected extra for "${menuItem.name}" is no longer available`);
+        unitPrice += Number(link.modifier.price);
+        modifierNames.push(link.modifier.name);
+      }
+    }
+
+    const qty = Math.max(1, Math.trunc(Number(item.qty) || 1));
+    computedSubtotal += unitPrice * qty;
+
+    // Order has no order-level notes field; the cart's single special-instructions
+    // textarea is carried on the first line item only (existing schema only supports
+    // per-item notes — see OrderItem.notes usage in order.controller.ts).
+    return {
+      menuItemId: item.menuItemId || null,
+      variantId,
+      name: item.name,
+      price: unitPrice,
+      qty,
+      discount: 0,
+      modifiers: modifierNames,
+      notes: idx === 0 && specialInstructions ? specialInstructions : (item.notes || null),
+    };
+  });
+  const computedTax = Math.round(computedSubtotal * (taxRatePercent / 100));
+  const computedTotal = computedSubtotal + computedTax;
 
   const orderNumber = await generateOrderNumber();
 
@@ -97,10 +143,10 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
       customerName: customerName.trim(),
       phone: customerPhone.trim(),
       type: 'SELF_ORDER',
-      subtotal: subtotal ?? 0,
+      subtotal: computedSubtotal,
       discount: 0,
-      tax: tax ?? 0,
-      total,
+      tax: computedTax,
+      total: computedTotal,
       status: 'PENDING',
       paymentMethod: 'Pay at Counter',
       date: new Date(),
@@ -109,20 +155,7 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
       tableNumber: !isNaN(Number(table.number)) ? Number(table.number) : null,
       orderSource: 'self-order',
       guestCount: Number(guestCount),
-      items: {
-        create: items.map((item: any, idx: number) => ({
-          menuItemId: item.menuItemId || null,
-          name: item.name,
-          price: item.price,
-          qty: item.qty,
-          discount: 0,
-          modifiers: item.modifiers ?? [],
-          // Order has no order-level notes field; the cart's single special-instructions
-          // textarea is carried on the first line item only (existing schema only supports
-          // per-item notes — see OrderItem.notes usage in order.controller.ts).
-          notes: idx === 0 && specialInstructions ? specialInstructions : (item.notes || null),
-        })),
-      },
+      items: { create: itemsData },
     },
     include: {
       items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
