@@ -13,7 +13,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { emitOrderEvent } from '../../socket.js';
-import { generateOrderNumber, mapOrderOut } from '../order/order.controller.js';
+import { generateOrderNumber, mapOrderOut, updateTableStatusForOrder } from '../order/order.controller.js';
 import { normalizeMenuItem } from '../menu/menu.controller.js';
 
 /** GET /api/self-order/table/:tableId */
@@ -128,6 +128,10 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
       items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
     },
   });
+
+  if (order.tableNumber) {
+    await updateTableStatusForOrder(prisma, order.outletId, order.tableNumber, undefined);
+  }
 
   emitOrderEvent('order:created', mapOrderOut(order));
   res.status(201).json(ApiResponse.created({ orderId: order.id }, 'Order placed'));
