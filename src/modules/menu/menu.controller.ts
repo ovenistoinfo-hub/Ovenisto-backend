@@ -12,7 +12,7 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 // ── Helpers ──
 
 /** Normalize a menu item — convert Prisma Decimal fields to numbers */
-function normalizeMenuItem(item: any): any {
+export function normalizeMenuItem(item: any): any {
   return {
     ...item,
     price:          Number(item.price),

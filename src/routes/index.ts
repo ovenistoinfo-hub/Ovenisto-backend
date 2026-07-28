@@ -37,6 +37,7 @@ import { employeesRouter } from '../modules/employees/employee.routes.js';
 import { payrollRouter } from '../modules/payroll/payroll.routes.js';
 import { cancellationRequestsRouter } from '../modules/cancellation-requests/cancellation-request.routes.js';
 import { penaltiesRouter } from '../modules/penalties/penalty.routes.js';
+import { selfOrderRouter } from '../modules/self-order/self-order.routes.js';
 
 const router = Router();
 
@@ -174,6 +175,6 @@ router.use('/reports', reportsRouter);
 router.use('/production-items', productionItemsRoutes);
 // router.use('/analytics', analyticsRoutes);
 // router.use('/sms', smsRoutes);
-// router.use('/self-order', selfOrderRoutes);
+router.use('/self-order', selfOrderRouter);
 
 export default router;

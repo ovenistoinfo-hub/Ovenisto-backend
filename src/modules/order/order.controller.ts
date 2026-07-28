@@ -154,7 +154,7 @@ export function mapOrderOut(order: any): any {
 
 // ── Order Number Generation ──
 
-async function generateOrderNumber(): Promise<string> {
+export async function generateOrderNumber(): Promise<string> {
   const count = await prisma.order.count();
   let n = count + 1;
   while (n <= 99999) {
