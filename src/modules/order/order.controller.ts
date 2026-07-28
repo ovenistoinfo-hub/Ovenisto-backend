@@ -678,6 +678,12 @@ export const acceptSelfOrder = asyncHandler(async (req: Request, res: Response) 
     },
   });
 
+  // Occupy the table only now that a waiter has actually verified this order is
+  // real — a still-pending, unaccepted self-order never touches table status.
+  if (updated?.tableNumber) {
+    await updateTableStatusForOrder(prisma, updated.outletId, updated.tableNumber, req.user);
+  }
+
   const mapped = mapOrderOut(updated);
   emitOrderEvent('order:updated', mapped);
   res.json(ApiResponse.success(mapped, 'Order accepted'));
@@ -694,6 +700,9 @@ export const rejectSelfOrder = asyncHandler(async (req: Request, res: Response) 
   const scope = resolveOutletScope(req);
   if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
   if (existing.type !== 'SELF_ORDER') throw ApiError.badRequest('Not a self-order');
+  if (existing.status !== 'PENDING' || existing.acceptedById) {
+    throw ApiError.badRequest('This order can no longer be declined');
+  }
 
   const updated = await prisma.order.update({
     where: { id },

@@ -13,7 +13,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { emitOrderEvent } from '../../socket.js';
-import { generateOrderNumber, mapOrderOut, updateTableStatusForOrder } from '../order/order.controller.js';
+import { generateOrderNumber, mapOrderOut } from '../order/order.controller.js';
 
 /** GET /api/self-order/table/:tableId */
 export const getTableForSelfOrder = asyncHandler(async (req: Request, res: Response) => {
@@ -176,9 +176,8 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
     },
   });
 
-  if (order.tableNumber) {
-    await updateTableStatusForOrder(prisma, order.outletId, order.tableNumber, undefined);
-  }
+  // Deliberately does NOT occupy the table yet — this order is unverified until a
+  // waiter accepts it. Table occupancy is triggered from acceptSelfOrder instead.
 
   emitOrderEvent('order:created', mapOrderOut(order));
   res.status(201).json(ApiResponse.created({ orderId: order.id }, 'Order placed'));
