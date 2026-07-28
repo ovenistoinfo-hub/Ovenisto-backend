@@ -14,7 +14,6 @@ import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { emitOrderEvent } from '../../socket.js';
 import { generateOrderNumber, mapOrderOut, updateTableStatusForOrder } from '../order/order.controller.js';
-import { normalizeMenuItem } from '../menu/menu.controller.js';
 
 /** GET /api/self-order/table/:tableId */
 export const getTableForSelfOrder = asyncHandler(async (req: Request, res: Response) => {
@@ -35,11 +34,15 @@ export const getTableForSelfOrder = asyncHandler(async (req: Request, res: Respo
 });
 
 /** GET /api/self-order/menu — the menu catalog is global (no outletId column on
- *  FoodMenuItem/FoodCategory), so every outlet sees the same active/available menu. */
+ *  FoodMenuItem/FoodCategory), so every outlet sees the same active/available menu.
+ *  Deliberately returns only customer-facing fields — never the staff-facing
+ *  normalizeMenuItem() shape, which spreads dineInPrice/takeAwayPrice/deliveryPrice/
+ *  foodpandaPrice (internal per-channel pricing) with zero auth on this route. */
 export const getSelfOrderMenu = asyncHandler(async (_req: Request, res: Response) => {
   const categories = await prisma.foodCategory.findMany({
     where: { status: 'active' },
     orderBy: [{ displayOrder: 'asc' }, { name: 'asc' }],
+    select: { id: true, name: true, displayOrder: true, status: true },
   });
 
   const items = await prisma.foodMenuItem.findMany({
@@ -52,7 +55,18 @@ export const getSelfOrderMenu = asyncHandler(async (_req: Request, res: Response
     },
   });
 
-  res.json(ApiResponse.success({ categories, items: items.map(normalizeMenuItem) }));
+  const publicItems = items.map((item) => ({
+    id: item.id,
+    name: item.name,
+    price: Number(item.price),
+    category: item.category ? { id: item.category.id, name: item.category.name } : null,
+    variants: item.variants.map((v) => ({ id: v.id, name: v.name, price: Number(v.price) })),
+    modifiers: item.modifiers
+      .filter((mm) => mm.modifier.status === 'active')
+      .map((mm) => ({ id: mm.modifier.id, name: mm.modifier.name, price: Number(mm.modifier.price) })),
+  }));
+
+  res.json(ApiResponse.success({ categories, items: publicItems }));
 });
 
 /** POST /api/self-order/orders */
