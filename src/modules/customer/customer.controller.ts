@@ -7,11 +7,69 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 
-function mapCustomer(c: any) {
+async function getCustomerStatsMap() {
+  const orders = await prisma.order.findMany({
+    select: {
+      customerId: true,
+      customerName: true,
+      phone: true,
+      total: true,
+      status: true,
+      paymentMethod: true,
+    },
+  });
+
+  const map: Record<string, { totalOrders: number; totalSpent: number; outstandingDue: number }> = {};
+  for (const o of orders) {
+    if (!o.customerName || o.customerName.toLowerCase() === 'walk-in') continue;
+
+    const nameKey = `name:${o.customerName.toLowerCase().trim()}`;
+    const cleanPhone = o.phone ? o.phone.replace(/\D/g, '') : '';
+    const isDummy = !cleanPhone || cleanPhone === '00000000000' || cleanPhone === '11111111111' || cleanPhone === '12345678901';
+    const phoneKey = (!isDummy && cleanPhone.length >= 7) ? `phone:${cleanPhone}` : null;
+    const idKey = o.customerId ? `id:${o.customerId}` : null;
+
+    const key = idKey || phoneKey || nameKey;
+
+    if (!map[key]) {
+      map[key] = { totalOrders: 0, totalSpent: 0, outstandingDue: 0 };
+    }
+
+    if (phoneKey && !map[phoneKey]) map[phoneKey] = map[key];
+    if (nameKey && !map[nameKey]) map[nameKey] = map[key];
+    if (idKey && !map[idKey]) map[idKey] = map[key];
+
+    const amt = Number(o.total || 0);
+    const isCancelled = String(o.status).toLowerCase() === 'cancelled';
+    const isUnpaid = !o.paymentMethod || o.paymentMethod === 'Pending' || o.paymentMethod === 'Unpaid';
+
+    map[key].totalOrders += 1;
+    if (!isCancelled) {
+      map[key].totalSpent += amt;
+    }
+    if (!isCancelled && isUnpaid) {
+      map[key].outstandingDue += amt;
+    }
+  }
+
+  return map;
+}
+
+function mapCustomerWithStats(c: any, statsMap?: Record<string, any>) {
+  const cleanPhone = c.phone ? c.phone.replace(/\D/g, '') : '';
+  const isDummy = !cleanPhone || cleanPhone === '00000000000' || cleanPhone === '11111111111' || cleanPhone === '12345678901';
+
+  const stat = statsMap
+    ? (statsMap[`id:${c.id}`] ||
+       (!isDummy && cleanPhone.length >= 7 ? statsMap[`phone:${cleanPhone}`] : null) ||
+       statsMap[`name:${c.name.toLowerCase().trim()}`])
+    : null;
+
   return {
     ...c,
-    totalSpent: Number(c.totalSpent),
-    outstandingDue: Number(c.outstandingDue),
+    totalOrders: stat ? stat.totalOrders : (c.totalOrders || 0),
+    totalSpent: stat ? Math.round(stat.totalSpent) : Number(c.totalSpent || 0),
+    outstandingDue: stat ? Math.round(stat.outstandingDue) : Number(c.outstandingDue || 0),
   };
 }
 
@@ -29,10 +87,13 @@ export const getCustomers = asyncHandler(async (req: Request, res: Response) => 
   }
   if (customerType) where.customerType = customerType;
 
-  const data = await prisma.customer.findMany({
-    where,
-    orderBy: { name: 'asc' },
-  });
+  const [data, statsMap] = await Promise.all([
+    prisma.customer.findMany({
+      where,
+      orderBy: { name: 'asc' },
+    }),
+    getCustomerStatsMap(),
+  ]);
 
   const deduplicatedMap = new Map<string, any>();
   for (const c of data) {
@@ -56,13 +117,16 @@ export const getCustomers = asyncHandler(async (req: Request, res: Response) => 
   const total = uniqueList.length;
   const pagedList = uniqueList.slice(skip, skip + Number(limit));
 
-  return res.json(ApiResponse.paginated(pagedList.map(mapCustomer), Number(page), Number(limit), total));
+  return res.json(ApiResponse.paginated(pagedList.map((c) => mapCustomerWithStats(c, statsMap)), Number(page), Number(limit), total));
 });
 
 export const getCustomer = asyncHandler(async (req: Request, res: Response) => {
-  const c = await prisma.customer.findUnique({ where: { id: req.params.id } });
+  const [c, statsMap] = await Promise.all([
+    prisma.customer.findUnique({ where: { id: req.params.id } }),
+    getCustomerStatsMap(),
+  ]);
   if (!c) throw new ApiError('Customer not found', 404);
-  return res.json(ApiResponse.success(mapCustomer(c)));
+  return res.json(ApiResponse.success(mapCustomerWithStats(c, statsMap)));
 });
 
 export const createCustomer = asyncHandler(async (req: Request, res: Response) => {
@@ -100,7 +164,7 @@ export const createCustomer = asyncHandler(async (req: Request, res: Response) =
         customerType: customerType || existing.customerType,
       },
     });
-    return res.status(200).json(ApiResponse.success(mapCustomer(updated), 'Customer updated'));
+    return res.status(200).json(ApiResponse.success(mapCustomerWithStats(updated), 'Customer updated'));
   }
 
   const c = await prisma.customer.create({
@@ -112,7 +176,7 @@ export const createCustomer = asyncHandler(async (req: Request, res: Response) =
       customerType: customerType || 'walk-in',
     },
   });
-  return res.status(201).json(ApiResponse.created(mapCustomer(c), 'Customer created'));
+  return res.status(201).json(ApiResponse.created(mapCustomerWithStats(c), 'Customer created'));
 });
 
 export const updateCustomer = asyncHandler(async (req: Request, res: Response) => {
@@ -121,7 +185,7 @@ export const updateCustomer = asyncHandler(async (req: Request, res: Response) =
     where: { id: req.params.id },
     data: { name, phone, email, address, customerType },
   });
-  return res.json(ApiResponse.success(mapCustomer(c), 'Customer updated'));
+  return res.json(ApiResponse.success(mapCustomerWithStats(c), 'Customer updated'));
 });
 
 export const deleteCustomer = asyncHandler(async (req: Request, res: Response) => {

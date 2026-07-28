@@ -298,19 +298,60 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
   const daywiseSales = labels.map((label, i) => ({ label, sales: Math.round(dayTotals[i]) }));
 
   // --- payable / receivable / settings / top customers ---
-  const [purchaseAgg, customerAgg, topCustomers, settings] = await Promise.all([
+  const [purchaseAgg, customerAgg, validCustomerOrders, settings] = await Promise.all([
     prisma.purchase.aggregate({ where: { ...outletFilter }, _sum: { due: true } }),
     prisma.customer.aggregate({ _sum: { outstandingDue: true } }),
-    prisma.customer.findMany({
-      orderBy: { totalSpent: 'desc' },
-      take: 10,
-      select: { name: true, totalOrders: true, totalSpent: true },
+    prisma.order.findMany({
+      where: {
+        ...outletFilter,
+        ...notExcluded,
+        customerName: { not: null },
+      },
+      select: {
+        customerId: true,
+        customerName: true,
+        phone: true,
+        total: true,
+      },
     }),
     prisma.settings.findFirst({ select: { restaurantName: true } }),
   ]);
   const payable = Math.round(Number(purchaseAgg._sum.due ?? 0));
   const receivable = Math.round(Number(customerAgg._sum.outstandingDue ?? 0));
-  const topCustomersMapped = topCustomers.map((c) => ({ name: c.name, totalOrders: c.totalOrders, totalSpent: Number(c.totalSpent) }));
+
+  const custMap = new Map<string, { name: string; totalOrders: number; totalSpent: number }>();
+  for (const o of validCustomerOrders) {
+    if (!o.customerName || o.customerName.trim() === '' || o.customerName.toLowerCase() === 'walk-in') continue;
+
+    const cleanPhone = o.phone ? o.phone.replace(/\D/g, '') : '';
+    const isDummyPhone = !cleanPhone || cleanPhone === '00000000000' || cleanPhone === '11111111111' || cleanPhone === '12345678901';
+
+    const key = o.customerId
+      ? `id:${o.customerId}`
+      : (!isDummyPhone && cleanPhone.length >= 7)
+      ? `phone:${cleanPhone}`
+      : `name:${o.customerName.toLowerCase().trim()}`;
+
+    const amt = Number(o.total || 0);
+    const existing = custMap.get(key) ?? {
+      name: o.customerName.trim(),
+      totalOrders: 0,
+      totalSpent: 0,
+    };
+
+    existing.totalOrders += 1;
+    existing.totalSpent += amt;
+    custMap.set(key, existing);
+  }
+
+  const topCustomersMapped = [...custMap.values()]
+    .map((c) => ({
+      name: c.name,
+      totalOrders: c.totalOrders,
+      totalSpent: Math.round(c.totalSpent),
+    }))
+    .sort((a, b) => b.totalSpent - a.totalSpent)
+    .slice(0, 10);
 
   // --- top items this month ---
   const monthItems = await prisma.orderItem.findMany({
