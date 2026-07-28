@@ -8,6 +8,7 @@ import { authenticate } from '../../middleware/authenticate.js';
 import { authorize } from '../../middleware/authorize.js';
 import {
   getOrders, getOrder, createOrder, updateOrder, updateOrderStatus, deleteOrder,
+  acceptSelfOrder, rejectSelfOrder,
   getKitchens, createKitchen, updateKitchen, deleteKitchen,
 } from './order.controller.js';
 import { createCancellationRequest } from '../cancellation-requests/cancellation-request.controller.js';
@@ -25,6 +26,8 @@ ordersRouter.get('/', authenticate, getOrders);
 ordersRouter.get('/:id', authenticate, getOrder);
 ordersRouter.post('/', authenticate, authorize(posRoles), createOrder);
 ordersRouter.put('/:id/status', authenticate, authorize(kitchenRoles), updateOrderStatus);
+ordersRouter.post('/:id/accept-self-order', authenticate, authorize(posRoles), acceptSelfOrder);
+ordersRouter.post('/:id/reject-self-order', authenticate, authorize(posRoles), rejectSelfOrder);
 ordersRouter.post('/:id/cancellation-requests', authenticate, authorize(kitchenRoles), createCancellationRequest);
 ordersRouter.put('/:id', authenticate, authorize(posRoles), updateOrder);
 ordersRouter.delete('/:id', authenticate, authorize(adminRoles), deleteOrder);

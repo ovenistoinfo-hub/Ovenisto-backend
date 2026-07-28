@@ -644,6 +644,66 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
   res.json(ApiResponse.success(statusUpdated, 'Order status updated'));
 });
 
+/** POST /api/orders/:id/accept-self-order — a waiter claims a pending self-order.
+ *  Does NOT change status (stays PENDING); only stamps who accepted it. That status
+ *  stays PENDING deliberately: an accepted self-order should behave exactly like any
+ *  other freshly-placed pending order from here on, going through the kitchen's own
+ *  Accept Order step (pending -> preparing) like everything else — not skip it. */
+export const acceptSelfOrder = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const existing = await tx.order.findUnique({ where: { id } });
+    if (!existing) throw ApiError.notFound('Order not found');
+    const scope = resolveOutletScope(req);
+    if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
+    if (existing.type !== 'SELF_ORDER') throw ApiError.badRequest('Not a self-order');
+    if (existing.acceptedById) {
+      throw ApiError.conflict(`Already accepted by ${existing.acceptedByName ?? 'another staff member'}`);
+    }
+
+    return tx.order.update({
+      where: { id },
+      data: {
+        acceptedById: req.user?.id || null,
+        acceptedByName: req.user?.name || null,
+      },
+      include: {
+        items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
+      },
+    });
+  });
+
+  const mapped = mapOrderOut(updated);
+  emitOrderEvent('order:updated', mapped);
+  res.json(ApiResponse.success(mapped, 'Order accepted'));
+});
+
+/** POST /api/orders/:id/reject-self-order — declines a pending self-order. Reuses
+ *  the ordinary CANCELLED status (no new enum value); rejectionReason is optional. */
+export const rejectSelfOrder = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { reason } = req.body;
+
+  const existing = await prisma.order.findUnique({ where: { id } });
+  if (!existing) throw ApiError.notFound('Order not found');
+  const scope = resolveOutletScope(req);
+  if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
+  if (existing.type !== 'SELF_ORDER') throw ApiError.badRequest('Not a self-order');
+
+  const updated = await prisma.order.update({
+    where: { id },
+    data: { status: 'CANCELLED', rejectionReason: reason || null },
+    include: {
+      items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
+    },
+  });
+
+  const mapped = mapOrderOut(updated);
+  emitOrderEvent('order:updated', mapped);
+  res.json(ApiResponse.success(mapped, 'Order declined'));
+});
+
 /**
  * Validates that itemIds/newSubtotal/newTax/newTotal form a coherent cancel request
  * against the order's current active items. Shared by cancellation-request creation
