@@ -94,6 +94,7 @@ model User {
   outlet                   Outlet?           @relation(fields: [outletId], references: [id])
   employee                 Employee?
   orders                   Order[]
+  selfOrdersAccepted       Order[]           @relation("OrderAcceptedBy")
   stockAdjustments         StockAdjustment[]
   attendanceRecords        AttendanceRecord[]  @relation("UserAttendance")
   leaveRequests            LeaveRequest[]      @relation("UserLeaves")
@@ -842,12 +843,17 @@ model Order {
   isUrgent        Boolean     @default(false)
   customerType    String?     @db.VarChar(20) // walk-in, regular, corporate, vip
   orderSource     String?     @db.VarChar(20) // pos, self-order, website, foodpanda, phone
+  guestCount      Int?
+  acceptedById    String?
+  acceptedByName  String?     @db.VarChar(100)
+  rejectionReason String?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
   // Relations
   customer      Customer?              @relation(fields: [customerId], references: [id])
   staff         User?                  @relation(fields: [staffId], references: [id])
+  acceptedBy    User?                  @relation("OrderAcceptedBy", fields: [acceptedById], references: [id])
   rider         DeliveryRider?         @relation(fields: [riderId], references: [id])
   outlet        Outlet?                @relation("OrderOutlet", fields: [outletId], references: [id])
   items         OrderItem[]
