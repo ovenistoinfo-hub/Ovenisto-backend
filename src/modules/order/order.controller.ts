@@ -652,26 +652,30 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
 export const acceptSelfOrder = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
 
-  const updated = await prisma.$transaction(async (tx) => {
-    const existing = await tx.order.findUnique({ where: { id } });
-    if (!existing) throw ApiError.notFound('Order not found');
-    const scope = resolveOutletScope(req);
-    if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
-    if (existing.type !== 'SELF_ORDER') throw ApiError.badRequest('Not a self-order');
-    if (existing.acceptedById) {
-      throw ApiError.conflict(`Already accepted by ${existing.acceptedByName ?? 'another staff member'}`);
-    }
+  const existing = await prisma.order.findUnique({ where: { id } });
+  if (!existing) throw ApiError.notFound('Order not found');
+  const scope = resolveOutletScope(req);
+  if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
+  if (existing.type !== 'SELF_ORDER') throw ApiError.badRequest('Not a self-order');
 
-    return tx.order.update({
-      where: { id },
-      data: {
-        acceptedById: req.user?.id || null,
-        acceptedByName: req.user?.name || null,
-      },
-      include: {
-        items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
-      },
-    });
+  const result = await prisma.order.updateMany({
+    where: { id, acceptedById: null },
+    data: {
+      acceptedById: req.user?.id || null,
+      acceptedByName: req.user?.name || null,
+    },
+  });
+
+  if (result.count === 0) {
+    const latest = await prisma.order.findUnique({ where: { id } });
+    throw ApiError.conflict(`Already accepted by ${latest?.acceptedByName ?? 'another staff member'}`);
+  }
+
+  const updated = await prisma.order.findUnique({
+    where: { id },
+    include: {
+      items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
+    },
   });
 
   const mapped = mapOrderOut(updated);
