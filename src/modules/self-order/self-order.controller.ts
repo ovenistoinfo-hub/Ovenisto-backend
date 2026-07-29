@@ -174,7 +174,7 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
     : null;
   if (!customer) {
     customer = await prisma.customer.create({
-      data: { name: customerName.trim(), phone: customerPhone.trim(), customerType: 'walk-in' },
+      data: { name: customerName.trim(), phone: cleanCustomerPhone || customerPhone.trim(), customerType: 'walk-in' },
     });
   }
 
