@@ -11,6 +11,7 @@ import { connectDatabase, disconnectDatabase } from './config/database.js';
 import { registerIO } from './socket.js';
 import { socketAuth } from './middleware/socketAuth.js';
 import { autoProcessExpiredBatches } from './modules/stock/autoExpiry.js';
+import { setupSelfOrderNamespace } from './modules/self-order/self-order.socket.js';
 
 // Background auto-expiry processing (every 60s while server is running)
 setInterval(() => {
@@ -31,6 +32,7 @@ const io = new SocketServer(server, {
 
 // Make io available to controllers via socket.ts (emitOrderEvent), no circular import.
 registerIO(io);
+setupSelfOrderNamespace(io);
 
 // Authenticate every socket handshake and join it to its outlet room, so
 // outlet-scoped events (challan:*, demand:*) only reach the right branch.
