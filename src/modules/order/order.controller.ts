@@ -682,6 +682,15 @@ export const acceptSelfOrder = asyncHandler(async (req: Request, res: Response) 
   // real — a still-pending, unaccepted self-order never touches table status.
   if (updated?.tableNumber) {
     await updateTableStatusForOrder(prisma, updated.outletId, updated.tableNumber, req.user);
+    // Stamp currentOrderId in the same "timestamp:guestCount" format the manual
+    // waiter-initiated flows already use, so WaiterPanel's getGuestsCount() shows
+    // the customer's real guest count instead of falling back to table capacity.
+    if (updated.outletId) {
+      await prisma.restaurantTable.updateMany({
+        where: { outletId: updated.outletId, number: String(updated.tableNumber) },
+        data: { currentOrderId: `${Date.now()}:${updated.guestCount ?? 1}` },
+      });
+    }
   }
 
   const mapped = mapOrderOut(updated);
