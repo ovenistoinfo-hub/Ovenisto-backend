@@ -77,6 +77,38 @@ export function setupSelfOrderNamespace(io: SocketServer): void {
       }
     );
 
+    socket.on('request-host', (_payload: unknown, ack?: (res: { sent: true } | { error: string }) => void) => {
+      const tableId = socket.data.tableId as string | undefined;
+      if (!tableId) { ack?.({ error: 'Not joined to a table' }); return; }
+      const state = tableStates.get(tableId);
+      if (!state) { ack?.({ error: 'No active session for this table' }); return; }
+      if (state.hostSocketId === socket.id) { ack?.({ error: 'Already host' }); return; }
+      state.pendingRequest = { requesterSocketId: socket.id };
+      nsp.to(state.hostSocketId).emit('host-request');
+      ack?.({ sent: true });
+    });
+
+    socket.on('respond-host-request', (payload: { approve?: boolean }) => {
+      const tableId = socket.data.tableId as string | undefined;
+      if (!tableId) return;
+      const state = tableStates.get(tableId);
+      if (!state || state.hostSocketId !== socket.id || !state.pendingRequest) return;
+
+      const requesterSocketId = state.pendingRequest.requesterSocketId;
+      state.pendingRequest = null;
+
+      if (!payload?.approve) {
+        nsp.to(requesterSocketId).emit('host-request:declined');
+        return;
+      }
+
+      const newToken = randomUUID();
+      state.hostSocketId = requesterSocketId;
+      state.hostSessionToken = newToken;
+      nsp.to(requesterSocketId).emit('role:changed', { role: 'host', sessionToken: newToken });
+      nsp.to(socket.id).emit('role:changed', { role: 'viewer' });
+    });
+
     socket.on('disconnect', () => {
       const tableId = socket.data.tableId as string | undefined;
       if (!tableId) return;

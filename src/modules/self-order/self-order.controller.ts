@@ -14,6 +14,8 @@ import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { emitOrderEvent } from '../../socket.js';
 import { generateOrderNumber, mapOrderOut } from '../order/order.controller.js';
+import { emitSelfOrderTableEvent, clearSelfOrderTableState } from './self-order.socket.js';
+import { resolveOutletScope } from '../../middleware/outletScope.js';
 
 /** GET /api/self-order/table/:tableId */
 export const getTableForSelfOrder = asyncHandler(async (req: Request, res: Response) => {
@@ -209,6 +211,11 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
   // waiter accepts it. Table occupancy is triggered from acceptSelfOrder instead.
 
   emitOrderEvent('order:created', mapOrderOut(order));
+  emitSelfOrderTableEvent(table.id, 'order:updated', {
+    status: 'pending',
+    accepted: false,
+    paid: false,
+  });
   res.status(201).json(ApiResponse.created({ orderId: order.id }, 'Order placed'));
 });
 
@@ -226,5 +233,25 @@ export const getSelfOrderStatus = asyncHandler(async (req: Request, res: Respons
     status,
     accepted: !!order.acceptedById,
     rejectionReason: order.rejectionReason ?? undefined,
+    paid: order.status === 'COMPLETED',
   }));
+});
+
+/** POST /api/self-order/table/:tableId/end-session — staff-authenticated
+ *  exception in this otherwise-public module. Called by WaiterPanel's End
+ *  Sitting action to notify the table's live self-order session (if any) that
+ *  it has ended, and to clear its in-memory host state so the next customer
+ *  to scan this table's QR gets a genuinely fresh session. Pure notification —
+ *  performs no data mutation itself; the actual table/order state changes
+ *  already happen in WaiterPanel's existing End Sitting flow before this is called. */
+export const notifySelfOrderSessionEnded = asyncHandler(async (req: Request, res: Response) => {
+  const { tableId } = req.params;
+  const table = await prisma.restaurantTable.findUnique({ where: { id: tableId } });
+  if (!table) throw ApiError.notFound('Table not found');
+  const scope = resolveOutletScope(req);
+  if (scope && table.outletId !== scope) throw ApiError.notFound('Table not found');
+
+  emitSelfOrderTableEvent(tableId, 'session:ended', {});
+  clearSelfOrderTableState(tableId);
+  res.json(ApiResponse.success(null, 'Session-ended notification sent'));
 });

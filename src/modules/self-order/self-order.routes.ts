@@ -2,12 +2,16 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { validateRequest } from '../../middleware/validateRequest.js';
 import { createSelfOrderSchema } from './self-order.schema.js';
+import { authenticate } from '../../middleware/authenticate.js';
+import { authorize } from '../../middleware/authorize.js';
 import {
   getTableForSelfOrder, getSelfOrderMenu, createSelfOrder, getSelfOrderStatus,
-  lookupCustomerByPhone,
+  lookupCustomerByPhone, notifySelfOrderSessionEnded,
 } from './self-order.controller.js';
 
 export const selfOrderRouter = Router();
+
+const posRoles = ['Super Admin', 'Admin', 'Manager', 'Cashier', 'Waiter', 'Floor Manager'];
 
 // Only the write endpoint is throttled — table lookup, menu, and status poll are
 // reads with no abuse potential beyond normal traffic.
@@ -27,3 +31,8 @@ selfOrderRouter.get('/menu', getSelfOrderMenu);
 selfOrderRouter.get('/customer-lookup', lookupCustomerByPhone);
 selfOrderRouter.post('/orders', createOrderLimiter, validateRequest({ body: createSelfOrderSchema }), createSelfOrder);
 selfOrderRouter.get('/orders/:id/status', getSelfOrderStatus);
+
+// The one staff-authenticated exception in this otherwise-public router: called
+// by WaiterPanel's End Sitting action to notify the table's live self-order
+// session (if any) that it has ended.
+selfOrderRouter.post('/table/:tableId/end-session', authenticate, authorize(posRoles), notifySelfOrderSessionEnded);

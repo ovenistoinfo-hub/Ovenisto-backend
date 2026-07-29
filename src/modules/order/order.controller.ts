@@ -13,6 +13,7 @@ import { emitOrderEvent, emitTableEvent, emitReservationEvent } from '../../sock
 import { fifoDrawdown } from '../stock/dough.helpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
+import { emitSelfOrderEventForOrder } from '../self-order/self-order.socket.js';
 
 // ── Enum conversion helpers ──
 
@@ -640,6 +641,14 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
   if (order.tableNumber && (order.type === 'DINE_IN' || order.type === 'SELF_ORDER')) {
     await updateTableStatusForOrder(prisma, order.outletId, order.tableNumber, req.user);
   }
+  if (order.type === 'SELF_ORDER') {
+    await emitSelfOrderEventForOrder(order, 'order:updated', {
+      status: order.status === 'CANCELLED' ? 'cancelled' : 'confirmed',
+      accepted: !!order.acceptedById,
+      rejectionReason: order.rejectionReason ?? undefined,
+      paid: order.status === 'COMPLETED',
+    });
+  }
   emitOrderEvent('order:updated', statusUpdated);
   res.json(ApiResponse.success(statusUpdated, 'Order status updated'));
 });
@@ -693,6 +702,14 @@ export const acceptSelfOrder = asyncHandler(async (req: Request, res: Response) 
     }
   }
 
+  if (updated) {
+    await emitSelfOrderEventForOrder(updated, 'order:updated', {
+      status: 'confirmed',
+      accepted: true,
+      paid: updated.status === 'COMPLETED',
+    });
+  }
+
   const mapped = mapOrderOut(updated);
   emitOrderEvent('order:updated', mapped);
   res.json(ApiResponse.success(mapped, 'Order accepted'));
@@ -719,6 +736,13 @@ export const rejectSelfOrder = asyncHandler(async (req: Request, res: Response) 
     include: {
       items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
     },
+  });
+
+  await emitSelfOrderEventForOrder(updated, 'order:updated', {
+    status: 'cancelled',
+    accepted: false,
+    rejectionReason: updated.rejectionReason ?? undefined,
+    paid: false,
   });
 
   const mapped = mapOrderOut(updated);
