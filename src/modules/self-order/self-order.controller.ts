@@ -33,6 +33,20 @@ export const getTableForSelfOrder = asyncHandler(async (req: Request, res: Respo
   }));
 });
 
+/** GET /api/self-order/customer-lookup?phone=<digits> — UX-only lookup for the
+ *  entry-gate's "keep this name?" prompt. Never a security/trust boundary —
+ *  createSelfOrder independently re-derives the same lookup at order-creation
+ *  time and does not trust anything about how the client got here. */
+export const lookupCustomerByPhone = asyncHandler(async (req: Request, res: Response) => {
+  const cleanPhone = String(req.query.phone || '').replace(/\D/g, '');
+  if (cleanPhone.length < 7) {
+    res.json(ApiResponse.success({ exists: false }));
+    return;
+  }
+  const customer = await prisma.customer.findFirst({ where: { phone: { contains: cleanPhone } } });
+  res.json(ApiResponse.success(customer ? { exists: true, name: customer.name } : { exists: false }));
+});
+
 /** GET /api/self-order/menu — the menu catalog is global (no outletId column on
  *  FoodMenuItem/FoodCategory), so every outlet sees the same active/available menu.
  *  Deliberately returns only customer-facing fields — never the staff-facing
@@ -148,6 +162,20 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
   const computedTax = Math.round(computedSubtotal * (taxRatePercent / 100));
   const computedTotal = computedSubtotal + computedTax;
 
+  // Find-or-link a Customer record by phone. Deliberately narrower than the
+  // admin createCustomer endpoint: this NEVER updates an existing customer's
+  // saved name — only Order.customerName (a snapshot) reflects whatever name
+  // was confirmed at the entry gate. See Global Constraints.
+  const cleanCustomerPhone = customerPhone.trim().replace(/\D/g, '');
+  let customer = cleanCustomerPhone.length >= 7
+    ? await prisma.customer.findFirst({ where: { phone: { contains: cleanCustomerPhone } } })
+    : null;
+  if (!customer) {
+    customer = await prisma.customer.create({
+      data: { name: customerName.trim(), phone: customerPhone.trim(), customerType: 'walk-in' },
+    });
+  }
+
   const orderNumber = await generateOrderNumber();
 
   const order = await prisma.order.create({
@@ -156,6 +184,7 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
       outletId: table.outletId,
       customerName: customerName.trim(),
       phone: customerPhone.trim(),
+      customerId: customer.id,
       type: 'SELF_ORDER',
       subtotal: computedSubtotal,
       discount: 0,
