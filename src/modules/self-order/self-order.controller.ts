@@ -162,7 +162,7 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
       tax: computedTax,
       total: computedTotal,
       status: 'PENDING',
-      paymentMethod: 'Pay at Counter',
+      paymentMethod: 'Pending',
       date: new Date(),
       time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
       staffName: 'Self Order',
