@@ -79,9 +79,10 @@ export const getCustomers = asyncHandler(async (req: Request, res: Response) => 
 
   const where: any = {};
   if (search) {
+    const cleanSearch = search.replace(/\D/g, '');
     where.OR = [
       { name: { contains: search, mode: 'insensitive' } },
-      { phone: { contains: search, mode: 'insensitive' } },
+      ...(cleanSearch.length >= 3 ? [{ phone: { contains: cleanSearch } }] : [{ phone: { contains: search, mode: 'insensitive' as const } }]),
       { email: { contains: search, mode: 'insensitive' } },
     ];
   }
@@ -158,7 +159,7 @@ export const createCustomer = asyncHandler(async (req: Request, res: Response) =
       where: { id: existing.id },
       data: {
         name: name.trim() || existing.name,
-        phone: phone ? phone.trim() : existing.phone,
+        phone: phone ? (cleanPhone || String(phone).trim()) : existing.phone,
         email: email ? email.trim() : existing.email,
         address: address ? address.trim() : existing.address,
         customerType: customerType || existing.customerType,
@@ -170,7 +171,7 @@ export const createCustomer = asyncHandler(async (req: Request, res: Response) =
   const c = await prisma.customer.create({
     data: {
       name: name.trim(),
-      phone: phone ? phone.trim() : null,
+      phone: phone ? (cleanPhone || String(phone).trim()) : null,
       email: email ? email.trim() : null,
       address: address ? address.trim() : null,
       customerType: customerType || 'walk-in',
@@ -181,9 +182,16 @@ export const createCustomer = asyncHandler(async (req: Request, res: Response) =
 
 export const updateCustomer = asyncHandler(async (req: Request, res: Response) => {
   const { name, phone, email, address, customerType } = req.body;
+  const cleanPhone = phone ? String(phone).replace(/\D/g, '') : '';
   const c = await prisma.customer.update({
     where: { id: req.params.id },
-    data: { name, phone, email, address, customerType },
+    data: {
+      name,
+      phone: phone !== undefined ? (phone ? (cleanPhone || String(phone).trim()) : phone) : undefined,
+      email,
+      address,
+      customerType,
+    },
   });
   return res.json(ApiResponse.success(mapCustomerWithStats(c), 'Customer updated'));
 });
