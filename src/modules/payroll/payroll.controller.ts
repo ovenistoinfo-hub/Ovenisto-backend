@@ -5,12 +5,17 @@ import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 
 function mapPaymentLog(log: any) {
+  const isAdvanceFlag = Boolean(
+    log.isAdvance || (log.notes && typeof log.notes === 'string' && log.notes.startsWith('Salary Advance'))
+  );
   return {
     ...log,
     basePay: Number(log.basePay),
     penalties: Number(log.penalties),
     rewards: Number(log.rewards),
     finalPay: Number(log.finalPay),
+    advanceAmount: Number(log.advanceAmount || 0),
+    isAdvance: isAdvanceFlag,
     rate: log.rate != null ? Number(log.rate) : null,
     unitsWorked: log.unitsWorked != null ? Number(log.unitsWorked) : null,
   };
@@ -19,7 +24,7 @@ function mapPaymentLog(log: any) {
 export const createPaymentLog = asyncHandler(async (req: Request, res: Response) => {
   const {
     employeeId, startDate, endDate, basePay, penalties, rewards, finalPay, notes,
-    rateType, rate, unitsWorked, absentDays, penaltyIds,
+    rateType, rate, unitsWorked, absentDays, penaltyIds, advanceAmount, isAdvance,
   } = req.body;
   const paidById = req.user?.id;
 
@@ -31,11 +36,38 @@ export const createPaymentLog = asyncHandler(async (req: Request, res: Response)
     throw new ApiError('Not authenticated', 401);
   }
 
-  const existing = await prisma.paymentLog.findUnique({
-    where: { employeeId_startDate_endDate: { employeeId, startDate, endDate } },
-  });
-  if (existing) {
-    throw new ApiError('This employee has already been paid for this period', 409);
+  const isAdvanceFlag = Boolean(isAdvance || (notes && typeof notes === 'string' && notes.startsWith('Salary Advance')));
+
+  // Duplicate check using raw SQL to avoid any Prisma ORM operator ambiguity.
+  // Advance (isAdvance=true) and regular salary (isAdvance=false) are independent —
+  // one of each is allowed per employee per period.
+  if (isAdvanceFlag) {
+    // Block a second advance for the same period
+    const dupRows: any[] = await prisma.$queryRaw`
+      SELECT id FROM payment_logs
+      WHERE "employeeId" = ${employeeId}
+        AND "startDate" = ${startDate}
+        AND "endDate"   = ${endDate}
+        AND ("isAdvance" = true OR notes LIKE 'Salary Advance%')
+      LIMIT 1
+    `;
+    if (dupRows.length > 0) {
+      throw new ApiError('An advance payment has already been issued for this period', 409);
+    }
+  } else {
+    // Block a second regular salary payout for the same month window
+    const dupRows: any[] = await prisma.$queryRaw`
+      SELECT id FROM payment_logs
+      WHERE "employeeId" = ${employeeId}
+        AND "isAdvance" = false
+        AND notes NOT LIKE 'Salary Advance%'
+        AND "startDate" >= ${startDate}
+        AND "startDate" <= ${endDate}
+      LIMIT 1
+    `;
+    if (dupRows.length > 0) {
+      throw new ApiError('This employee has already been paid for this period', 409);
+    }
   }
 
   const log = await prisma.$transaction(async (tx) => {
@@ -54,6 +86,8 @@ export const createPaymentLog = asyncHandler(async (req: Request, res: Response)
         rate,
         unitsWorked,
         absentDays,
+        advanceAmount: advanceAmount || 0,
+        isAdvance: isAdvanceFlag,
       },
       include: {
         employee: {
@@ -98,19 +132,23 @@ export const createBatchPaymentLogs = asyncHandler(async (req: Request, res: Res
     throw new ApiError('Invalid or empty payments array', 400);
   }
 
-  // Skip any employee/period combination already paid, rather than letting one
-  // conflict abort the whole batch transaction.
-  const existingLogs = await prisma.paymentLog.findMany({
-    where: {
-      OR: payments.map((p: any) => ({
-        employeeId: p.employeeId,
-        startDate: p.startDate,
-        endDate: p.endDate,
-      })),
-    },
-    select: { employeeId: true, startDate: true, endDate: true },
-  });
-  const alreadyPaidKeys = new Set(existingLogs.map((l) => `${l.employeeId}|${l.startDate}|${l.endDate}`));
+  // Skip any employee/period combination already paid (non-advance).
+  // Use raw SQL to avoid Prisma ORM ambiguity with isAdvance + NOT combinations.
+  const alreadyPaidKeys = new Set<string>();
+  for (const p of payments) {
+    const dupRows: any[] = await prisma.$queryRaw`
+      SELECT id FROM payment_logs
+      WHERE "employeeId" = ${p.employeeId}
+        AND "isAdvance" = false
+        AND notes NOT LIKE 'Salary Advance%'
+        AND "startDate" >= ${p.startDate}
+        AND "startDate" <= ${p.endDate}
+      LIMIT 1
+    `;
+    if (dupRows.length > 0) {
+      alreadyPaidKeys.add(`${p.employeeId}|${p.startDate}|${p.endDate}`);
+    }
+  }
   const toPay = payments.filter((p: any) => !alreadyPaidKeys.has(`${p.employeeId}|${p.startDate}|${p.endDate}`));
   const skipped = payments.length - toPay.length;
 
@@ -138,6 +176,8 @@ export const createBatchPaymentLogs = asyncHandler(async (req: Request, res: Res
           rate: p.rate,
           unitsWorked: p.unitsWorked,
           absentDays: p.absentDays,
+          advanceAmount: p.advanceAmount || 0,
+          isAdvance: Boolean(p.isAdvance || (p.notes && typeof p.notes === 'string' && p.notes.startsWith('Salary Advance'))),
         },
       });
       if (Array.isArray(p.penaltyIds) && p.penaltyIds.length > 0) {
@@ -162,8 +202,18 @@ export const getPaymentLogs = asyncHandler(async (req: Request, res: Response) =
 
   const where: any = {};
   if (employeeId) where.employeeId = employeeId;
-  if (startDate) where.startDate = { gte: startDate };
-  if (endDate) where.endDate = { lte: endDate };
+  if (startDate && endDate) {
+    const endDateTime = new Date(`${endDate}T23:59:59.999Z`);
+    const startDateTime = new Date(`${startDate}T00:00:00.000Z`);
+    where.OR = [
+      { startDate: { gte: startDate, lte: endDate } },
+      { endDate: { gte: startDate, lte: endDate } },
+      { paidAt: { gte: startDateTime, lte: endDateTime } },
+    ];
+  } else {
+    if (startDate) where.startDate = { gte: startDate };
+    if (endDate) where.endDate = { lte: endDate };
+  }
 
   const logs = await prisma.paymentLog.findMany({
     where,

@@ -78,6 +78,12 @@ async function calcOvertimeMinutes(userId: string, outletId: string, recordDate:
   return overtimeMs > 0 ? Math.round(overtimeMs / 60_000) : 0;
 }
 
+const SHIFT_TEMPLATES: Record<string, { startTime: string; endTime: string }> = {
+  morning: { startTime: '09:00', endTime: '17:00' },
+  evening: { startTime: '17:00', endTime: '01:00' },
+  night:   { startTime: '01:00', endTime: '09:00' },
+};
+
 async function autoMarkAbsents(outletId?: string | null) {
   const date = todayStr();
   const weekStart = currentWeekStart();
@@ -143,20 +149,26 @@ async function autoMarkAbsents(outletId?: string | null) {
   for (const u of toCheck) {
     const sched = schedules.find(s => s.userId === u.id);
     const todayShift = sched?.shifts.find(s => s.dayIndex === dayIndex);
-    if (todayShift?.startTime && todayShift.shiftType !== 'off') {
+    if (todayShift && todayShift.shiftType !== 'off') {
       const userOutletId = u.outletId;
       const settings = settingsList.find(s => s.outletId === userOutletId) || settingsList[0];
       const graceMinutesValue = settings?.graceMinutes ?? 15;
-      const [sh, sm] = todayShift.startTime.split(':').map(Number);
-      const shiftStartMinutes = sh * 60 + sm;
+      const shiftConfig = (settings?.shiftConfig as Record<string, { start?: string; end?: string }>) ?? {};
+      const shiftType = todayShift.shiftType;
+      const startTimeStr = shiftConfig[shiftType]?.start ?? todayShift.startTime ?? SHIFT_TEMPLATES[shiftType]?.startTime;
 
-      if (nowMinutes > shiftStartMinutes + graceMinutesValue + 60) {
-        toMarkAbsent.push({
-          userId: u.id,
-          outletId: u.outletId!,
-          date,
-          status: 'absent',
-        });
+      if (startTimeStr) {
+        const [sh, sm] = startTimeStr.split(':').map(Number);
+        const shiftStartMinutes = sh * 60 + sm;
+
+        if (nowMinutes > shiftStartMinutes + graceMinutesValue + 60) {
+          toMarkAbsent.push({
+            userId: u.id,
+            outletId: u.outletId!,
+            date,
+            status: 'absent',
+          });
+        }
       }
     }
   }
@@ -169,9 +181,71 @@ async function autoMarkAbsents(outletId?: string | null) {
   }
 }
 
+async function autoClockOutUnclosedShifts(outletId?: string | null) {
+  const whereClause: any = {
+    clockIn: { not: null },
+    clockOut: null,
+  };
+  if (outletId) {
+    whereClause.outletId = outletId;
+  }
+
+  const unclosedRecords = await prisma.attendanceRecord.findMany({
+    where: whereClause,
+  });
+
+  if (unclosedRecords.length === 0) return;
+
+  const settingsList = await prisma.settings.findMany();
+
+  for (const record of unclosedRecords) {
+    const weekStart = weekStartOfDate(record.date);
+    const dayIndex = dayIndexOfDate(record.date);
+    const schedule = await prisma.staffSchedule.findFirst({
+      where: { userId: record.userId, weekStart, status: 'published' },
+      include: { shifts: true },
+    });
+    const shift = schedule?.shifts.find(s => s.dayIndex === dayIndex);
+    if (!shift?.shiftType || shift.shiftType === 'off') continue;
+
+    const settings = settingsList.find(s => s.outletId === record.outletId) || settingsList[0];
+    const shiftConfig = (settings?.shiftConfig as Record<string, { start?: string; end?: string }>) ?? {};
+    const endTimeStr = shiftConfig[shift.shiftType]?.end ?? SHIFT_TEMPLATES[shift.shiftType]?.endTime;
+    const startTimeStr = shiftConfig[shift.shiftType]?.start ?? shift.startTime ?? SHIFT_TEMPLATES[shift.shiftType]?.startTime;
+
+    if (!endTimeStr || !startTimeStr) continue;
+
+    const [eh, em] = endTimeStr.split(':').map(Number);
+    const [sh, sm] = startTimeStr.split(':').map(Number);
+    const endMinutes = eh * 60 + em;
+    const startMinutes = sh * 60 + sm;
+
+    const baseMs = new Date(record.date + 'T00:00:00Z').getTime();
+    let scheduledEndMs = baseMs + endMinutes * 60_000 - (5 * 60 * 60 * 1000);
+    if (endMinutes <= startMinutes) {
+      scheduledEndMs += 24 * 60 * 60_000;
+    }
+
+    const autoClockOutThresholdMs = scheduledEndMs + 5 * 60_000;
+
+    if (Date.now() > autoClockOutThresholdMs) {
+      await prisma.attendanceRecord.update({
+        where: { id: record.id },
+        data: {
+          clockOut: new Date(scheduledEndMs),
+          overtimeMinutes: 0,
+        },
+      });
+    }
+  }
+}
+
 export const clockIn = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.id;
   const date = todayStr();
+
+  const userRec = await prisma.user.findUnique({ where: { id: userId } });
+  await autoClockOutUnclosedShifts(userRec?.outletId);
 
   const existing = await prisma.attendanceRecord.findUnique({
     where: { userId_date: { userId, date } },
@@ -196,19 +270,26 @@ export const clockIn = asyncHandler(async (req: Request, res: Response) => {
     throw new ApiError('Today is your scheduled day off. You cannot clock in.', 400);
   }
 
-  if (todayShift?.startTime && todayShift.shiftType !== 'off') {
-    let settings = await prisma.settings.findFirst({
-      where: { outletId: outletId || undefined }
-    });
-    if (!settings) {
-      settings = await prisma.settings.findFirst();
-    }
-    const graceMinutesValue = settings?.graceMinutes ?? 15;
+  let settings = await prisma.settings.findFirst({
+    where: { outletId: outletId || undefined }
+  });
+  if (!settings) {
+    settings = await prisma.settings.findFirst();
+  }
+  const graceMinutesValue = settings?.graceMinutes ?? 15;
+  const shiftConfig = (settings?.shiftConfig as Record<string, { start?: string; end?: string }>) ?? {};
+  const shiftType = todayShift?.shiftType || 'morning';
+  const startTimeStr = shiftConfig[shiftType]?.start ?? todayShift?.startTime ?? SHIFT_TEMPLATES[shiftType]?.startTime ?? '09:00';
 
+  if (startTimeStr) {
     const pktNow = new Date(Date.now() + 5 * 60 * 60 * 1000);
     const nowMinutes = pktNow.getUTCHours() * 60 + pktNow.getUTCMinutes();
-    const [sh, sm] = todayShift.startTime.split(':').map(Number);
+    const [sh, sm] = startTimeStr.split(':').map(Number);
     const shiftStartMinutes = sh * 60 + sm;
+
+    if (nowMinutes < shiftStartMinutes) {
+      throw new ApiError(`Your shift starts at ${startTimeStr}. You cannot check in before your shift starts.`, 400);
+    }
 
     if (nowMinutes > shiftStartMinutes + graceMinutesValue + 60) {
       // Auto-mark absent in DB
@@ -222,7 +303,7 @@ export const clockIn = asyncHandler(async (req: Request, res: Response) => {
           data: { userId, outletId, date, status: 'absent' },
         });
       }
-      throw new ApiError(`Clock-in window has expired (shift started at ${todayShift.startTime}). You are marked as absent today.`, 400);
+      throw new ApiError(`Clock-in window has expired (shift started at ${startTimeStr}). You are marked as absent today.`, 400);
     }
 
     if (nowMinutes > shiftStartMinutes + graceMinutesValue) {
@@ -253,7 +334,7 @@ export const clockIn = asyncHandler(async (req: Request, res: Response) => {
             data: { userId, outletId, date, status: 'absent' },
           });
         }
-        throw new ApiError(`Clock-in is after the grace period (shift started at ${todayShift.startTime}) and your Half Day leave balance is exhausted. You are marked as absent today.`, 400);
+        throw new ApiError(`Clock-in is after the grace period (shift started at ${startTimeStr}) and your Half Day leave balance is exhausted. You are marked as absent today.`, 400);
       }
     }
   }
@@ -294,6 +375,10 @@ export const clockOut = asyncHandler(async (req: Request, res: Response) => {
 export const getMyStatus = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.id;
   const date = todayStr();
+
+  const userRec = await prisma.user.findUnique({ where: { id: userId } });
+  await autoClockOutUnclosedShifts(userRec?.outletId);
+
   let record = await prisma.attendanceRecord.findUnique({
     where: { userId_date: { userId, date } },
   });
@@ -307,7 +392,7 @@ export const getMyStatus = asyncHandler(async (req: Request, res: Response) => {
       include: { shifts: true },
     });
     const todayShift = schedule?.shifts.find(s => s.dayIndex === dayIndex);
-    if (todayShift?.startTime && todayShift.shiftType !== 'off') {
+    if (todayShift && todayShift.shiftType !== 'off') {
       const userRec = await prisma.user.findUnique({ where: { id: userId } });
       const outletId = userRec?.outletId;
       if (outletId) {
@@ -318,20 +403,26 @@ export const getMyStatus = asyncHandler(async (req: Request, res: Response) => {
           settings = await prisma.settings.findFirst();
         }
         const graceMinutesValue = settings?.graceMinutes ?? 15;
-        const pktNow = new Date(Date.now() + 5 * 60 * 60 * 1000);
-        const nowMinutes = pktNow.getUTCHours() * 60 + pktNow.getUTCMinutes();
-        const [sh, sm] = todayShift.startTime.split(':').map(Number);
-        const shiftStartMinutes = sh * 60 + sm;
+        const shiftConfig = (settings?.shiftConfig as Record<string, { start?: string; end?: string }>) ?? {};
+        const shiftType = todayShift.shiftType;
+        const startTimeStr = shiftConfig[shiftType]?.start ?? todayShift.startTime ?? SHIFT_TEMPLATES[shiftType]?.startTime ?? '09:00';
 
-        if (nowMinutes > shiftStartMinutes + graceMinutesValue + 60) {
-          record = await prisma.attendanceRecord.create({
-            data: {
-              userId,
-              outletId,
-              date,
-              status: 'absent',
-            },
-          });
+        if (startTimeStr) {
+          const pktNow = new Date(Date.now() + 5 * 60 * 60 * 1000);
+          const nowMinutes = pktNow.getUTCHours() * 60 + pktNow.getUTCMinutes();
+          const [sh, sm] = startTimeStr.split(':').map(Number);
+          const shiftStartMinutes = sh * 60 + sm;
+
+          if (nowMinutes > shiftStartMinutes + graceMinutesValue + 60) {
+            record = await prisma.attendanceRecord.create({
+              data: {
+                userId,
+                outletId,
+                date,
+                status: 'absent',
+              },
+            });
+          }
         }
       }
     }
@@ -371,8 +462,9 @@ export const getAllAttendance = asyncHandler(async (req: Request, res: Response)
 
   const scope = resolveOutletScope(req);
 
-  // Auto-mark absents for today
+  // Auto-mark absents for today and auto clock-out past shifts
   await autoMarkAbsents(scope);
+  await autoClockOutUnclosedShifts(scope);
 
   const where: any = {};
   if (date) {

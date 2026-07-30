@@ -115,6 +115,16 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
     }
   }
 
+  if (email?.trim()) {
+    const cleanEmail = email.trim().toLowerCase();
+    const existingEmail = await prisma.employee.findFirst({
+      where: { email: { equals: cleanEmail, mode: 'insensitive' } },
+    });
+    if (existingEmail) {
+      throw new ApiError(`Email "${email}" is already assigned to another employee`, 400);
+    }
+  }
+
   try {
     const e = await prisma.employee.create({
       data: {
@@ -171,6 +181,19 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
     const supervisor = await prisma.employee.findUnique({ where: { id: supervisorId } });
     if (!supervisor || (scope && supervisor.outletId !== scope)) {
       throw new ApiError('Supervisor not found', 400);
+    }
+  }
+
+  if (email?.trim()) {
+    const cleanEmail = email.trim().toLowerCase();
+    const existingEmail = await prisma.employee.findFirst({
+      where: {
+        email: { equals: cleanEmail, mode: 'insensitive' },
+        id: { not: req.params.id },
+      },
+    });
+    if (existingEmail) {
+      throw new ApiError(`Email "${email}" is already assigned to another employee`, 400);
     }
   }
 
