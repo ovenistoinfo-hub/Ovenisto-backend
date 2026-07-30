@@ -101,7 +101,7 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
   validateBody(req.body);
   const {
     firstName, lastName, email, phone, photoUrl, userId, supervisorId,
-    division, designation, dutyType, hireDate, rateType, rate, payFrequency, penaltyFee,
+    division, designation, dutyType, hireDate, rateType, rate, payFrequency, penaltyFee, defaultOffDay,
     dateOfBirth, gender, maritalStatus, cnic,
     emergencyContactName, emergencyContactRelation, emergencyContactPhone,
   } = req.body;
@@ -141,6 +141,7 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
         rate: Number(rate),
         payFrequency: payFrequency || null,
         penaltyFee: penaltyFee != null ? Number(penaltyFee) : null,
+        defaultOffDay: defaultOffDay != null ? Number(defaultOffDay) : 1,
         dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
         gender: gender || null,
         maritalStatus: maritalStatus || null,
@@ -165,7 +166,7 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
 
   const {
     firstName, lastName, email, phone, photoUrl, userId, supervisorId,
-    division, designation, dutyType, hireDate, rateType, rate, payFrequency, penaltyFee,
+    division, designation, dutyType, hireDate, rateType, rate, payFrequency, penaltyFee, defaultOffDay,
     dateOfBirth, gender, maritalStatus, cnic,
     emergencyContactName, emergencyContactRelation, emergencyContactPhone, status,
   } = req.body;
@@ -216,6 +217,7 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
         rate: rate != null ? Number(rate) : existing.rate,
         payFrequency: payFrequency !== undefined ? payFrequency : existing.payFrequency,
         penaltyFee: penaltyFee !== undefined ? (penaltyFee != null ? Number(penaltyFee) : null) : existing.penaltyFee,
+        defaultOffDay: defaultOffDay !== undefined ? (defaultOffDay != null ? Number(defaultOffDay) : 1) : existing.defaultOffDay,
         dateOfBirth: dateOfBirth !== undefined ? (dateOfBirth ? new Date(dateOfBirth) : null) : existing.dateOfBirth,
         gender: gender !== undefined ? gender : existing.gender,
         maritalStatus: maritalStatus !== undefined ? maritalStatus : existing.maritalStatus,

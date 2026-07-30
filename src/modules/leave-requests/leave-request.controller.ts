@@ -112,10 +112,54 @@ export const submitLeaveRequest = asyncHandler(async (req: Request, res: Respons
   const end   = new Date(endDate + 'T00:00:00Z');
   if (end < start) throw new ApiError('endDate must be >= startDate', 400);
 
-  const diffMs = Math.abs(end.getTime() - start.getTime());
-  const totalDays = Math.round(diffMs / (24 * 60 * 60 * 1000)) + 1;
-
   const userId = req.user!.id;
+
+  // 1. Fetch user's HR profile defaultOffDay (0=Sun..6=Sat, default: 1 = Monday)
+  const emp = await prisma.employee.findFirst({ where: { userId } });
+  const userDefaultOff = emp?.defaultOffDay ?? 1;
+
+  // 2. Fetch all published schedules for this user that cover the leave period
+  const userSchedules = await prisma.staffSchedule.findMany({
+    where: { userId, status: 'published' },
+    include: { shifts: true },
+  });
+
+  let totalDays = 0;
+  let curMs = start.getTime();
+  const endMs = end.getTime();
+
+  while (curMs <= endMs) {
+    const curDate = new Date(curMs);
+    const jsDay = curDate.getUTCDay(); // 0=Sun..6=Sat
+
+    // Calculate weekStart (Monday) for curDate
+    const diff = jsDay === 0 ? -6 : 1 - jsDay;
+    const mondayMs = curMs + diff * 86_400_000;
+    const weekStartStr = new Date(mondayMs).toISOString().split('T')[0];
+    const dayIndex = jsDay === 0 ? 6 : jsDay - 1; // 0=Mon..6=Sun
+
+    const matchingSched = userSchedules.find(s => s.weekStart === weekStartStr);
+
+    let isOffDay = false;
+    if (matchingSched) {
+      const shift = matchingSched.shifts.find(s => s.dayIndex === dayIndex);
+      if (shift?.shiftType === 'off') {
+        isOffDay = true;
+      }
+    } else {
+      if (jsDay === userDefaultOff) {
+        isOffDay = true;
+      }
+    }
+
+    if (!isOffDay) {
+      totalDays++;
+    }
+
+    curMs += 86_400_000;
+  }
+
+  if (totalDays === 0) totalDays = 1;
   if (leaveType !== 'emergency') {
     const balance = await prisma.leaveBalance.upsert({
       where: { userId_year: { userId, year: currentYear() } },
@@ -215,62 +259,6 @@ export const reviewLeaveRequest = asyncHandler(async (req: Request, res: Respons
           where: { id: bal.id },
           data: { [field]: newUsed },
         });
-      }
-
-      // Sync employee schedule shifts to 'off' for the entire approved leave period
-      const startMs = new Date(`${existing.startDate}T00:00:00Z`).getTime();
-      const endMs = new Date(`${existing.endDate}T00:00:00Z`).getTime();
-      let curMs = startMs;
-      const daysToOff: { weekStart: string; dayIndex: number }[] = [];
-
-      while (curMs <= endMs) {
-        const curDate = new Date(curMs);
-        const day = curDate.getUTCDay(); // 0=Sun..6=Sat
-        const diff = day === 0 ? -6 : 1 - day;
-        const mondayMs = curMs + diff * 86_400_000;
-        const weekStart = new Date(mondayMs).toISOString().split('T')[0];
-        const dayIndex = day === 0 ? 6 : day - 1;
-
-        daysToOff.push({ weekStart, dayIndex });
-        curMs += 86_400_000;
-      }
-
-      const byWeek: Record<string, number[]> = {};
-      for (const item of daysToOff) {
-        if (!byWeek[item.weekStart]) byWeek[item.weekStart] = [];
-        if (!byWeek[item.weekStart].includes(item.dayIndex)) {
-          byWeek[item.weekStart].push(item.dayIndex);
-        }
-      }
-
-      for (const [wStart, dayIndices] of Object.entries(byWeek)) {
-        const schedule = await tx.staffSchedule.findFirst({
-          where: { userId: existing.userId, weekStart: wStart },
-        });
-
-        if (!schedule) {
-          const createdSched = await tx.staffSchedule.create({
-            data: {
-              userId: existing.userId,
-              outletId: existing.outletId,
-              weekStart: wStart,
-              status: 'published',
-            },
-          });
-          const defaultShifts = Array.from({ length: 7 }, (_, i) => ({
-            scheduleId: createdSched.id,
-            dayIndex: i,
-            shiftType: 'off',
-            startTime: null,
-            endTime: null,
-          }));
-          await tx.scheduleShift.createMany({ data: defaultShifts });
-        } else {
-          await tx.scheduleShift.updateMany({
-            where: { scheduleId: schedule.id, dayIndex: { in: dayIndices } },
-            data: { shiftType: 'off', startTime: null, endTime: null },
-          });
-        }
       }
     }
 
