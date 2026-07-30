@@ -83,6 +83,26 @@ export function setupSelfOrderNamespace(io: SocketServer): void {
       const state = tableStates.get(tableId);
       if (!state) { ack?.({ error: 'No active session for this table' }); return; }
       if (state.hostSocketId === socket.id) { ack?.({ error: 'Already host' }); return; }
+
+      // The recorded host's socket may no longer be connected — e.g. a stale
+      // slot left behind by a table-free path that doesn't call
+      // clearSelfOrderTableState (WaiterPanel's moveTableSession, or the admin
+      // TableLayout table editor), or simply a dropped connection. If so, there
+      // is no one left who could ever approve a pending request, so promote
+      // the requester immediately instead of leaving them stuck forever.
+      // `nsp.sockets` is Socket.IO's own live registry of connected sockets in
+      // this namespace — a reliable, no-extra-state way to prove liveness.
+      if (!nsp.sockets.has(state.hostSocketId)) {
+        const newToken = randomUUID();
+        state.hostSocketId = socket.id;
+        state.hostSessionToken = newToken;
+        state.pendingRequest = null;
+        socket.data.role = 'host';
+        nsp.to(socket.id).emit('role:changed', { role: 'host', sessionToken: newToken });
+        ack?.({ sent: true });
+        return;
+      }
+
       state.pendingRequest = { requesterSocketId: socket.id };
       nsp.to(state.hostSocketId).emit('host-request');
       ack?.({ sent: true });

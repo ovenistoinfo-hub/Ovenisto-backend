@@ -23,12 +23,25 @@ const createOrderLimiter = rateLimit({
   message: { success: false, error: 'Too many orders placed — please wait a moment and try again.' },
 });
 
+// customer-lookup returns a phone -> name match, which is a real customer PII
+// disclosure risk if left unthrottled (it's public, no JWT, by design). This is
+// a read-only autocomplete-style call the entry gate makes once per "Continue
+// to Menu" click (not per keystroke), so a modest per-IP window stops a bulk
+// phone-number-sweep without affecting a genuine customer.
+const customerLookupLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'Too many lookups — please wait a moment and try again.' },
+});
+
 // Deliberately public — no `authenticate` on this router. A customer scanning a
 // QR code has no JWT. Every handler re-derives outletId from the scanned table;
 // nothing here trusts client-sent scope.
 selfOrderRouter.get('/table/:tableId', getTableForSelfOrder);
 selfOrderRouter.get('/menu', getSelfOrderMenu);
-selfOrderRouter.get('/customer-lookup', lookupCustomerByPhone);
+selfOrderRouter.get('/customer-lookup', customerLookupLimiter, lookupCustomerByPhone);
 selfOrderRouter.post('/orders', createOrderLimiter, validateRequest({ body: createSelfOrderSchema }), createSelfOrder);
 selfOrderRouter.get('/orders/:id/status', getSelfOrderStatus);
 

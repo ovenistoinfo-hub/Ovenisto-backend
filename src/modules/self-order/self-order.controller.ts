@@ -38,14 +38,24 @@ export const getTableForSelfOrder = asyncHandler(async (req: Request, res: Respo
 /** GET /api/self-order/customer-lookup?phone=<digits> — UX-only lookup for the
  *  entry-gate's "keep this name?" prompt. Never a security/trust boundary —
  *  createSelfOrder independently re-derives the same lookup at order-creation
- *  time and does not trust anything about how the client got here. */
+ *  time and does not trust anything about how the client got here.
+ *
+ *  Public + unauthenticated by design (a customer scanning a QR has no JWT),
+ *  so this is rate-limited (customerLookupLimiter in self-order.routes.ts) and
+ *  requires a near-complete phone match: a low-digit `contains` substring
+ *  match would let unlimited anonymous callers confirm whether an arbitrary
+ *  partial phone number belongs to a known customer and get back their real
+ *  name — a PII disclosure risk. 11 digits is this project's own established
+ *  complete-phone-number convention (see SelfOrder.tsx's entry-gate
+ *  validation, `cleanPhone.length === 11`); requiring an exact match at that
+ *  length (not a substring) closes the substring-oracle angle too. */
 export const lookupCustomerByPhone = asyncHandler(async (req: Request, res: Response) => {
   const cleanPhone = String(req.query.phone || '').replace(/\D/g, '');
-  if (cleanPhone.length < 7) {
+  if (cleanPhone.length < 10) {
     res.json(ApiResponse.success({ exists: false }));
     return;
   }
-  const customer = await prisma.customer.findFirst({ where: { phone: { contains: cleanPhone } } });
+  const customer = await prisma.customer.findFirst({ where: { phone: { equals: cleanPhone } } });
   res.json(ApiResponse.success(customer ? { exists: true, name: customer.name } : { exists: false }));
 });
 
