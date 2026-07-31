@@ -14,12 +14,13 @@
 import type { Server as SocketServer, Namespace } from 'socket.io';
 import { randomUUID } from 'crypto';
 import { prisma } from '../../config/database.js';
-import { getIO } from '../../socket.js';
+import { getIO, emitCallWaiterEvent } from '../../socket.js';
 
 interface TableSocketState {
   hostSocketId: string;
   hostSessionToken: string;
   pendingRequest: { requesterSocketId: string } | null;
+  guestCount: number | null;
 }
 
 const tableStates = new Map<string, TableSocketState>();
@@ -57,7 +58,7 @@ export function setupSelfOrderNamespace(io: SocketServer): void {
 
         if (!state) {
           const sessionToken = randomUUID();
-          tableStates.set(tableId, { hostSocketId: socket.id, hostSessionToken: sessionToken, pendingRequest: null });
+          tableStates.set(tableId, { hostSocketId: socket.id, hostSessionToken: sessionToken, pendingRequest: null, guestCount: null });
           socket.data.role = 'host';
           ack?.({ role: 'host', sessionToken });
           return;
@@ -69,6 +70,13 @@ export function setupSelfOrderNamespace(io: SocketServer): void {
           state.hostSocketId = socket.id;
           socket.data.role = 'host';
           ack?.({ role: 'host', sessionToken: state.hostSessionToken });
+          // A takeover request may have arrived while this host was
+          // transiently disconnected (e.g. a backgrounded mobile tab) — a
+          // fire-and-forget emit made at that moment would otherwise be lost
+          // forever. Replay it now that the host is back.
+          if (state.pendingRequest) {
+            nsp.to(socket.id).emit('host-request');
+          }
           return;
         }
 
@@ -76,6 +84,16 @@ export function setupSelfOrderNamespace(io: SocketServer): void {
         ack?.({ role: 'viewer' });
       }
     );
+
+    socket.on('update-guest-count', (payload: { guestCount?: number }) => {
+      const tableId = socket.data.tableId as string | undefined;
+      if (!tableId) return;
+      const state = tableStates.get(tableId);
+      if (!state || state.hostSocketId !== socket.id) return;
+      if (typeof payload?.guestCount === 'number' && payload.guestCount >= 1) {
+        state.guestCount = payload.guestCount;
+      }
+    });
 
     socket.on('request-host', (_payload: unknown, ack?: (res: { sent: true } | { error: string }) => void) => {
       const tableId = socket.data.tableId as string | undefined;
@@ -98,7 +116,7 @@ export function setupSelfOrderNamespace(io: SocketServer): void {
         state.hostSessionToken = newToken;
         state.pendingRequest = null;
         socket.data.role = 'host';
-        nsp.to(socket.id).emit('role:changed', { role: 'host', sessionToken: newToken });
+        nsp.to(socket.id).emit('role:changed', { role: 'host', sessionToken: newToken, guestCount: state.guestCount });
         ack?.({ sent: true });
         return;
       }
@@ -125,8 +143,20 @@ export function setupSelfOrderNamespace(io: SocketServer): void {
       const newToken = randomUUID();
       state.hostSocketId = requesterSocketId;
       state.hostSessionToken = newToken;
-      nsp.to(requesterSocketId).emit('role:changed', { role: 'host', sessionToken: newToken });
+      nsp.to(requesterSocketId).emit('role:changed', { role: 'host', sessionToken: newToken, guestCount: state.guestCount });
       nsp.to(socket.id).emit('role:changed', { role: 'viewer' });
+    });
+
+    socket.on('call-waiter', async () => {
+      const tableId = socket.data.tableId as string | undefined;
+      if (!tableId) return;
+      try {
+        const table = await prisma.restaurantTable.findUnique({ where: { id: tableId } });
+        if (!table?.outletId) return;
+        emitCallWaiterEvent({ tableId: table.id, tableNumber: table.number }, table.outletId);
+      } catch {
+        // Real-time delivery is non-critical; swallow so the socket connection is unaffected.
+      }
     });
 
     socket.on('disconnect', () => {

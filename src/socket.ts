@@ -161,3 +161,10 @@ export function emitPurchaseRequestEvent(
 ): void {
   emitToOutlets(event, payload, outletIds);
 }
+
+/** Push a "customer needs attention" notification to the table's outlet staff —
+ *  triggered by the self-order "Call Waiter" button. Not an order/table/reservation
+ *  change, so it gets its own minimal event rather than overloading an existing type. */
+export function emitCallWaiterEvent(payload: unknown, outletId: string): void {
+  emitToOutlets('call-waiter', payload, [outletId]);
+}
