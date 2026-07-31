@@ -147,6 +147,7 @@ model Employee {
   rate         Decimal  @db.Decimal(10, 2)
   payFrequency String?  @db.VarChar(20) // Weekly | BiWeekly | Monthly
   penaltyFee   Decimal? @db.Decimal(10, 2)
+  defaultOffDay Int?    @default(1) // 0=Sunday, 1=Monday, 2=Tuesday, 3=Wednesday, 4=Thursday, 5=Friday, 6=Saturday
 
   // Biographical
   dateOfBirth   DateTime?
@@ -1504,12 +1505,16 @@ model PaymentLog {
   rate         Decimal? @db.Decimal(10, 2) // snapshot of Employee.rate at time of payment
   unitsWorked  Decimal? @db.Decimal(10, 2) // hours (Hourly) or shift/day count (Daily|PerShift); null for Monthly
   absentDays   Int?     // absence count used to compute `penalties` for this period
-  notes      String?  // Optional pay details or reward description
-  paidAt     DateTime @default(now())
-  paidById   String
-  paidBy     User     @relation("PaymentLogPaidBy", fields: [paidById], references: [id])
+  notes        String?  // Optional pay details or reward description
+  advanceAmount Decimal @default(0) @db.Decimal(10, 2)
+  isAdvance     Boolean  @default(false)
+  paidAt        DateTime @default(now())
+  paidById      String
+  paidBy        User     @relation("PaymentLogPaidBy", fields: [paidById], references: [id])
 
-  @@unique([employeeId, startDate, endDate])
+  @@index([employeeId])
+  @@index([startDate, endDate])
+  @@unique([employeeId, startDate, endDate, isAdvance])
   @@map("payment_logs")
 }
 

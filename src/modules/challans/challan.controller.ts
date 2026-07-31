@@ -11,7 +11,7 @@ import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { computeChallanSettlement } from './challan.helpers.js';
 import { getChallanScopeFilter } from '../warehouse/warehouse.access.js';
 import { emitChallanEvent } from '../../socket.js';
-import { autoProcessExpiredBatches } from '../stock/autoExpiry.js';
+import { autoProcessExpiredBatches, isStockBatchExpired } from '../stock/autoExpiry.js';
 
 // B4b: throw 404 if the acting outlet owns neither warehouse of this challan.
 // scope === null (admins, central main-warehouse staff) → no restriction.
@@ -421,13 +421,25 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
   });
   const ingredientMap = new Map(ingredientsData.map(ig => [ig.id, ig]));
 
-  // 2. Fetch source warehouse batches outside transaction
+  // 2. Fetch source warehouse batches outside transaction (only unexpired batches)
+  const now = new Date();
   const sourceBatches = await prisma.stockBatch.findMany({
     where: { warehouseId: challan.fromWarehouseId, ingredientId: { in: itemIngredientIds } },
+    include: { ingredient: { select: { shelfLifeHours: true } } },
     orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }],
   });
-  const batchesByIngredient = new Map<string, typeof sourceBatches>();
-  for (const batch of sourceBatches) {
+  // Exclude expired batches so their expired expiryDate is never copied to newly transferred stock
+  const validSourceBatches = sourceBatches.filter((b) =>
+    !isStockBatchExpired(
+      b.createdAt,
+      b.expiryDate,
+      b.shelfLifeMinutes,
+      b.ingredient?.shelfLifeHours ?? null,
+      now
+    )
+  );
+  const batchesByIngredient = new Map<string, typeof validSourceBatches>();
+  for (const batch of validSourceBatches) {
     if (!batchesByIngredient.has(batch.ingredientId)) {
       batchesByIngredient.set(batch.ingredientId, []);
     }

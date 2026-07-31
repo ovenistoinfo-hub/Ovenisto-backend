@@ -108,20 +108,58 @@ export const submitLeaveRequest = asyncHandler(async (req: Request, res: Respons
   const validTypes = ['casual', 'sick', 'annual', 'emergency'];
   if (!validTypes.includes(leaveType)) throw new ApiError('Invalid leave type', 400);
 
-  const start = new Date(startDate);
-  const end   = new Date(endDate);
+  const start = new Date(startDate + 'T00:00:00Z');
+  const end   = new Date(endDate + 'T00:00:00Z');
   if (end < start) throw new ApiError('endDate must be >= startDate', 400);
 
-  let totalDays = 0;
-  const d = new Date(start);
-  while (d <= end) {
-    const day = d.getDay();
-    if (day !== 0 && day !== 6) totalDays++;
-    d.setDate(d.getDate() + 1);
-  }
-  if (totalDays === 0) totalDays = 1;
-
   const userId = req.user!.id;
+
+  // 1. Fetch user's HR profile defaultOffDay (0=Sun..6=Sat, default: 1 = Monday)
+  const emp = await prisma.employee.findFirst({ where: { userId } });
+  const userDefaultOff = emp?.defaultOffDay ?? 1;
+
+  // 2. Fetch all published schedules for this user that cover the leave period
+  const userSchedules = await prisma.staffSchedule.findMany({
+    where: { userId, status: 'published' },
+    include: { shifts: true },
+  });
+
+  let totalDays = 0;
+  let curMs = start.getTime();
+  const endMs = end.getTime();
+
+  while (curMs <= endMs) {
+    const curDate = new Date(curMs);
+    const jsDay = curDate.getUTCDay(); // 0=Sun..6=Sat
+
+    // Calculate weekStart (Monday) for curDate
+    const diff = jsDay === 0 ? -6 : 1 - jsDay;
+    const mondayMs = curMs + diff * 86_400_000;
+    const weekStartStr = new Date(mondayMs).toISOString().split('T')[0];
+    const dayIndex = jsDay === 0 ? 6 : jsDay - 1; // 0=Mon..6=Sun
+
+    const matchingSched = userSchedules.find(s => s.weekStart === weekStartStr);
+
+    let isOffDay = false;
+    if (matchingSched) {
+      const shift = matchingSched.shifts.find(s => s.dayIndex === dayIndex);
+      if (shift?.shiftType === 'off') {
+        isOffDay = true;
+      }
+    } else {
+      if (jsDay === userDefaultOff) {
+        isOffDay = true;
+      }
+    }
+
+    if (!isOffDay) {
+      totalDays++;
+    }
+
+    curMs += 86_400_000;
+  }
+
+  if (totalDays === 0) totalDays = 1;
   if (leaveType !== 'emergency') {
     const balance = await prisma.leaveBalance.upsert({
       where: { userId_year: { userId, year: currentYear() } },
@@ -133,9 +171,16 @@ export const submitLeaveRequest = asyncHandler(async (req: Request, res: Respons
     if (usedField in { annualUsed: 1, sickUsed: 1, casualUsed: 1 }) {
       const used = balance[usedField] as number;
       const total = balance[totalField] as number;
-      if (used + totalDays > total) {
+      const remaining = Math.max(0, total - used);
+      if (remaining <= 0) {
         throw new ApiError(
-          `Insufficient ${leaveType} leave balance (${total - used} days left)`,
+          `You have exhausted your ${leaveType} leave balance (0 days left).`,
+          400,
+        );
+      }
+      if (totalDays > remaining) {
+        throw new ApiError(
+          `Insufficient ${leaveType} leave balance (only ${remaining} day${remaining === 1 ? '' : 's'} left, but requested ${totalDays} days).`,
           400,
         );
       }
@@ -200,11 +245,19 @@ export const reviewLeaveRequest = asyncHandler(async (req: Request, res: Respons
     if (action === 'approve') {
       const year = currentYear();
       const field = `${existing.leaveType}Used` as 'annualUsed' | 'sickUsed' | 'casualUsed';
+      const totalField = existing.leaveType as 'annual' | 'sick' | 'casual';
       if (field in { annualUsed: 1, sickUsed: 1, casualUsed: 1 }) {
-        await tx.leaveBalance.upsert({
+        const bal = await tx.leaveBalance.upsert({
           where: { userId_year: { userId: existing.userId, year } },
-          update: { [field]: { increment: existing.totalDays } },
-          create: { userId: existing.userId, year, [field]: existing.totalDays },
+          update: {},
+          create: { userId: existing.userId, year },
+        });
+        const currentUsed = bal[field] as number;
+        const totalAllowed = bal[totalField] as number;
+        const newUsed = Math.min(totalAllowed, currentUsed + existing.totalDays);
+        await tx.leaveBalance.update({
+          where: { id: bal.id },
+          data: { [field]: newUsed },
         });
       }
     }

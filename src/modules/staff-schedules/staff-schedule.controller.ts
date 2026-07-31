@@ -53,6 +53,14 @@ export const saveSchedule = asyncHandler(async (req: Request, res: Response) => 
 
   const outletId = resolveCreateOutlet(req);
 
+  let settings = await prisma.settings.findFirst({
+    where: { outletId: outletId || undefined }
+  });
+  if (!settings) {
+    settings = await prisma.settings.findFirst();
+  }
+  const shiftConfig = (settings?.shiftConfig as Record<string, { start?: string; end?: string }>) ?? {};
+
   const schedule = await prisma.$transaction(async (tx) => {
     const existing = await tx.staffSchedule.findFirst({
       where: { userId, weekStart },
@@ -71,8 +79,8 @@ export const saveSchedule = asyncHandler(async (req: Request, res: Response) => 
           scheduleId: existing.id,
           dayIndex: Number(s.dayIndex),
           shiftType: s.shiftType,
-          startTime: SHIFT_TEMPLATES[s.shiftType]?.startTime ?? null,
-          endTime:   SHIFT_TEMPLATES[s.shiftType]?.endTime   ?? null,
+          startTime: shiftConfig[s.shiftType]?.start ?? SHIFT_TEMPLATES[s.shiftType]?.startTime ?? null,
+          endTime:   shiftConfig[s.shiftType]?.end   ?? SHIFT_TEMPLATES[s.shiftType]?.endTime   ?? null,
         })),
       });
       return tx.staffSchedule.findUnique({
@@ -88,8 +96,8 @@ export const saveSchedule = asyncHandler(async (req: Request, res: Response) => 
           scheduleId: created.id,
           dayIndex: Number(s.dayIndex),
           shiftType: s.shiftType,
-          startTime: SHIFT_TEMPLATES[s.shiftType]?.startTime ?? null,
-          endTime:   SHIFT_TEMPLATES[s.shiftType]?.endTime   ?? null,
+          startTime: shiftConfig[s.shiftType]?.start ?? SHIFT_TEMPLATES[s.shiftType]?.startTime ?? null,
+          endTime:   shiftConfig[s.shiftType]?.end   ?? SHIFT_TEMPLATES[s.shiftType]?.endTime   ?? null,
         })),
       });
       return tx.staffSchedule.findUnique({
