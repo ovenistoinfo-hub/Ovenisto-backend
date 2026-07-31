@@ -174,15 +174,23 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
   const computedTax = Math.round(computedSubtotal * (taxRatePercent / 100));
   const computedTotal = computedSubtotal + computedTax;
 
-  // Find-or-link a Customer record by phone. Deliberately narrower than the
-  // admin createCustomer endpoint: this NEVER updates an existing customer's
-  // saved name — only Order.customerName (a snapshot) reflects whatever name
-  // was confirmed at the entry gate. See Global Constraints.
+  // Find-or-link a Customer record by phone. The entry gate's name-conflict
+  // dialog (SelfOrder.tsx) already asks the customer to confirm which name to
+  // use BEFORE this request is ever sent — so by the time createSelfOrder
+  // runs, customerName is the customer's confirmed choice. Update the matched
+  // customer's name to it, mirroring the admin createCustomer endpoint's own
+  // on-match behavior (this reverses an earlier "never overwrite" rule for
+  // this flow specifically, per explicit product decision — see the design
+  // doc dated 2026-07-31 for the rationale).
   const cleanCustomerPhone = customerPhone.trim().replace(/\D/g, '');
   let customer = cleanCustomerPhone.length >= 7
     ? await prisma.customer.findFirst({ where: { phone: { contains: cleanCustomerPhone } } })
     : null;
-  if (!customer) {
+  if (customer) {
+    if (customer.name !== customerName.trim()) {
+      customer = await prisma.customer.update({ where: { id: customer.id }, data: { name: customerName.trim() } });
+    }
+  } else {
     customer = await prisma.customer.create({
       data: { name: customerName.trim(), phone: cleanCustomerPhone || customerPhone.trim(), customerType: 'walk-in' },
     });
@@ -222,6 +230,7 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
 
   emitOrderEvent('order:created', mapOrderOut(order));
   emitSelfOrderTableEvent(table.id, 'order:updated', {
+    orderId: order.id,
     status: 'pending',
     accepted: false,
     paid: false,
@@ -240,6 +249,7 @@ export const getSelfOrderStatus = asyncHandler(async (req: Request, res: Respons
     : 'confirmed';
 
   res.json(ApiResponse.success({
+    orderId: order.id,
     status,
     accepted: !!order.acceptedById,
     rejectionReason: order.rejectionReason ?? undefined,

@@ -643,6 +643,7 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
   }
   if (order.type === 'SELF_ORDER') {
     await emitSelfOrderEventForOrder(order, 'order:updated', {
+      orderId: order.id,
       status: order.status === 'CANCELLED' ? 'cancelled' : 'confirmed',
       accepted: !!order.acceptedById,
       rejectionReason: order.rejectionReason ?? undefined,
@@ -704,6 +705,7 @@ export const acceptSelfOrder = asyncHandler(async (req: Request, res: Response) 
 
   if (updated) {
     await emitSelfOrderEventForOrder(updated, 'order:updated', {
+      orderId: updated.id,
       status: 'confirmed',
       accepted: true,
       paid: updated.status === 'COMPLETED',
@@ -739,6 +741,7 @@ export const rejectSelfOrder = asyncHandler(async (req: Request, res: Response) 
   });
 
   await emitSelfOrderEventForOrder(updated, 'order:updated', {
+    orderId: updated.id,
     status: 'cancelled',
     accepted: false,
     rejectionReason: updated.rejectionReason ?? undefined,
