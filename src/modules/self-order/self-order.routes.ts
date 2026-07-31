@@ -6,7 +6,7 @@ import { authenticate } from '../../middleware/authenticate.js';
 import { authorize } from '../../middleware/authorize.js';
 import {
   getTableForSelfOrder, getSelfOrderMenu, createSelfOrder, getSelfOrderStatus,
-  lookupCustomerByPhone, notifySelfOrderSessionEnded,
+  lookupCustomerByPhone, notifySelfOrderSessionEnded, getActiveOrdersForTable,
 } from './self-order.controller.js';
 
 export const selfOrderRouter = Router();
@@ -44,6 +44,7 @@ selfOrderRouter.get('/menu', getSelfOrderMenu);
 selfOrderRouter.get('/customer-lookup', customerLookupLimiter, lookupCustomerByPhone);
 selfOrderRouter.post('/orders', createOrderLimiter, validateRequest({ body: createSelfOrderSchema }), createSelfOrder);
 selfOrderRouter.get('/orders/:id/status', getSelfOrderStatus);
+selfOrderRouter.get('/table/:tableId/active-orders', getActiveOrdersForTable);
 
 // The one staff-authenticated exception in this otherwise-public router: called
 // by WaiterPanel's End Sitting action to notify the table's live self-order

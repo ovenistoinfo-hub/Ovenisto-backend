@@ -183,9 +183,19 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
   // on-match behavior (this reverses an earlier "never overwrite" rule for
   // this flow specifically, per explicit product decision — see the design
   // doc dated 2026-07-31 for the rationale).
+  //
+  // The match itself MUST use the same exact-equals + 10-digit-minimum rule
+  // as lookupCustomerByPhone above (not a `contains` substring match): this
+  // endpoint is public/unauthenticated, and a looser matcher would let an
+  // arbitrary caller rename any customer whose stored phone merely contains a
+  // short digit sequence they send — a phone short enough to skip the
+  // confirmation dialog entirely (dialog requires 10+ digits) could still
+  // reach this write path unconfirmed. Keeping both matchers identical closes
+  // that gap: whatever the dialog would (or wouldn't) have shown the customer
+  // is exactly what this lookup will (or won't) match and rename.
   const cleanCustomerPhone = customerPhone.trim().replace(/\D/g, '');
-  let customer = cleanCustomerPhone.length >= 7
-    ? await prisma.customer.findFirst({ where: { phone: { contains: cleanCustomerPhone } } })
+  let customer = cleanCustomerPhone.length >= 10
+    ? await prisma.customer.findFirst({ where: { phone: { equals: cleanCustomerPhone } } })
     : null;
   if (customer) {
     if (customer.name !== customerName.trim()) {
@@ -256,6 +266,62 @@ export const getSelfOrderStatus = asyncHandler(async (req: Request, res: Respons
     rejectionReason: order.rejectionReason ?? undefined,
     paid: order.status === 'COMPLETED',
   }));
+});
+
+/** GET /api/self-order/table/:tableId/active-orders — lets a device that just
+ *  became host (via take-over promotion, or a fresh join to a table another
+ *  device already ordered at) learn about orders already placed at this
+ *  table this sitting. A promoted device is a genuinely separate device with
+ *  its own empty localStorage for this table — without this, its local
+ *  `orders` list stays empty even though the table has real active orders.
+ *  Scoped to self-order-created rows only (never a POS-placed order — those
+ *  aren't this customer-facing screen's concern) and to orders not yet
+ *  finalized (cancelled/completed): there's no "sitting id" boundary marker
+ *  anywhere in this schema, so a broader fetch would risk pulling in a truly
+ *  stale, already-settled order from an earlier, unrelated sitting at the
+ *  same table (the same gap already accepted/documented for persisted
+ *  sessions in general — this endpoint deliberately doesn't try to solve
+ *  that separately, just to not make it worse). */
+export const getActiveOrdersForTable = asyncHandler(async (req: Request, res: Response) => {
+  const table = await prisma.restaurantTable.findUnique({ where: { id: req.params.tableId } });
+  if (!table) throw ApiError.notFound('Table not found');
+
+  const tableNumber = !isNaN(Number(table.number)) ? Number(table.number) : null;
+  if (tableNumber === null) {
+    res.json(ApiResponse.success([]));
+    return;
+  }
+
+  const orders = await prisma.order.findMany({
+    where: {
+      outletId: table.outletId,
+      tableNumber,
+      orderSource: 'self-order',
+      status: { notIn: ['CANCELLED', 'COMPLETED'] },
+    },
+    include: { items: true },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  res.json(ApiResponse.success(orders.map((order) => ({
+    orderId: order.id,
+    items: order.items.map((item) => ({
+      id: item.id,
+      menuItemId: item.menuItemId,
+      variantId: item.variantId,
+      name: item.name,
+      price: Number(item.price),
+      qty: item.qty,
+      modifiers: item.modifiers,
+    })),
+    status: {
+      orderId: order.id,
+      status: order.status === 'CANCELLED' ? 'cancelled' : order.status === 'PENDING' ? 'pending' : 'confirmed',
+      accepted: !!order.acceptedById,
+      rejectionReason: order.rejectionReason ?? undefined,
+      paid: order.status === 'COMPLETED',
+    },
+  }))));
 });
 
 /** POST /api/self-order/table/:tableId/end-session — staff-authenticated
