@@ -85,6 +85,7 @@ export const getSelfOrderMenu = asyncHandler(async (_req: Request, res: Response
     id: item.id,
     name: item.name,
     price: Number(item.price),
+    image: item.image ?? null,
     category: item.category ? { id: item.category.id, name: item.category.name } : null,
     variants: item.variants.map((v) => ({ id: v.id, name: v.name, price: Number(v.price) })),
     modifiers: item.modifiers
