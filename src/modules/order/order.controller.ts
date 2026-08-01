@@ -673,6 +673,8 @@ export const acceptSelfOrder = asyncHandler(async (req: Request, res: Response) 
     data: {
       acceptedById: req.user?.id || null,
       acceptedByName: req.user?.name || null,
+      staffId: req.user?.id || null,
+      staffName: req.user?.name || null,
     },
   });
 
