@@ -14,9 +14,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **`ApiError` style is per-file, not global.** Some controllers use the constructor
   `throw new ApiError('msg', 404)`; others use statics `ApiError.notFound('msg')`. Match whatever the
   file you're editing already uses — don't introduce the other style.
-- **`vitest` is in `package.json` (`npm test`/`test:watch` exist) but there are zero `*.test.ts` files** —
-  it's not an established pattern here. Verify changes with `npm run typecheck` (tsc --noEmit, must be
-  clean) + `npm run build`. Do **not** author `*.test.ts` here without asking first.
+- **`vitest` covers 11 `*.test.ts` files (growing)**, all colocated in a module's `__tests__/` dir,
+  all pure-logic unit tests against exported helpers with mocked `Request` objects — never a real
+  DB/Prisma call or an actual Express handler invocation. A file named `*.controller.test.ts` can
+  still just be testing one pure exported helper, not real controller/integration/DB testing —
+  none of that exists here. Adding a unit test for a new pure helper matches this pattern; adding
+  a real controller/integration/DB test would not — ask first.
 - **Every module = `*.controller.ts` + `*.routes.ts`**, aggregated in `src/routes/index.ts`. A scoped
   controller only works if its route has `authenticate`/`optionalAuth` — otherwise `req.user` is
   undefined and `resolveOutletScope` silently returns `null` (a real cross-outlet leak; audit the route).
@@ -28,6 +31,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   `@map`'d DB strings (e.g. `OrderType` compares against `'DINE_IN'`, not the mapped value).
 - **Prod DB is Neon** — schema changes go via `npm run db:push` (never `prisma migrate dev`); adding a
   unique constraint needs `--accept-data-loss` even when safe.
+- **`self-order/` is the one public/unauthenticated module** — every other module's routes assume
+  `authenticate` ran. Its two `Customer`-by-phone lookups (`lookupCustomerByPhone`,
+  `createSelfOrder`'s find-or-rename) MUST use the identical matcher (`equals` + 10-digit minimum,
+  never `contains` or a lower floor) — they diverged once and let an unauthenticated caller rename
+  an arbitrary customer (fixed 2026-07-31). See root guide's "Self-Order (QR Ordering) System".
+- **`Order.tableNumber` is a plain copied `Int?`, not a foreign key** to `RestaurantTable.id` — match
+  "orders for this table" queries on `outletId + tableNumber`, never a `tableId` column.
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph
