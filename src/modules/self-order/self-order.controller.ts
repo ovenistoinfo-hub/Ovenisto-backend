@@ -55,7 +55,15 @@ export const lookupCustomerByPhone = asyncHandler(async (req: Request, res: Resp
     res.json(ApiResponse.success({ exists: false }));
     return;
   }
-  const customer = await prisma.customer.findFirst({ where: { phone: { equals: cleanPhone } } });
+  const formattedPhone = cleanPhone.length === 11 ? `${cleanPhone.slice(0, 4)}-${cleanPhone.slice(4)}` : cleanPhone;
+  const customer = await prisma.customer.findFirst({
+    where: {
+      OR: [
+        { phone: { equals: cleanPhone } },
+        { phone: { equals: formattedPhone } },
+      ],
+    },
+  });
   res.json(ApiResponse.success(customer ? { exists: true, name: customer.name } : { exists: false }));
 });
 
@@ -194,16 +202,27 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
   // that gap: whatever the dialog would (or wouldn't) have shown the customer
   // is exactly what this lookup will (or won't) match and rename.
   const cleanCustomerPhone = customerPhone.trim().replace(/\D/g, '');
+  const formattedPhone = cleanCustomerPhone.length === 11 ? `${cleanCustomerPhone.slice(0, 4)}-${cleanCustomerPhone.slice(4)}` : customerPhone.trim();
   let customer = cleanCustomerPhone.length >= 10
-    ? await prisma.customer.findFirst({ where: { phone: { equals: cleanCustomerPhone } } })
+    ? await prisma.customer.findFirst({
+        where: {
+          OR: [
+            { phone: { equals: cleanCustomerPhone } },
+            { phone: { equals: formattedPhone } },
+          ],
+        },
+      })
     : null;
   if (customer) {
-    if (customer.name !== customerName.trim()) {
-      customer = await prisma.customer.update({ where: { id: customer.id }, data: { name: customerName.trim() } });
+    if (customer.name !== customerName.trim() || customer.phone !== formattedPhone) {
+      customer = await prisma.customer.update({
+        where: { id: customer.id },
+        data: { name: customerName.trim(), phone: formattedPhone },
+      });
     }
   } else {
     customer = await prisma.customer.create({
-      data: { name: customerName.trim(), phone: cleanCustomerPhone || customerPhone.trim(), customerType: 'walk-in' },
+      data: { name: customerName.trim(), phone: formattedPhone, customerType: 'walk-in' },
     });
   }
 

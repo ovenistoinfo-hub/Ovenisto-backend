@@ -55,6 +55,33 @@ async function getCustomerStatsMap() {
   return map;
 }
 
+function formatPakistaniPhone(phone: string | null | undefined): string | null {
+  if (!phone) return null;
+  let digits = String(phone).replace(/\D/g, '');
+  if (digits.startsWith('92') && digits.length === 12) {
+    digits = '0' + digits.slice(2);
+  }
+  if (digits.length === 11) {
+    return `${digits.slice(0, 4)}-${digits.slice(4)}`;
+  }
+  return String(phone).trim();
+}
+
+function validateAndFormatPhone(phone: string | null | undefined, required = false): string | null {
+  if (!phone || !String(phone).trim()) {
+    if (required) throw new ApiError('Phone number is required', 400);
+    return null;
+  }
+  let digits = String(phone).replace(/\D/g, '');
+  if (digits.startsWith('92') && digits.length === 12) {
+    digits = '0' + digits.slice(2);
+  }
+  if (digits.length !== 11) {
+    throw new ApiError('Phone number must be exactly 11 digits (e.g. 0300-1234567)', 400);
+  }
+  return `${digits.slice(0, 4)}-${digits.slice(4)}`;
+}
+
 function mapCustomerWithStats(c: any, statsMap?: Record<string, any>) {
   const cleanPhone = c.phone ? c.phone.replace(/\D/g, '') : '';
   const isDummy = !cleanPhone || cleanPhone === '00000000000' || cleanPhone === '11111111111' || cleanPhone === '12345678901';
@@ -65,8 +92,11 @@ function mapCustomerWithStats(c: any, statsMap?: Record<string, any>) {
        statsMap[`name:${c.name.toLowerCase().trim()}`])
     : null;
 
+  const formattedPhone = formatPakistaniPhone(c.phone);
+
   return {
     ...c,
+    phone: formattedPhone || c.phone,
     totalOrders: stat ? stat.totalOrders : (c.totalOrders || 0),
     totalSpent: stat ? Math.round(stat.totalSpent) : Number(c.totalSpent || 0),
     outstandingDue: stat ? Math.round(stat.outstandingDue) : Number(c.outstandingDue || 0),
@@ -134,14 +164,18 @@ export const createCustomer = asyncHandler(async (req: Request, res: Response) =
   const { name, phone, email, address, customerType } = req.body;
   if (!name) throw new ApiError('Name is required', 400);
 
-  const cleanPhone = phone ? String(phone).replace(/\D/g, '') : '';
+  const formattedPhone = phone ? validateAndFormatPhone(phone, false) : null;
+  const cleanPhone = formattedPhone ? formattedPhone.replace(/\D/g, '') : '';
   const isDummyPhone = !cleanPhone || cleanPhone === '00000000000' || cleanPhone === '11111111111' || cleanPhone === '12345678901';
 
   let existing = null;
   if (!isDummyPhone && cleanPhone.length >= 7) {
     existing = await prisma.customer.findFirst({
       where: {
-        phone: { contains: cleanPhone },
+        OR: [
+          { phone: { contains: cleanPhone } },
+          { phone: { equals: formattedPhone || '' } },
+        ],
       },
     });
   }
@@ -159,7 +193,7 @@ export const createCustomer = asyncHandler(async (req: Request, res: Response) =
       where: { id: existing.id },
       data: {
         name: name.trim() || existing.name,
-        phone: phone ? (cleanPhone || String(phone).trim()) : existing.phone,
+        phone: formattedPhone || existing.phone,
         email: email ? email.trim() : existing.email,
         address: address ? address.trim() : existing.address,
         customerType: customerType || existing.customerType,
@@ -171,7 +205,7 @@ export const createCustomer = asyncHandler(async (req: Request, res: Response) =
   const c = await prisma.customer.create({
     data: {
       name: name.trim(),
-      phone: phone ? (cleanPhone || String(phone).trim()) : null,
+      phone: formattedPhone,
       email: email ? email.trim() : null,
       address: address ? address.trim() : null,
       customerType: customerType || 'walk-in',
@@ -182,12 +216,12 @@ export const createCustomer = asyncHandler(async (req: Request, res: Response) =
 
 export const updateCustomer = asyncHandler(async (req: Request, res: Response) => {
   const { name, phone, email, address, customerType } = req.body;
-  const cleanPhone = phone ? String(phone).replace(/\D/g, '') : '';
+  const formattedPhone = phone !== undefined ? (phone ? validateAndFormatPhone(phone, false) : null) : undefined;
   const c = await prisma.customer.update({
     where: { id: req.params.id },
     data: {
       name,
-      phone: phone !== undefined ? (phone ? (cleanPhone || String(phone).trim()) : phone) : undefined,
+      phone: formattedPhone,
       email,
       address,
       customerType,
