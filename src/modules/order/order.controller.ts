@@ -342,7 +342,7 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
   const existing = await prisma.order.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Order not found');
   const scope = resolveOutletScope(req);
-  if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
+  if (scope && existing.outletId && existing.outletId !== scope) throw ApiError.notFound('Order not found');
 
   const {
     customerName, phone, type, status, subtotal, discount, tax, total,
@@ -350,45 +350,50 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
     items, isUrgent, customerType, cashApproved,
   } = req.body;
 
+  const dataToUpdate: any = {};
+  if (customerName !== undefined) dataToUpdate.customerName = customerName || null;
+  if (phone !== undefined) dataToUpdate.phone = phone || null;
+  if (type) dataToUpdate.type = (TYPE_TO_PRISMA[type] ?? type.toUpperCase()) as any;
+  if (status) dataToUpdate.status = (STATUS_TO_PRISMA[status] ?? status.toUpperCase()) as any;
+  if (subtotal !== undefined) dataToUpdate.subtotal = isNaN(Number(subtotal)) ? 0 : Number(subtotal);
+  if (discount !== undefined) dataToUpdate.discount = isNaN(Number(discount)) ? 0 : Number(discount);
+  if (tax !== undefined) dataToUpdate.tax = isNaN(Number(tax)) ? 0 : Number(tax);
+  if (total !== undefined) dataToUpdate.total = isNaN(Number(total)) ? 0 : Number(total);
+  if (paymentMethod !== undefined) dataToUpdate.paymentMethod = paymentMethod || null;
+  if (tableNumber !== undefined) dataToUpdate.tableNumber = tableNumber !== null && !isNaN(Number(tableNumber)) ? Number(tableNumber) : null;
+  if (deliveryAddress !== undefined) dataToUpdate.deliveryAddress = deliveryAddress || null;
+  if (riderId !== undefined) dataToUpdate.riderId = riderId ? String(riderId) : null;
+  if (staffName !== undefined) dataToUpdate.staffName = staffName || null;
+  if (isUrgent !== undefined) dataToUpdate.isUrgent = Boolean(isUrgent);
+  if (customerType !== undefined) dataToUpdate.customerType = customerType || null;
   const order = await prisma.$transaction(async (tx) => {
+    if (cashApproved !== undefined) {
+      try {
+        await tx.$executeRaw`UPDATE "orders" SET "cashApproved" = ${Boolean(cashApproved)} WHERE "id" = ${id}`;
+      } catch (e) {
+        console.error('Failed to update cashApproved via raw SQL:', e);
+      }
+    }
+
     if (Array.isArray(items) && items.length > 0) {
       await tx.orderItem.deleteMany({ where: { orderId: id } });
+      dataToUpdate.items = {
+        create: items.map((item: any) => ({
+          menuItemId: item.menuItemId || null,
+          variantId: item.variantId || null,
+          name: item.name,
+          price: isNaN(Number(item.price)) ? 0 : Number(item.price),
+          qty: isNaN(Number(item.qty)) ? 1 : Number(item.qty),
+          discount: isNaN(Number(item.discount)) ? 0 : Number(item.discount),
+          modifiers: Array.isArray(item.modifiers) ? item.modifiers : [],
+          cookingTime: item.cookingTime != null ? Number(item.cookingTime) : null,
+          notes: item.notes || null,
+        })),
+      };
     }
     return tx.order.update({
       where: { id },
-      data: {
-        ...(customerName !== undefined && { customerName }),
-        ...(phone !== undefined && { phone }),
-        ...(type && { type: (TYPE_TO_PRISMA[type] ?? type.toUpperCase()) as any }),
-        ...(status && { status: (STATUS_TO_PRISMA[status] ?? status.toUpperCase()) as any }),
-        ...(subtotal !== undefined && { subtotal }),
-        ...(discount !== undefined && { discount }),
-        ...(tax !== undefined && { tax }),
-        ...(total !== undefined && { total }),
-        ...(paymentMethod !== undefined && { paymentMethod }),
-        ...(tableNumber !== undefined && { tableNumber: tableNumber !== null && !isNaN(Number(tableNumber)) ? Number(tableNumber) : null }),
-        ...(deliveryAddress !== undefined && { deliveryAddress }),
-        ...(riderId !== undefined && { riderId }),
-        ...(staffName !== undefined && { staffName }),
-        ...(isUrgent !== undefined && { isUrgent }),
-        ...(customerType !== undefined && { customerType }),
-        ...(cashApproved !== undefined && { cashApproved: Boolean(cashApproved) }),
-        ...(Array.isArray(items) && items.length > 0 && {
-          items: {
-            create: items.map((item: any) => ({
-              menuItemId: item.menuItemId || null,
-              variantId: item.variantId || null,
-              name: item.name,
-              price: item.price,
-              qty: item.qty,
-              discount: item.discount ?? 0,
-              modifiers: item.modifiers ?? [],
-              cookingTime: item.cookingTime ?? null,
-              notes: item.notes || null,
-            })),
-          },
-        }),
-      },
+      data: dataToUpdate,
       include: {
         items: {
           include: {
