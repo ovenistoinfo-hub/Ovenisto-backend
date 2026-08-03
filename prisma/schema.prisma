@@ -844,6 +844,7 @@ model Order {
   isUrgent        Boolean     @default(false)
   customerType    String?     @db.VarChar(20) // walk-in, regular, corporate, vip
   orderSource     String?     @db.VarChar(20) // pos, self-order, website, foodpanda, phone
+  cashApproved    Boolean     @default(false)
   guestCount      Int?
   acceptedById    String?
   acceptedByName  String?     @db.VarChar(100)
