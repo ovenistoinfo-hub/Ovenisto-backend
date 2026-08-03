@@ -379,7 +379,7 @@ export const getIngredient = asyncHandler(async (req: Request, res: Response) =>
 
 /** POST /api/inventory/ingredients */
 export const createIngredient = asyncHandler(async (req: Request, res: Response) => {
-  const { name, brand, categoryId, unitId, purchasePrice, currentStock, lowStockLevel, status, supplierId } = req.body;
+  const { name, brand, categoryId, unitId, purchasePrice, currentStock, lowStockLevel, status, supplierId, shelfLifeHours } = req.body;
   if (!name?.trim()) throw ApiError.badRequest('Ingredient name is required');
 
   // Scope checking for supplier if provided
@@ -409,6 +409,7 @@ export const createIngredient = asyncHandler(async (req: Request, res: Response)
       currentStock: currentStock ?? 0,
       lowStockLevel: lowStockLevel ?? 0,
       status: status ?? 'active',
+      shelfLifeHours: shelfLifeHours !== undefined ? (shelfLifeHours !== null ? Number(shelfLifeHours) : null) : null,
       supplierId: isSuperAdmin ? (supplierId || null) : null,
       outletId,
     },
@@ -466,7 +467,7 @@ export const createIngredient = asyncHandler(async (req: Request, res: Response)
 /** PUT /api/inventory/ingredients/:id */
 export const updateIngredient = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { name, brand, categoryId, unitId, purchasePrice, currentStock, lowStockLevel, status, supplierId } = req.body;
+  const { name, brand, categoryId, unitId, purchasePrice, currentStock, lowStockLevel, status, supplierId, shelfLifeHours } = req.body;
 
   const existing = await prisma.ingredient.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Ingredient not found');
@@ -523,6 +524,7 @@ export const updateIngredient = asyncHandler(async (req: Request, res: Response)
       currentStock: currentStock !== undefined ? currentStock : undefined,
       lowStockLevel: (isSuperAdmin && lowStockLevel !== undefined) ? lowStockLevel : undefined,
       status: status !== undefined ? status : undefined,
+      shelfLifeHours: shelfLifeHours !== undefined ? (shelfLifeHours !== null ? Number(shelfLifeHours) : null) : undefined,
       ...(isSuperAdmin && supplierId !== undefined && { supplierId: finalSupplierIdVal }),
     },
     include: {
