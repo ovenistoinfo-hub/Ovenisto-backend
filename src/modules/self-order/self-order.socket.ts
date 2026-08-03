@@ -21,6 +21,14 @@ interface TableSocketState {
   hostSessionToken: string;
   pendingRequest: { requesterSocketId: string } | null;
   guestCount: number | null;
+  /** Opaque id minted fresh whenever a table's self-order state is (re)created
+   *  from scratch — i.e. a genuinely new sitting. Safe to hand to viewers too
+   *  (unlike hostSessionToken, it can't be replayed to claim host) so every
+   *  device, host or viewer, can tell "is this still the sitting I last saw"
+   *  and reset its own stale local data (old orders, old entry-gate answers)
+   *  when it isn't. Untouched across a same-sitting host handoff (takeover
+   *  approval), since that's still the same sitting continuing. */
+  sittingGeneration: string;
 }
 
 const tableStates = new Map<string, TableSocketState>();
@@ -40,8 +48,8 @@ export function setupSelfOrderNamespace(io: SocketServer): void {
         payload: { tableId?: string; sessionToken?: string },
         ack?: (
           res:
-            | { role: 'host'; sessionToken: string }
-            | { role: 'viewer' }
+            | { role: 'host'; sessionToken: string; sittingGeneration: string }
+            | { role: 'viewer'; sittingGeneration: string }
             | { role: 'blocked'; reason: 'table-occupied' }
             | { error: string }
         ) => void
@@ -76,9 +84,10 @@ export function setupSelfOrderNamespace(io: SocketServer): void {
 
         if (!state) {
           const sessionToken = randomUUID();
-          tableStates.set(tableId, { hostSocketId: socket.id, hostSessionToken: sessionToken, pendingRequest: null, guestCount: null });
+          const sittingGeneration = randomUUID();
+          tableStates.set(tableId, { hostSocketId: socket.id, hostSessionToken: sessionToken, pendingRequest: null, guestCount: null, sittingGeneration });
           socket.data.role = 'host';
-          ack?.({ role: 'host', sessionToken });
+          ack?.({ role: 'host', sessionToken, sittingGeneration });
           return;
         }
 
@@ -87,7 +96,7 @@ export function setupSelfOrderNamespace(io: SocketServer): void {
           // re-creates the socket) — re-recognize as host, don't demote.
           state.hostSocketId = socket.id;
           socket.data.role = 'host';
-          ack?.({ role: 'host', sessionToken: state.hostSessionToken });
+          ack?.({ role: 'host', sessionToken: state.hostSessionToken, sittingGeneration: state.sittingGeneration });
           // A takeover request may have arrived while this host was
           // transiently disconnected (e.g. a backgrounded mobile tab) — a
           // fire-and-forget emit made at that moment would otherwise be lost
@@ -99,7 +108,7 @@ export function setupSelfOrderNamespace(io: SocketServer): void {
         }
 
         socket.data.role = 'viewer';
-        ack?.({ role: 'viewer' });
+        ack?.({ role: 'viewer', sittingGeneration: state.sittingGeneration });
       }
     );
 
@@ -134,7 +143,7 @@ export function setupSelfOrderNamespace(io: SocketServer): void {
         state.hostSessionToken = newToken;
         state.pendingRequest = null;
         socket.data.role = 'host';
-        nsp.to(socket.id).emit('role:changed', { role: 'host', sessionToken: newToken, guestCount: state.guestCount });
+        nsp.to(socket.id).emit('role:changed', { role: 'host', sessionToken: newToken, guestCount: state.guestCount, sittingGeneration: state.sittingGeneration });
         ack?.({ sent: true });
         return;
       }
@@ -161,8 +170,8 @@ export function setupSelfOrderNamespace(io: SocketServer): void {
       const newToken = randomUUID();
       state.hostSocketId = requesterSocketId;
       state.hostSessionToken = newToken;
-      nsp.to(requesterSocketId).emit('role:changed', { role: 'host', sessionToken: newToken, guestCount: state.guestCount });
-      nsp.to(socket.id).emit('role:changed', { role: 'viewer' });
+      nsp.to(requesterSocketId).emit('role:changed', { role: 'host', sessionToken: newToken, guestCount: state.guestCount, sittingGeneration: state.sittingGeneration });
+      nsp.to(socket.id).emit('role:changed', { role: 'viewer', sittingGeneration: state.sittingGeneration });
     });
 
     socket.on('call-waiter', async () => {
