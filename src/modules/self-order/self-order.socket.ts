@@ -51,6 +51,7 @@ export function setupSelfOrderNamespace(io: SocketServer): void {
             | { role: 'host'; sessionToken: string; sittingGeneration: string }
             | { role: 'viewer'; sittingGeneration: string }
             | { role: 'blocked'; reason: 'table-occupied' }
+            | { role: 'ended' }
             | { error: string }
         ) => void
       ) => {
@@ -66,6 +67,14 @@ export function setupSelfOrderNamespace(io: SocketServer): void {
         }
 
         const state = tableStates.get(tableId);
+
+        // If no session exists, but the device sent an old sessionToken, it means
+        // this device's sitting was already ended by staff on the backend.
+        // Respond with 'ended' so the device knows to display the ended screen.
+        if (!state && payload.sessionToken) {
+          ack?.({ role: 'ended' });
+          return;
+        }
 
         // No self-order session exists yet for this table. If it's already
         // occupied, that occupancy came from a staff-direct sitting (POS/Waiter
@@ -237,4 +246,9 @@ export async function emitSelfOrderEventForOrder(
  *  assignment rather than being blocked by a stale entry. */
 export function clearSelfOrderTableState(tableId: string): void {
   tableStates.delete(tableId);
+  try {
+    getIO()?.of('/self-order').in(roomName(tableId)).socketsLeave(roomName(tableId));
+  } catch {
+    // Best-effort
+  }
 }
