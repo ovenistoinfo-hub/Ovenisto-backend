@@ -843,6 +843,11 @@ model Order {
   isUrgent        Boolean     @default(false)
   customerType    String?     @db.VarChar(20) // walk-in, regular, corporate, vip
   orderSource     String?     @db.VarChar(20) // pos, self-order, website, foodpanda, phone
+  cashApproved    Boolean     @default(false)
+  acceptedById    String?
+  acceptedByName  String?     @db.VarChar(100)
+  guestCount      Int?
+  rejectionReason String?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 

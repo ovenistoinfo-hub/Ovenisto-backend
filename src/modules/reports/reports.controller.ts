@@ -31,7 +31,7 @@ function getParams(req: Request) {
 export const getSalesReport = asyncHandler(async (req: Request, res: Response) => {
   const { gte, lte, outletId } = getParams(req);
   const baseWhere = buildOrderWhere(gte, lte, outletId);
-  const completedWhere = { ...baseWhere, status: COMPLETED as never };
+  const completedWhere = { ...baseWhere, status: COMPLETED as never, cashApproved: true };
 
   const [totalOrders, completed] = await Promise.all([
     prisma.order.count({ where: baseWhere }),
@@ -68,7 +68,7 @@ export const getSalesReport = asyncHandler(async (req: Request, res: Response) =
 /** GET /api/reports/pnl */
 export const getPnlReport = asyncHandler(async (req: Request, res: Response) => {
   const { gte, lte, outletId } = getParams(req);
-  const completedWhere = { ...buildOrderWhere(gte, lte, outletId), status: COMPLETED as never };
+  const completedWhere = { ...buildOrderWhere(gte, lte, outletId), status: COMPLETED as never, cashApproved: true };
 
   const completed = await prisma.order.findMany({
     where: completedWhere,
@@ -143,7 +143,7 @@ export const getPnlReport = asyncHandler(async (req: Request, res: Response) => 
 /** GET /api/reports/items */
 export const getItemsReport = asyncHandler(async (req: Request, res: Response) => {
   const { gte, lte, outletId } = getParams(req);
-  const completedWhere = { ...buildOrderWhere(gte, lte, outletId), status: COMPLETED as never };
+  const completedWhere = { ...buildOrderWhere(gte, lte, outletId), status: COMPLETED as never, cashApproved: true };
 
   const items = await prisma.orderItem.findMany({
     where: { order: { is: completedWhere } },
@@ -212,9 +212,6 @@ export const getStockReport = asyncHandler(async (req: Request, res: Response) =
   );
 });
 
-// Prisma OrderStatus enum MEMBER names (not the @map db strings). Exclude cancelled + scheduled.
-const EXCLUDED_STATUSES = ['CANCELLED', 'SCHEDULED'] as const;
-
 /** GET /api/reports/dashboard?outletId=<id|all> */
 export const getDashboard = asyncHandler(async (req: Request, res: Response) => {
   await autoProcessExpiredBatches();
@@ -224,11 +221,14 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
   const mb = monthBoundaries(now);
 
   const outletFilter = outletId ? { outletId } : {};
-  const notExcluded = { status: { notIn: EXCLUDED_STATUSES as unknown as never } };
+  // Only count COMPLETED orders in dashboard sales where cash is approved — PENDING/PREPARING/READY dine-in
+  // orders or waiter panel cash orders awaiting POS approval (cashApproved === false) must not be reflected
+  // in sales totals until the POS approves cash.
+  const onlyCompleted = { status: COMPLETED as never, cashApproved: true };
 
   // --- TODAY: orders by channel ---
   const todayOrders = await prisma.order.findMany({
-    where: { ...outletFilter, ...notExcluded, createdAt: { gte: day.gte, lte: day.lte } },
+    where: { ...outletFilter, ...onlyCompleted, createdAt: { gte: day.gte, lte: day.lte } },
     select: { type: true, total: true },
   });
   const channelMap = new Map<string, { type: string; sales: number; orders: number }>();
@@ -247,7 +247,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
 
   // --- THIS MONTH: financials, payments, online/offline totals (for growth) ---
   const monthOrders = await prisma.order.findMany({
-    where: { ...outletFilter, ...notExcluded, createdAt: { gte: mb.thisStart, lte: mb.thisEnd } },
+    where: { ...outletFilter, ...onlyCompleted, createdAt: { gte: mb.thisStart, lte: mb.thisEnd } },
     select: { type: true, total: true, subtotal: true, discount: true, paymentMethod: true },
   });
   const grossSale = monthOrders.reduce((s, o) => s + Number(o.subtotal), 0);
@@ -262,7 +262,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
 
   // --- LAST MONTH: online/offline + overall totals (for growth %) ---
   const lastOrders = await prisma.order.findMany({
-    where: { ...outletFilter, ...notExcluded, createdAt: { gte: mb.lastStart, lte: mb.lastEnd } },
+    where: { ...outletFilter, ...onlyCompleted, createdAt: { gte: mb.lastStart, lte: mb.lastEnd } },
     select: { type: true, total: true },
   });
   let lastOnline = 0, lastOffline = 0, lastTotal = 0;
@@ -286,7 +286,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
   weekStart.setUTCDate(weekStart.getUTCDate() - dow);
   const weekEnd = new Date(weekStart); weekEnd.setUTCDate(weekStart.getUTCDate() + 6); weekEnd.setUTCHours(23, 59, 59, 999);
   const weekOrders = await prisma.order.findMany({
-    where: { ...outletFilter, ...notExcluded, createdAt: { gte: weekStart, lte: weekEnd } },
+    where: { ...outletFilter, ...onlyCompleted, createdAt: { gte: weekStart, lte: weekEnd } },
     select: { total: true, createdAt: true },
   });
   const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -304,7 +304,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
     prisma.order.findMany({
       where: {
         ...outletFilter,
-        ...notExcluded,
+        ...onlyCompleted,
         customerName: { not: null },
       },
       select: {
@@ -355,7 +355,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
 
   // --- top items this month ---
   const monthItems = await prisma.orderItem.findMany({
-    where: { order: { is: { ...outletFilter, ...notExcluded, createdAt: { gte: mb.thisStart, lte: mb.thisEnd } } } },
+    where: { order: { is: { ...outletFilter, ...onlyCompleted, createdAt: { gte: mb.thisStart, lte: mb.thisEnd } } } },
     select: { name: true, qty: true, price: true },
   });
   const itemMap = new Map<string, { qty: number; revenue: number }>();

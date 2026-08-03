@@ -251,7 +251,7 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
     customerName, phone, customerId, type, subtotal, discount, tax, total,
     paymentMethod, tableNumber, deliveryAddress, riderId, staffName,
     items, isFutureSale, scheduledDate, scheduledTime, futureNotes, advancePayment,
-    isUrgent, customerType, orderSource,
+    isUrgent, customerType, orderSource, cashApproved,
   } = req.body;
 
   if (!items?.length) throw ApiError.badRequest('Order must have at least one item');
@@ -267,6 +267,10 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   if (scope === null && req.user?.role === 'Super Admin') {
     throw ApiError.badRequest('Select a specific outlet before creating');
   }
+
+  const effectiveCashApproved = typeof cashApproved === 'boolean'
+    ? cashApproved
+    : (orderSource === 'waiter' ? false : true);
 
   const order = await prisma.order.create({
     data: {
@@ -297,6 +301,7 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
       isUrgent: isUrgent ?? false,
       customerType: customerType || null,
       orderSource: orderSource || 'pos',
+      ...(cashApproved !== undefined ? { cashApproved: Boolean(cashApproved) } : { cashApproved: effectiveCashApproved }),
       items: {
         create: items.map((item: any) => ({
           menuItemId: item.menuItemId || null,
@@ -341,7 +346,7 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
   const {
     customerName, phone, type, status, subtotal, discount, tax, total,
     paymentMethod, tableNumber, deliveryAddress, riderId, staffName,
-    items, isUrgent, customerType,
+    items, isUrgent, customerType, cashApproved,
   } = req.body;
 
   const order = await prisma.$transaction(async (tx) => {
@@ -366,6 +371,7 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
         ...(staffName !== undefined && { staffName }),
         ...(isUrgent !== undefined && { isUrgent }),
         ...(customerType !== undefined && { customerType }),
+        ...(cashApproved !== undefined && { cashApproved: Boolean(cashApproved) }),
         ...(Array.isArray(items) && items.length > 0 && {
           items: {
             create: items.map((item: any) => ({
