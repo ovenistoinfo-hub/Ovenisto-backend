@@ -38,7 +38,13 @@ export function setupSelfOrderNamespace(io: SocketServer): void {
       'join-table',
       async (
         payload: { tableId?: string; sessionToken?: string },
-        ack?: (res: { role: 'host'; sessionToken: string } | { role: 'viewer' } | { error: string }) => void
+        ack?: (
+          res:
+            | { role: 'host'; sessionToken: string }
+            | { role: 'viewer' }
+            | { role: 'blocked'; reason: 'table-occupied' }
+            | { error: string }
+        ) => void
       ) => {
         const tableId = payload?.tableId;
         if (!tableId) {
@@ -51,10 +57,22 @@ export function setupSelfOrderNamespace(io: SocketServer): void {
           return;
         }
 
+        const state = tableStates.get(tableId);
+
+        // No self-order session exists yet for this table. If it's already
+        // occupied, that occupancy came from a staff-direct sitting (POS/Waiter
+        // Panel) — self-order's own acceptance flow only occupies a table AFTER
+        // a session already exists (see createSelfOrder's comment), so reaching
+        // "occupied" with no session here can only mean staff is already
+        // handling this table directly. Block instead of silently becoming host
+        // and colliding with an order channel the customer doesn't know about.
+        if (!state && table.status === 'occupied') {
+          ack?.({ role: 'blocked', reason: 'table-occupied' });
+          return;
+        }
+
         socket.join(roomName(tableId));
         socket.data.tableId = tableId;
-
-        const state = tableStates.get(tableId);
 
         if (!state) {
           const sessionToken = randomUUID();
