@@ -19,10 +19,11 @@ function mapAssignment(a: any) {
     amountToCollect: a.amountToCollect != null ? Number(a.amountToCollect) : null,
     order: a.order ? {
       ...a.order,
-      total:    Number(a.order.total ?? 0),
-      subtotal: Number(a.order.subtotal ?? 0),
-      tax:      Number(a.order.tax ?? 0),
-      discount: Number(a.order.discount ?? 0),
+      total:          Number(a.order.total ?? 0),
+      subtotal:       Number(a.order.subtotal ?? 0),
+      tax:            Number(a.order.tax ?? 0),
+      discount:       Number(a.order.discount ?? 0),
+      advancePayment: Number(a.order.advancePayment ?? 0),
     } : undefined,
     rider: a.rider ? mapRider(a.rider) : undefined,
   };
@@ -131,7 +132,7 @@ export const getMyAssignments = asyncHandler(async (req: Request, res: Response)
 
   const assignments = await prisma.deliveryAssignment.findMany({
     where: { riderId: riderProfile.id, status: { in: ['pending', 'accepted', 'dispatched'] } },
-    include: { order: { select: { id: true, orderNumber: true, total: true, customerName: true, deliveryAddress: true, phone: true } } },
+    include: { order: { select: { id: true, orderNumber: true, total: true, advancePayment: true, paymentMethod: true, customerName: true, deliveryAddress: true, phone: true } } },
     orderBy: { assignedAt: 'desc' },
   });
   res.json(ApiResponse.success({ rider: mapRider(riderProfile), assignments: assignments.map(mapAssignment) }));
@@ -195,7 +196,14 @@ export const assignRider = asyncHandler(async (req: Request, res: Response) => {
         estimatedTime:   estimatedTime || 30,
         customerAddress: order.deliveryAddress || '',
         customerPhone:   order.phone || '',
-        amountToCollect: order.total,
+        amountToCollect: (() => {
+          const isCOD = order.paymentMethod === 'Cash on Delivery';
+          const advance = Number(order.advancePayment ?? 0);
+          const orderTotal = Number(order.total);
+          if (isCOD) return orderTotal;
+          if (advance >= orderTotal) return 0;
+          return Math.max(0, orderTotal - advance);
+        })(),
         notes: notes || null,
       },
       include: { order: { select: { id: true, orderNumber: true, total: true, customerName: true, deliveryAddress: true } }, rider: true },
@@ -268,18 +276,42 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
 /** PUT /api/delivery/assignments/:id/collect — manager collects cash from rider */
 export const collectAmount = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const assignment = await prisma.deliveryAssignment.findUnique({ where: { id }, include: { order: { select: { outletId: true } } } });
+  const assignment = await prisma.deliveryAssignment.findUnique({
+    where: { id },
+    include: {
+      order: { select: { id: true, outletId: true, paymentMethod: true, total: true, advancePayment: true } },
+    },
+  });
   if (!assignment) throw ApiError.notFound('Assignment not found');
   const scope = resolveOutletScope(req);
   if (scope && assignment.order?.outletId !== scope) throw ApiError.notFound('Assignment not found');
   if (assignment.status !== 'delivered') throw ApiError.badRequest('Can only collect from delivered orders');
   if (assignment.collectedAt) throw ApiError.badRequest('Amount already collected');
 
-  const updated = await prisma.deliveryAssignment.update({
-    where: { id },
-    data: { collectedAt: new Date(), collectedBy: req.user?.name || 'Manager' },
-    include: { order: { select: { id: true, orderNumber: true, total: true } }, rider: true },
-  });
+  const collectedAmount = Number(assignment.amountToCollect ?? assignment.order?.total ?? 0);
+  const paymentMethod   = assignment.order?.paymentMethod ?? '';
+
+  let updatedPaymentMethod: string;
+  if (paymentMethod === 'Cash on Delivery') {
+    updatedPaymentMethod = 'Cash on Delivery (Collected)';
+  } else if (paymentMethod.startsWith('Advance (')) {
+    updatedPaymentMethod = `${paymentMethod}, COD Balance (Cash): Rs.${collectedAmount}`;
+  } else {
+    updatedPaymentMethod = paymentMethod; // prepaid — no change needed
+  }
+
+  const [updated] = await prisma.$transaction([
+    prisma.deliveryAssignment.update({
+      where: { id },
+      data: { collectedAt: new Date(), collectedBy: req.user?.name || 'Manager' },
+      include: { order: { select: { id: true, orderNumber: true, total: true } }, rider: true },
+    }),
+    prisma.order.update({
+      where: { id: assignment.orderId },
+      data: { paymentMethod: updatedPaymentMethod },
+    }),
+  ]);
+
   res.json(ApiResponse.success(mapAssignment(updated), 'Amount collected'));
 });
 
@@ -329,7 +361,7 @@ export const getDeliveryDashboard = asyncHandler(async (req: Request, res: Respo
     }),
     prisma.deliveryAssignment.findMany({
       where: { status: { in: ['pending', 'accepted', 'dispatched'] }, ...(scope ? { order: { outletId: scope } } : {}) },
-      include: { order: { select: { id: true, orderNumber: true, total: true, customerName: true, deliveryAddress: true } }, rider: true },
+      include: { order: { select: { id: true, orderNumber: true, total: true, advancePayment: true, paymentMethod: true, customerName: true, deliveryAddress: true } }, rider: true },
       orderBy: { assignedAt: 'desc' },
     }),
   ]);
