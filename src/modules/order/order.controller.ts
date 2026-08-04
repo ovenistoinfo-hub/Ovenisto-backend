@@ -132,12 +132,33 @@ export async function updateTableStatusForOrder(
   }
 }
 
+export async function checkPendingCancellation(orderId: string): Promise<boolean> {
+  const count = await prisma.orderCancellationRequest.count({
+    where: {
+      orderId,
+      status: 'pending',
+    },
+  });
+  return count > 0;
+}
+
 export function mapOrderOut(order: any): any {
   if (!order) return order;
+  const pendingCancelReq = Array.isArray(order.cancellationRequests) && order.cancellationRequests.length > 0
+    ? order.cancellationRequests[0]
+    : null;
+
   return {
     ...order,
     type: TYPE_TO_DISPLAY[order.type] ?? order.type,
     status: STATUS_TO_DISPLAY[order.status] ?? order.status,
+    hasPendingCancellationRequest: Boolean(pendingCancelReq || order.hasPendingCancellationRequest),
+    pendingCancellationRequest: pendingCancelReq ? {
+      id: pendingCancelReq.id,
+      status: pendingCancelReq.status,
+      reason: pendingCancelReq.reason,
+      createdAt: pendingCancelReq.createdAt,
+    } : (order.pendingCancellationRequest || null),
     // Normalise Decimal fields to numbers so JSON serialises cleanly
     subtotal: Number(order.subtotal),
     discount: Number(order.discount),
@@ -217,6 +238,10 @@ export const getOrders = asyncHandler(async (req: Request, res: Response) => {
             },
           },
         },
+        cancellationRequests: {
+          where: { status: 'pending' },
+          select: { id: true, status: true, reason: true, createdAt: true },
+        },
       },
     }),
     prisma.order.count({ where }),
@@ -236,6 +261,10 @@ export const getOrder = asyncHandler(async (req: Request, res: Response) => {
             select: { category: { select: { name: true } } },
           },
         },
+      },
+      cancellationRequests: {
+        where: { status: 'pending' },
+        select: { id: true, status: true, reason: true, createdAt: true },
       },
       modifications: { orderBy: { timestamp: 'desc' } },
     },
@@ -344,6 +373,10 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
   const scope = resolveOutletScope(req);
   if (scope && existing.outletId && existing.outletId !== scope) throw ApiError.notFound('Order not found');
 
+  if (await checkPendingCancellation(id)) {
+    throw ApiError.badRequest('Cannot modify order or approve payment while a cancellation request is pending approval');
+  }
+
   const {
     customerName, phone, type, status, subtotal, discount, tax, total,
     paymentMethod, tableNumber, deliveryAddress, riderId, staffName,
@@ -369,7 +402,7 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
   const order = await prisma.$transaction(async (tx) => {
     if (cashApproved !== undefined) {
       try {
-        await tx.$executeRaw`UPDATE "orders" SET "cashApproved" = ${Boolean(cashApproved)} WHERE "id" = ${id}`;
+        await tx.$executeRaw`UPDATE "orders" SET "cashApproved" = ${Boolean(cashApproved)}, "updatedAt" = NOW() WHERE "id" = ${id}`;
       } catch (e) {
         console.error('Failed to update cashApproved via raw SQL:', e);
       }
@@ -430,6 +463,10 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
   if (!existing) throw ApiError.notFound('Order not found');
   const scope = resolveOutletScope(req);
   if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
+
+  if (await checkPendingCancellation(id)) {
+    throw ApiError.badRequest('Cannot change order status while a cancellation request is pending approval');
+  }
 
   const prismaStatus = STATUS_TO_PRISMA[status] ?? status.toUpperCase();
 

@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log('🧹 Clearing all order history and resetting tables...');
+  console.log('🧹 Clearing all order history, shifts, and resetting tables...');
 
   try {
     // 1. Delivery assignments
@@ -18,30 +18,59 @@ async function main() {
     const deletedModifications = await prisma.orderModificationLog.deleteMany({});
     console.log(`- Deleted ${deletedModifications.count} order modification logs.`);
 
-    // 4. Waste records tied to orders
+    // 4. Staff penalties linked to orders
+    const deletedPenalties = await prisma.staffPenalty.deleteMany({
+      where: { NOT: { orderId: null } },
+    });
+    console.log(`- Deleted ${deletedPenalties.count} staff penalties linked to orders.`);
+
+    // 5. Loyalty transactions linked to orders
+    const deletedLoyalty = await prisma.loyaltyTransaction.deleteMany({
+      where: { NOT: { orderId: null } },
+    });
+    console.log(`- Deleted ${deletedLoyalty.count} loyalty transactions.`);
+
+    // 6. Waste records tied to orders
     const deletedOrderWaste = await prisma.wasteRecord.deleteMany({
       where: { NOT: { orderId: null } },
     });
     console.log(`- Deleted ${deletedOrderWaste.count} order-linked waste records.`);
 
-    // 5. Order items
+    // 7. Order items
     const deletedItems = await prisma.orderItem.deleteMany({});
     console.log(`- Deleted ${deletedItems.count} order items.`);
 
-    // 6. Orders
+    // 8. Orders
     const deletedOrders = await prisma.order.deleteMany({});
     console.log(`- Deleted ${deletedOrders.count} orders.`);
 
-    // 7. Reset Restaurant Tables
+    // 9. Shifts / Cash Registers (Clear test shifts to reset register totals)
+    const deletedShifts = await prisma.shift.deleteMany({});
+    console.log(`- Deleted ${deletedShifts.count} cash register shifts.`);
+
+    // 10. Reset Reservations order references
+    const resetReservations = await prisma.reservation.updateMany({
+      data: {
+        orderId: null,
+        isAdvanceAdjusted: false,
+      },
+    });
+    console.log(`- Reset ${resetReservations.count} reservations.`);
+
+    // 11. Reset Restaurant Tables fully
     const resetTables = await prisma.restaurantTable.updateMany({
       data: {
         status: 'available',
         currentOrderId: null,
+        occupiedById: null,
+        occupiedByName: null,
+        occupiedByRole: null,
+        reservationId: null,
       },
     });
     console.log(`- Reset ${resetTables.count} tables to AVAILABLE with empty session.`);
 
-    console.log('✅ Order history cleared and tables reset successfully!');
+    console.log('\n🎉 Order history cleared and tables reset successfully!');
   } catch (error) {
     console.error('❌ Failed to clear order data:', error);
   } finally {
@@ -50,3 +79,4 @@ async function main() {
 }
 
 main();
+

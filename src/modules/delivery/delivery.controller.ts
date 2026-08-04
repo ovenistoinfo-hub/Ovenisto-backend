@@ -7,6 +7,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
+import { checkPendingCancellation } from '../order/order.controller.js';
 
 function mapRider(r: any) {
   return { ...r, activeDeliveries: Number(r.activeDeliveries ?? 0) };
@@ -240,6 +241,9 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
 
   // When delivered — decrement active deliveries, restore availability, complete order
   if (status === 'delivered') {
+    if (await checkPendingCancellation(assignment.orderId)) {
+      throw ApiError.badRequest('Cannot complete delivery order while a cancellation request is pending approval');
+    }
     ops.push(
       prisma.deliveryRider.update({
         where: { id: assignment.riderId },

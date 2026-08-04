@@ -159,6 +159,13 @@ export const createCancellationRequest = asyncHandler(async (req: Request, res: 
     throw ApiError.badRequest('Order cannot be cancelled from its current status');
   }
 
+  const pendingExisting = await prisma.orderCancellationRequest.findFirst({
+    where: { orderId: id, status: 'pending' },
+  });
+  if (pendingExisting) {
+    throw ApiError.badRequest('A cancellation request is already pending approval for this order');
+  }
+
   const approver = await prisma.user.findUnique({ where: { id: approverId } });
   if (!approver || !AUTHORIZER_ENUM_ROLES.includes(approver.role)) {
     throw ApiError.badRequest('Selected approver is not authorized to approve cancellations');
@@ -199,6 +206,17 @@ export const createCancellationRequest = asyncHandler(async (req: Request, res: 
     emitOrderEvent('order:updated', mappedOrder);
     emitCancellationRequestEvent('cancellationRequest:updated', mapRequestOut(updatedRequest), [request.outletId]);
     return res.status(201).json(ApiResponse.created(mapRequestOut(updatedRequest), 'Order cancelled'));
+  }
+
+  const fullOrder = await prisma.order.findUnique({
+    where: { id },
+    include: {
+      items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
+      cancellationRequests: { where: { status: 'pending' } },
+    },
+  });
+  if (fullOrder) {
+    emitOrderEvent('order:updated', mapOrderOut(fullOrder));
   }
 
   emitCancellationRequestEvent('cancellationRequest:created', mapRequestOut(request), [request.outletId]);
@@ -260,6 +278,16 @@ export const reviewCancellationRequest = asyncHandler(async (req: Request, res: 
       },
       include: includeShape,
     });
+    const fullOrder = await prisma.order.findUnique({
+      where: { id: existing.orderId },
+      include: {
+        items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
+        cancellationRequests: { where: { status: 'pending' } },
+      },
+    });
+    if (fullOrder) {
+      emitOrderEvent('order:updated', mapOrderOut(fullOrder));
+    }
     emitCancellationRequestEvent('cancellationRequest:updated', mapRequestOut(rejected), [existing.outletId]);
     return res.json(ApiResponse.success(mapRequestOut(rejected), 'Cancellation request rejected'));
   }
