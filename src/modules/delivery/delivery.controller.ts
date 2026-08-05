@@ -247,17 +247,17 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
     );
   }
 
-  // When delivered — decrement active deliveries, restore availability, complete order
+  // When delivered — decrement active deliveries, restore availability
+  // (order completion now happens via Order Monitor, not here)
   if (status === 'delivered') {
     if (await checkPendingCancellation(assignment.orderId)) {
-      throw ApiError.badRequest('Cannot complete delivery order while a cancellation request is pending approval');
+      throw ApiError.badRequest('Cannot mark delivered while a cancellation request is pending approval');
     }
     ops.push(
       prisma.deliveryRider.update({
         where: { id: assignment.riderId },
         data: { activeDeliveries: { decrement: 1 }, isAvailable: true, status: 'available' },
       }),
-      prisma.order.update({ where: { id: assignment.orderId }, data: { status: 'COMPLETED' as any } }),
     );
   }
   if (status === 'returned') {
