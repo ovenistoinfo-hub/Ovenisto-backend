@@ -865,6 +865,7 @@ model Order {
   wasteRecords  WasteRecord[]
   cancellationRequests OrderCancellationRequest[]
   staffPenalties       StaffPenalty[]
+  kitchenProgress      OrderKitchenProgress[]
 
   @@index([createdAt])
   @@index([status])
@@ -897,6 +898,20 @@ model OrderItem {
   @@index([orderId])
   @@index([menuItemId])
   @@map("order_items")
+}
+
+model OrderKitchenProgress {
+  id        String   @id @default(uuid())
+  orderId   String
+  kitchenId String
+  status    String   @default("pending") @db.VarChar(20) // pending | preparing | ready
+  updatedAt DateTime @updatedAt
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  kitchen Kitchen @relation(fields: [kitchenId], references: [id])
+
+  @@unique([orderId, kitchenId])
+  @@map("order_kitchen_progress")
 }
 
 model OrderModificationLog {
@@ -975,6 +990,8 @@ model Kitchen {
   name               String   @db.VarChar(100)
   assignedCategories String[]
   status             String   @default("active") @db.VarChar(20)
+
+  orderProgress OrderKitchenProgress[]
 
   @@map("kitchens")
 }
