@@ -450,6 +450,234 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
   res.json(ApiResponse.success(updatedOrder, 'Order updated'));
 });
 
+/**
+ * Deducts ingredient/production-item stock the first time an order enters the kitchen
+ * pipeline (PREPARING/READY/COMPLETED) — ingredients are physically consumed then, not
+ * when the order is later marked complete. Idempotent: fires exactly once per order,
+ * whichever of these three states it reaches first. Shared by both status-change
+ * endpoints (whole-order and per-kitchen) so this delicate logic exists in one place.
+ */
+export async function deductStockForConsumedStates(
+  tx: Prisma.TransactionClient,
+  existing: { status: string; outletId: string | null; orderNumber: string },
+  items: { menuItemId: string | null; variantId: string | null; qty: number }[],
+  newPrismaStatus: string,
+  actingUserId: string | null | undefined,
+): Promise<void> {
+  const CONSUMED_STATES = ['PREPARING', 'READY', 'COMPLETED'];
+  const alreadyConsumed = CONSUMED_STATES.includes(existing.status);
+  const enteringConsumedState = CONSUMED_STATES.includes(newPrismaStatus);
+  if (!(enteringConsumedState && !alreadyConsumed)) return;
+
+  const menuItemIds = items
+    .filter((i) => i.menuItemId)
+    .map((i) => i.menuItemId as string);
+
+  if (menuItemIds.length === 0) return;
+
+  const recipes = await tx.foodRecipe.findMany({
+    where: { menuItemId: { in: menuItemIds } },
+    select: {
+      menuItemId: true,
+      variantId: true,
+      ingredientId: true,
+      productionItemId: true,
+      qtyPerUnit: true,
+    },
+  });
+
+  // Group deductions: ingredientId → total qty to deduct
+  // Group prodDeductions: productionItemId → total qty to deduct
+  // If order item has a variantId, use variant-specific recipes; otherwise use item-level recipes
+  const deductions: Record<string, number> = {};
+  const prodDeductions: Record<string, number> = {};
+  for (const item of items) {
+    if (!item.menuItemId) continue;
+    const itemRecipes = recipes.filter((r) => {
+      if (r.menuItemId !== item.menuItemId) return false;
+      if (item.variantId) return r.variantId === item.variantId;
+      return !r.variantId; // item-level recipe (no variant)
+    });
+    for (const r of itemRecipes) {
+      const qty = Number(r.qtyPerUnit) * item.qty;
+      if (r.ingredientId) {
+        deductions[r.ingredientId] = (deductions[r.ingredientId] || 0) + qty;
+      } else if (r.productionItemId) {
+        prodDeductions[r.productionItemId] = (prodDeductions[r.productionItemId] || 0) + qty;
+      }
+      // skip rows where both are null (shouldn't happen but be safe)
+    }
+  }
+
+  // Resolve kitchen warehouse for this order's outlet
+  let kitchenWarehouseId: string | null = null;
+  if (existing.outletId) {
+    const kw = await tx.warehouse.findFirst({
+      where: { outletId: existing.outletId, type: 'KITCHEN', isActive: true },
+      select: { id: true },
+    });
+    kitchenWarehouseId = kw?.id ?? null;
+  }
+
+  const deductionEntries = Object.entries(deductions);
+
+  // Pre-fetch lowStockLevel for all deducted ingredients in ONE query
+  // (avoids an N+1 findUnique inside the loop on every sale).
+  const lowStockById = new Map<string, number>();
+  if (kitchenWarehouseId && deductionEntries.length > 0) {
+    const ings = await tx.ingredient.findMany({
+      where: { id: { in: deductionEntries.map(([id]) => id) } },
+      select: { id: true, lowStockLevel: true },
+    });
+    for (const ing of ings) lowStockById.set(ing.id, Number(ing.lowStockLevel ?? 0));
+  }
+
+  // Apply per-ingredient stock decrements (values differ per row, so these stay individual)
+  for (const [ingredientId, qty] of deductionEntries) {
+    // 1. Deduct global ingredient stock (backward compat)
+    await tx.ingredient.update({
+      where: { id: ingredientId },
+      data: { currentStock: { decrement: qty } },
+    });
+
+    // 2. Deduct kitchen warehouse stock (if linked)
+    if (kitchenWarehouseId) {
+      await tx.warehouseStock.upsert({
+        where: {
+          warehouseId_ingredientId: {
+            warehouseId: kitchenWarehouseId,
+            ingredientId,
+          },
+        },
+        update: { currentStock: { decrement: qty } },
+        create: {
+          warehouseId: kitchenWarehouseId,
+          ingredientId,
+          currentStock: -qty,   // negative = consumed before stock received (audit flag)
+          lowStockLevel: lowStockById.get(ingredientId) ?? 0,
+        },
+      });
+    }
+  }
+
+  // For short-life ingredients (dough), keep their StockBatch.remainingQty in sync
+  // by drawing the sold qty down FIFO (oldest batch first). Sale is never blocked.
+  if (deductionEntries.length > 0) {
+    const shortLife = await tx.ingredient.findMany({
+      where: { id: { in: deductionEntries.map(([id]) => id) }, shelfLifeHours: { not: null } },
+      select: { id: true },
+    });
+    const shortLifeIds = new Set(shortLife.map((i) => i.id));
+    for (const [ingredientId, qty] of deductionEntries) {
+      if (!shortLifeIds.has(ingredientId)) continue;
+      const batches = await tx.stockBatch.findMany({
+        where: { ingredientId, remainingQty: { gt: 0 }, ...(kitchenWarehouseId ? { warehouseId: kitchenWarehouseId } : {}) },
+        select: { id: true, remainingQty: true },
+        orderBy: { createdAt: 'asc' },
+      });
+      const draws = fifoDrawdown(
+        batches.map((b) => ({ id: b.id, remainingQty: Number(b.remainingQty) })),
+        qty
+      );
+      for (const d of draws) {
+        await tx.stockBatch.update({ where: { id: d.id }, data: { remainingQty: d.newRemaining } });
+      }
+    }
+  }
+
+  // 3. Log all consumption adjustments in ONE batched insert
+  if (deductionEntries.length > 0) {
+    await tx.stockAdjustment.createMany({
+      data: deductionEntries.map(([ingredientId, qty]) => ({
+        ingredientId,
+        type: 'deduct',
+        quantity: qty,
+        reason: `POS consumption — Order ${existing.orderNumber}`,
+        adjustedById: actingUserId ?? null,
+        warehouseId: kitchenWarehouseId ?? undefined,
+        date: new Date(),
+      })),
+    });
+  }
+
+  // 4. Production item FIFO drawdown
+  const prodEntries = Object.entries(prodDeductions);
+  if (prodEntries.length > 0 && kitchenWarehouseId) {
+    for (const [productionItemId, qty] of prodEntries) {
+      const batches = await tx.productionBatch.findMany({
+        where: {
+          productionItemId,
+          warehouseId: kitchenWarehouseId,
+          remainingQty: { gt: 0 },
+        },
+        select: { id: true, remainingQty: true },
+        orderBy: { createdAt: 'asc' },
+      });
+      const draws = fifoDrawdown(
+        batches.map((b) => ({ id: b.id, remainingQty: Number(b.remainingQty) })),
+        qty
+      );
+      for (const d of draws) {
+        await tx.productionBatch.update({
+          where: { id: d.id },
+          data: { remainingQty: d.newRemaining },
+        });
+      }
+      await tx.productionWarehouseStock.updateMany({
+        where: { productionItemId, warehouseId: kitchenWarehouseId },
+        data: { currentStock: { decrement: qty } },
+      });
+    }
+  }
+}
+
+/**
+ * Runs everything that must happen right after an order's status changes, outside the
+ * write transaction: mapping the response, completing linked reservations (only when
+ * the new status is COMPLETED), syncing dine-in/self-order table status, pushing a
+ * live update to a self-order customer's device, and emitting the order:updated socket
+ * event. Shared by both status-change endpoints so this side-effect list can't drift
+ * between them. Returns the mapped order object for the caller's own response.
+ */
+export async function runOrderStatusPostEffects(
+  prismaClient: typeof prisma,
+  existing: { id: string; outletId: string | null; type: string; tableNumber: number | null },
+  order: any,
+  newPrismaStatus: string,
+  req: Request,
+): Promise<any> {
+  const statusUpdated = mapOrderOut(order);
+
+  if (newPrismaStatus === 'COMPLETED') {
+    const updatedReservations = await prismaClient.reservation.findMany({
+      where: {
+        OR: [
+          { orderId: existing.id },
+          ...(existing.tableNumber ? [{ tableNumber: String(existing.tableNumber) }] : [])
+        ]
+      }
+    });
+    for (const resItem of updatedReservations) {
+      emitReservationEvent('reservation:updated', mapReservation(resItem), [resItem.outletId]);
+    }
+  }
+
+  if (order.tableNumber && (order.type === 'DINE_IN' || order.type === 'SELF_ORDER')) {
+    await updateTableStatusForOrder(prismaClient, order.outletId, order.tableNumber, req.user);
+  }
+  if (order.type === 'SELF_ORDER') {
+    await emitSelfOrderEventForOrder(order, 'order:updated', {
+      orderId: order.id,
+      status: order.status === 'CANCELLED' ? 'cancelled' : 'confirmed',
+      accepted: !!order.acceptedById,
+      rejectionReason: order.rejectionReason ?? undefined,
+      paid: order.status === 'COMPLETED',
+    });
+  }
+  emitOrderEvent('order:updated', statusUpdated);
+  return statusUpdated;
+}
+
 /** PUT /api/orders/:id/status */
 export const updateOrderStatus = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -485,175 +713,7 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
       },
     });
 
-    // Deduct ingredient stock the first time an order enters the kitchen pipeline
-    // (PREPARING/READY/COMPLETED) — this is when ingredients are physically consumed,
-    // not when the order is later marked complete. Idempotent: fires exactly once per
-    // order, whichever of these three states it reaches first.
-    const CONSUMED_STATES = ['PREPARING', 'READY', 'COMPLETED'];
-    const alreadyConsumed = CONSUMED_STATES.includes(existing.status);
-    const enteringConsumedState = CONSUMED_STATES.includes(prismaStatus);
-    if (enteringConsumedState && !alreadyConsumed) {
-      const menuItemIds = updated.items
-        .filter((i) => i.menuItemId)
-        .map((i) => i.menuItemId as string);
-
-      if (menuItemIds.length > 0) {
-        const recipes = await tx.foodRecipe.findMany({
-          where: { menuItemId: { in: menuItemIds } },
-          select: {
-            menuItemId: true,
-            variantId: true,
-            ingredientId: true,
-            productionItemId: true,
-            qtyPerUnit: true,
-          },
-        });
-
-        // Group deductions: ingredientId → total qty to deduct
-        // Group prodDeductions: productionItemId → total qty to deduct
-        // If order item has a variantId, use variant-specific recipes; otherwise use item-level recipes
-        const deductions: Record<string, number> = {};
-        const prodDeductions: Record<string, number> = {};
-        for (const item of updated.items) {
-          if (!item.menuItemId) continue;
-          const itemRecipes = recipes.filter((r) => {
-            if (r.menuItemId !== item.menuItemId) return false;
-            if (item.variantId) return r.variantId === item.variantId;
-            return !r.variantId; // item-level recipe (no variant)
-          });
-          for (const r of itemRecipes) {
-            const qty = Number(r.qtyPerUnit) * item.qty;
-            if (r.ingredientId) {
-              deductions[r.ingredientId] = (deductions[r.ingredientId] || 0) + qty;
-            } else if (r.productionItemId) {
-              prodDeductions[r.productionItemId] = (prodDeductions[r.productionItemId] || 0) + qty;
-            }
-            // skip rows where both are null (shouldn't happen but be safe)
-          }
-        }
-
-        // Resolve kitchen warehouse for this order's outlet
-        let kitchenWarehouseId: string | null = null;
-        if (existing.outletId) {
-          const kw = await tx.warehouse.findFirst({
-            where: { outletId: existing.outletId, type: 'KITCHEN', isActive: true },
-            select: { id: true },
-          });
-          kitchenWarehouseId = kw?.id ?? null;
-        }
-
-        const deductionEntries = Object.entries(deductions);
-
-        // Pre-fetch lowStockLevel for all deducted ingredients in ONE query
-        // (avoids an N+1 findUnique inside the loop on every sale).
-        const lowStockById = new Map<string, number>();
-        if (kitchenWarehouseId && deductionEntries.length > 0) {
-          const ings = await tx.ingredient.findMany({
-            where: { id: { in: deductionEntries.map(([id]) => id) } },
-            select: { id: true, lowStockLevel: true },
-          });
-          for (const ing of ings) lowStockById.set(ing.id, Number(ing.lowStockLevel ?? 0));
-        }
-
-        // Apply per-ingredient stock decrements (values differ per row, so these stay individual)
-        for (const [ingredientId, qty] of deductionEntries) {
-          // 1. Deduct global ingredient stock (backward compat)
-          await tx.ingredient.update({
-            where: { id: ingredientId },
-            data: { currentStock: { decrement: qty } },
-          });
-
-          // 2. Deduct kitchen warehouse stock (if linked)
-          if (kitchenWarehouseId) {
-            await tx.warehouseStock.upsert({
-              where: {
-                warehouseId_ingredientId: {
-                  warehouseId: kitchenWarehouseId,
-                  ingredientId,
-                },
-              },
-              update: { currentStock: { decrement: qty } },
-              create: {
-                warehouseId: kitchenWarehouseId,
-                ingredientId,
-                currentStock: -qty,   // negative = consumed before stock received (audit flag)
-                lowStockLevel: lowStockById.get(ingredientId) ?? 0,
-              },
-            });
-          }
-        }
-
-        // For short-life ingredients (dough), keep their StockBatch.remainingQty in sync
-        // by drawing the sold qty down FIFO (oldest batch first). Sale is never blocked.
-        if (deductionEntries.length > 0) {
-          const shortLife = await tx.ingredient.findMany({
-            where: { id: { in: deductionEntries.map(([id]) => id) }, shelfLifeHours: { not: null } },
-            select: { id: true },
-          });
-          const shortLifeIds = new Set(shortLife.map((i) => i.id));
-          for (const [ingredientId, qty] of deductionEntries) {
-            if (!shortLifeIds.has(ingredientId)) continue;
-            const batches = await tx.stockBatch.findMany({
-              where: { ingredientId, remainingQty: { gt: 0 }, ...(kitchenWarehouseId ? { warehouseId: kitchenWarehouseId } : {}) },
-              select: { id: true, remainingQty: true },
-              orderBy: { createdAt: 'asc' },
-            });
-            const draws = fifoDrawdown(
-              batches.map((b) => ({ id: b.id, remainingQty: Number(b.remainingQty) })),
-              qty
-            );
-            for (const d of draws) {
-              await tx.stockBatch.update({ where: { id: d.id }, data: { remainingQty: d.newRemaining } });
-            }
-          }
-        }
-
-        // 3. Log all consumption adjustments in ONE batched insert
-        if (deductionEntries.length > 0) {
-          await tx.stockAdjustment.createMany({
-            data: deductionEntries.map(([ingredientId, qty]) => ({
-              ingredientId,
-              type: 'deduct',
-              quantity: qty,
-              reason: `POS consumption — Order ${existing.orderNumber}`,
-              adjustedById: req.user?.id ?? null,
-              warehouseId: kitchenWarehouseId ?? undefined,
-              date: new Date(),
-            })),
-          });
-        }
-
-        // 4. Production item FIFO drawdown
-        const prodEntries = Object.entries(prodDeductions);
-        if (prodEntries.length > 0 && kitchenWarehouseId) {
-          for (const [productionItemId, qty] of prodEntries) {
-            const batches = await tx.productionBatch.findMany({
-              where: {
-                productionItemId,
-                warehouseId: kitchenWarehouseId,
-                remainingQty: { gt: 0 },
-              },
-              select: { id: true, remainingQty: true },
-              orderBy: { createdAt: 'asc' },
-            });
-            const draws = fifoDrawdown(
-              batches.map((b) => ({ id: b.id, remainingQty: Number(b.remainingQty) })),
-              qty
-            );
-            for (const d of draws) {
-              await tx.productionBatch.update({
-                where: { id: d.id },
-                data: { remainingQty: d.newRemaining },
-              });
-            }
-            await tx.productionWarehouseStock.updateMany({
-              where: { productionItemId, warehouseId: kitchenWarehouseId },
-              data: { currentStock: { decrement: qty } },
-            });
-          }
-        }
-      }
-    }
+    await deductStockForConsumedStates(tx, existing, updated.items, prismaStatus, req.user?.id);
 
     if (prismaStatus === 'COMPLETED') {
       await tx.reservation.updateMany({
@@ -671,34 +731,7 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
     return updated;
   }, { timeout: 30000 });
 
-  const statusUpdated = mapOrderOut(order);
-  if (prismaStatus === 'COMPLETED') {
-    const updatedReservations = await prisma.reservation.findMany({
-      where: {
-        OR: [
-          { orderId: id },
-          ...(existing.tableNumber ? [{ tableNumber: String(existing.tableNumber) }] : [])
-        ]
-      }
-    });
-    for (const resItem of updatedReservations) {
-      emitReservationEvent('reservation:updated', mapReservation(resItem), [resItem.outletId]);
-    }
-  }
-
-  if (order.tableNumber && (order.type === 'DINE_IN' || order.type === 'SELF_ORDER')) {
-    await updateTableStatusForOrder(prisma, order.outletId, order.tableNumber, req.user);
-  }
-  if (order.type === 'SELF_ORDER') {
-    await emitSelfOrderEventForOrder(order, 'order:updated', {
-      orderId: order.id,
-      status: order.status === 'CANCELLED' ? 'cancelled' : 'confirmed',
-      accepted: !!order.acceptedById,
-      rejectionReason: order.rejectionReason ?? undefined,
-      paid: order.status === 'COMPLETED',
-    });
-  }
-  emitOrderEvent('order:updated', statusUpdated);
+  const statusUpdated = await runOrderStatusPostEffects(prisma, existing, order, prismaStatus, req);
   res.json(ApiResponse.success(statusUpdated, 'Order status updated'));
 });
 
