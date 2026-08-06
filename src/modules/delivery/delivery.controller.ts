@@ -8,6 +8,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { checkPendingCancellation } from '../order/order.controller.js';
+import { emitDeliveryEvent } from '../../socket.js';
 
 function mapRider(r: any) {
   return { ...r, activeDeliveries: Number(r.activeDeliveries ?? 0) };
@@ -215,6 +216,14 @@ export const assignRider = asyncHandler(async (req: Request, res: Response) => {
     prisma.order.update({ where: { id: orderId }, data: { riderId } }),
   ]);
 
+  // Emit real-time event so Delivery.tsx and RiderPortal.tsx update live
+  emitDeliveryEvent('delivery:assigned', {
+    assignmentId: assignment.id,
+    orderId,
+    riderId,
+    orderNumber: order.orderNumber,
+    outletId: order.outletId,
+  }, [order.outletId]);
   res.status(201).json(ApiResponse.created(mapAssignment(assignment), 'Rider assigned'));
 });
 
@@ -270,6 +279,13 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
   }
 
   const [updated] = await prisma.$transaction(ops);
+  // Emit real-time event so Delivery.tsx updates live
+  emitDeliveryEvent('delivery:status_updated', {
+    assignmentId: id,
+    status,
+    riderId: assignment.riderId,
+    outletId: assignment.order?.outletId,
+  }, [assignment.order?.outletId]);
   res.json(ApiResponse.success(mapAssignment(updated)));
 });
 
@@ -312,6 +328,11 @@ export const collectAmount = asyncHandler(async (req: Request, res: Response) =>
     }),
   ]);
 
+  // Emit real-time event so Delivery.tsx Riders Dashboard updates live
+  emitDeliveryEvent('delivery:collected', {
+    assignmentId: id,
+    outletId: assignment.order?.outletId,
+  }, [assignment.order?.outletId]);
   res.json(ApiResponse.success(mapAssignment(updated), 'Amount collected'));
 });
 

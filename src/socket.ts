@@ -168,3 +168,20 @@ export function emitPurchaseRequestEvent(
 export function emitCallWaiterEvent(payload: unknown, outletId: string): void {
   emitToOutlets('call-waiter', payload, [outletId]);
 }
+
+export type DeliveryEventType =
+  | 'delivery:assigned'
+  | 'delivery:status_updated'
+  | 'delivery:collected';
+
+/**
+ * Push a delivery change to the outlet room so Delivery Management and Rider Portal update live.
+ * Outlet-scoped: emitted only to the outlet the order belongs to.
+ */
+export function emitDeliveryEvent(
+  event: DeliveryEventType,
+  payload: unknown,
+  outletIds: (string | null | undefined)[]
+): void {
+  emitToOutlets(event, payload, outletIds);
+}
