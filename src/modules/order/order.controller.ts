@@ -357,30 +357,32 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
     },
   });
 
-  // Resolve which active kitchens have at least one matching item, using the same
-  // category-matching rule Kitchen Panel already applies today. If none match, there's
-  // nothing to cook — skip the kitchen pipeline and mark the order ready immediately.
-  const activeKitchens = await prisma.kitchen.findMany({ where: { status: 'active' } });
-  const matchedKitchenIds = new Set<string>();
-  for (const item of order.items as any[]) {
-    const categoryName = item.menuItem?.category?.name;
-    if (!categoryName) continue;
-    for (const kitch of activeKitchens) {
-      if (kitch.assignedCategories.includes(categoryName)) matchedKitchenIds.add(kitch.id);
+  if (!isFutureSale) {
+    // Resolve which active kitchens have at least one matching item, using the same
+    // category-matching rule Kitchen Panel already applies today. If none match, there's
+    // nothing to cook — skip the kitchen pipeline and mark the order ready immediately.
+    const activeKitchens = await prisma.kitchen.findMany({ where: { status: 'active' } });
+    const matchedKitchenIds = new Set<string>();
+    for (const item of order.items as any[]) {
+      const categoryName = item.menuItem?.category?.name;
+      if (!categoryName) continue;
+      for (const kitch of activeKitchens) {
+        if (kitch.assignedCategories.includes(categoryName)) matchedKitchenIds.add(kitch.id);
+      }
     }
-  }
 
-  if (matchedKitchenIds.size > 0) {
-    await prisma.orderKitchenProgress.createMany({
-      data: Array.from(matchedKitchenIds).map((kitchenId) => ({
-        orderId: order.id,
-        kitchenId,
-        status: 'pending',
-      })),
-    });
-  } else {
-    await prisma.order.update({ where: { id: order.id }, data: { status: 'READY' as any } });
-    order.status = 'READY' as any;
+    if (matchedKitchenIds.size > 0) {
+      await prisma.orderKitchenProgress.createMany({
+        data: Array.from(matchedKitchenIds).map((kitchenId) => ({
+          orderId: order.id,
+          kitchenId,
+          status: 'pending',
+        })),
+      });
+    } else {
+      await prisma.order.update({ where: { id: order.id }, data: { status: 'READY' as any } });
+      order.status = 'READY' as any;
+    }
   }
 
   const created = mapOrderOut(order);
