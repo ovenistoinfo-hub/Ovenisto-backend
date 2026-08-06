@@ -171,6 +171,10 @@ export function mapOrderOut(order: any): any {
       discount: Number(i.discount),
       categoryName: i.menuItem?.category?.name ?? null,
     })),
+    kitchenProgress: (order.kitchenProgress ?? []).map((p: any) => ({
+      kitchenId: p.kitchenId,
+      status: p.status,
+    })),
   };
 }
 
@@ -242,6 +246,7 @@ export const getOrders = asyncHandler(async (req: Request, res: Response) => {
           where: { status: 'pending' },
           select: { id: true, status: true, reason: true, createdAt: true },
         },
+        kitchenProgress: true,
       },
     }),
     prisma.order.count({ where }),
@@ -267,6 +272,7 @@ export const getOrder = asyncHandler(async (req: Request, res: Response) => {
         select: { id: true, status: true, reason: true, createdAt: true },
       },
       modifications: { orderBy: { timestamp: 'desc' } },
+      kitchenProgress: true,
     },
   });
   if (!order) throw ApiError.notFound('Order not found');
@@ -761,6 +767,72 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
 
   const statusUpdated = await runOrderStatusPostEffects(prisma, existing, order, prismaStatus, req);
   res.json(ApiResponse.success(statusUpdated, 'Order status updated'));
+});
+
+/** PUT /api/orders/:id/kitchen-status — one kitchen updates its own progress on an order */
+export const updateOrderKitchenStatus = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { kitchenId, status } = req.body;
+  if (!kitchenId) throw ApiError.badRequest('kitchenId is required');
+  if (!status || !['preparing', 'ready'].includes(status)) {
+    throw ApiError.badRequest('status must be one of: preparing, ready');
+  }
+
+  const existing = await prisma.order.findUnique({
+    where: { id },
+    include: { items: true, kitchenProgress: true },
+  });
+  if (!existing) throw ApiError.notFound('Order not found');
+  const scope = resolveOutletScope(req);
+  if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
+
+  if (await checkPendingCancellation(id)) {
+    throw ApiError.badRequest('Cannot change order status while a cancellation request is pending approval');
+  }
+
+  const progress = existing.kitchenProgress.find((p) => p.kitchenId === kitchenId);
+  if (!progress) throw ApiError.badRequest('This kitchen has no items on this order');
+
+  // Derive the whole order's status from ALL of its kitchens' progress, as it will be
+  // right after this one row updates — not just from this one kitchen's own change.
+  const otherProgress = existing.kitchenProgress.filter((p) => p.id !== progress.id);
+  const allReadyAfter = status === 'ready' && otherProgress.every((p) => p.status === 'ready');
+  const anyStartedAfter = status === 'preparing' || status === 'ready'
+    || otherProgress.some((p) => p.status === 'preparing' || p.status === 'ready');
+
+  let newPrismaStatus = existing.status;
+  if (allReadyAfter) newPrismaStatus = 'READY' as any;
+  else if (anyStartedAfter && existing.status === 'PENDING') newPrismaStatus = 'PREPARING' as any;
+
+  const order = await prisma.$transaction(async (tx) => {
+    await tx.orderKitchenProgress.update({
+      where: { id: progress.id },
+      data: { status },
+    });
+
+    const needsOrderUpdate = newPrismaStatus !== existing.status;
+    const updated = needsOrderUpdate
+      ? await tx.order.update({
+          where: { id },
+          data: { status: newPrismaStatus as any },
+          include: {
+            items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
+          },
+        })
+      : await tx.order.findUniqueOrThrow({
+          where: { id },
+          include: {
+            items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
+          },
+        });
+
+    await deductStockForConsumedStates(tx, existing, updated.items, newPrismaStatus as string, req.user?.id);
+
+    return updated;
+  }, { timeout: 30000 });
+
+  const statusUpdated = await runOrderStatusPostEffects(prisma, existing, order, newPrismaStatus as string, req);
+  res.json(ApiResponse.success(statusUpdated, 'Kitchen status updated'));
 });
 
 /** POST /api/orders/:id/accept-self-order — a waiter claims a pending self-order.
