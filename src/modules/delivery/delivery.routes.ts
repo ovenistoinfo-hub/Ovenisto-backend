@@ -26,7 +26,7 @@ deliveryRouter.get   ('/my-stats',       authenticate, authorize(riderRoles),   
 
 // Assignments
 deliveryRouter.get   ('/assignments',             authenticate, authorize(managerRoles), getAssignments);
-deliveryRouter.post  ('/assign',                  authenticate, authorize(managerRoles), assignRider);
+deliveryRouter.post  ('/assign',                  authenticate, authorize(riderRoles),   assignRider);
 deliveryRouter.put   ('/assignments/:id/status',  authenticate, authorize(riderRoles),   updateAssignmentStatus);
 deliveryRouter.put   ('/assignments/:id/collect', authenticate, authorize(collectRoles),  collectAmount);
 

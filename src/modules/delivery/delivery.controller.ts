@@ -181,6 +181,12 @@ export const assignRider = asyncHandler(async (req: Request, res: Response) => {
   ]);
   if (!order)  throw ApiError.notFound('Order not found');
   if (!rider)  throw ApiError.notFound('Rider not found');
+
+  // If acting user is a Rider, enforce that they can only assign/claim for themselves
+  if (req.user?.role === 'Rider' as any && rider.userId !== req.user?.id) {
+    throw ApiError.forbidden('Riders can only claim delivery orders for themselves');
+  }
+
   const scope = resolveOutletScope(req);
   if (scope && order.outletId !== scope) throw ApiError.notFound('Order not found');
   if (scope && rider.user?.outletId !== scope) throw ApiError.badRequest('Rider is not in your outlet');
