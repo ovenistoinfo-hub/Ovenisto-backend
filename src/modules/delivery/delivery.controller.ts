@@ -148,7 +148,7 @@ export const getMyStats = asyncHandler(async (req: Request, res: Response) => {
   const [todayAssignments, allAssignments] = await Promise.all([
     prisma.deliveryAssignment.findMany({
       where: { riderId: riderProfile.id, status: 'delivered', deliveredAt: { gte: today } },
-      include: { order: { select: { total: true } } },
+      include: { order: { select: { total: true, settlementId: true } } },
     }),
     prisma.deliveryAssignment.findMany({
       where: { riderId: riderProfile.id, status: 'delivered' },
@@ -158,7 +158,9 @@ export const getMyStats = asyncHandler(async (req: Request, res: Response) => {
 
   const todaySales   = todayAssignments.reduce((s, a) => s + Number(a.order?.total ?? 0), 0);
   const totalSales   = allAssignments.reduce((s, a)   => s + Number(a.order?.total ?? 0), 0);
-  const pendingCash  = todayAssignments.filter(a => !a.collectedAt).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
+  // "Cleared" now means settled via Cash Hub (Order.settlementId), not the legacy
+  // per-assignment collectedAt flag — Cash Hub is the only place this gets set now.
+  const pendingCash  = todayAssignments.filter(a => !a.order?.settlementId).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
 
   res.json(ApiResponse.success({
     rider: mapRider(riderProfile),
@@ -358,12 +360,12 @@ export const getRiderStats = asyncHandler(async (req: Request, res: Response) =>
 
   const todayDelivered = await prisma.deliveryAssignment.findMany({
     where: { riderId: id, status: 'delivered', deliveredAt: { gte: day, lte: dayEnd } },
-    include: { order: { select: { total: true } } },
+    include: { order: { select: { total: true, settlementId: true } } },
   });
 
   const todaySales    = todayDelivered.reduce((s, a) => s + Number(a.order?.total ?? 0), 0);
-  const pendingCash   = todayDelivered.filter(a => !a.collectedAt).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
-  const collectedCash = todayDelivered.filter(a =>  a.collectedAt).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
+  const pendingCash   = todayDelivered.filter(a => !a.order?.settlementId).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
+  const collectedCash = todayDelivered.filter(a =>  a.order?.settlementId).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
 
   res.json(ApiResponse.success({
     rider: mapRider(rider),
@@ -384,7 +386,7 @@ export const getDeliveryDashboard = asyncHandler(async (req: Request, res: Respo
     prisma.deliveryRider.findMany({ where: scope ? { user: { outletId: scope } } : {}, orderBy: { name: 'asc' } }),
     prisma.deliveryAssignment.findMany({
       where: { status: 'delivered', deliveredAt: { gte: today, lte: todayEnd }, ...(scope ? { order: { outletId: scope } } : {}) },
-      include: { order: { select: { total: true } } },
+      include: { order: { select: { total: true, settlementId: true } } },
     }),
     prisma.deliveryAssignment.findMany({
       where: { status: { in: ['pending', 'accepted', 'dispatched'] }, ...(scope ? { order: { outletId: scope } } : {}) },
@@ -396,8 +398,8 @@ export const getDeliveryDashboard = asyncHandler(async (req: Request, res: Respo
   const riderStats = riders.map(r => {
     const myDeliveries = todayDeliveries.filter(a => a.riderId === r.id);
     const todaySales   = myDeliveries.reduce((s, a) => s + Number(a.order?.total ?? 0), 0);
-    const pendingCash  = myDeliveries.filter(a => !a.collectedAt).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
-    const collectedCash = myDeliveries.filter(a => a.collectedAt).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
+    const pendingCash  = myDeliveries.filter(a => !a.order?.settlementId).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
+    const collectedCash = myDeliveries.filter(a => a.order?.settlementId).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
     return { ...mapRider(r), todayOrders: myDeliveries.length, todaySales, pendingCash, collectedCash };
   });
 

@@ -66,7 +66,7 @@ export function resolveEventRooms(outletIds: (string | null | undefined)[]): str
  * Emit an event to only the outlets it concerns (plus Super Admins).
  * Best-effort and non-throwing — a socket failure must never break the HTTP request.
  */
-function emitToOutlets(
+export function emitToOutlets(
   event: string,
   payload: unknown,
   outletIds: (string | null | undefined)[]

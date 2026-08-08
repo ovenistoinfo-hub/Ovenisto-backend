@@ -38,6 +38,7 @@ import { payrollRouter } from '../modules/payroll/payroll.routes.js';
 import { cancellationRequestsRouter } from '../modules/cancellation-requests/cancellation-request.routes.js';
 import { penaltiesRouter } from '../modules/penalties/penalty.routes.js';
 import { selfOrderRouter } from '../modules/self-order/self-order.routes.js';
+import { cashSettlementRouter } from '../modules/cash-settlement/cash-settlement.routes.js';
 
 const router = Router();
 
@@ -151,6 +152,7 @@ router.use('/challans',  challansRouter);
 router.use('/demands',   demandsRouter);
 router.use('/warehouse-ledger', warehouseLedgerRouter);
 router.use('/purchase-requests', purchaseRequestsRouter);
+router.use('/cash-settlements', cashSettlementRouter);
 
 // Phase 8: Delivery
 router.use('/delivery', deliveryRouter);

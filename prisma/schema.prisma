@@ -53,6 +53,7 @@ model Outlet {
   suppliers        Supplier[]
   ingredients      Ingredient[]
   outletIngredientSuppliers OutletIngredientSupplier[]
+  cashSettlements  CashSettlement[]
 
   dueToMain Decimal @default(0) @db.Decimal(10, 2)
 
@@ -121,6 +122,8 @@ model User {
   cancelRequestsReviewed    OrderCancellationRequest[] @relation("CancelReqReviewedBy")
   staffPenalties            StaffPenalty[]             @relation("StaffPenaltyUser")
   purchasePayments          PurchasePayment[]
+  staffSettlements          CashSettlement[]           @relation("StaffSettlements")
+  managerSettlements        CashSettlement[]           @relation("ManagerApprovedSettlements")
 
   @@map("users")
 }
@@ -849,6 +852,7 @@ model Order {
   acceptedById    String?
   acceptedByName  String?     @db.VarChar(100)
   rejectionReason String?
+  settlementId    String?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
@@ -866,6 +870,7 @@ model Order {
   cancellationRequests OrderCancellationRequest[]
   staffPenalties       StaffPenalty[]
   kitchenProgress      OrderKitchenProgress[]
+  settlement           CashSettlement?        @relation(fields: [settlementId], references: [id])
 
   @@index([createdAt])
   @@index([status])
@@ -983,6 +988,42 @@ model StaffPenalty {
   @@index([userId, paymentLogId])
   @@index([outletId])
   @@map("staff_penalties")
+}
+
+model CashSettlement {
+  id              String   @id @default(uuid())
+  settlementNo    String   @unique @db.VarChar(30)
+  outletId        String?
+  staffId         String
+  staffName       String   @db.VarChar(100)
+  staffRole       String   @db.VarChar(50)
+  settledById     String
+  settledByName   String   @db.VarChar(100)
+  
+  expectedCash    Decimal  @db.Decimal(10, 2)
+  expectedCard    Decimal  @db.Decimal(10, 2)
+  expectedOnline  Decimal  @db.Decimal(10, 2)
+  totalExpected   Decimal  @db.Decimal(10, 2)
+
+  actualCash      Decimal  @db.Decimal(10, 2)
+  actualCard      Decimal  @db.Decimal(10, 2)
+  actualOnline    Decimal  @db.Decimal(10, 2)
+  totalActual     Decimal  @db.Decimal(10, 2)
+
+  cashDifference  Decimal  @default(0) @db.Decimal(10, 2)
+  paymentBreakdown Json?
+  notes           String?  @db.VarChar(255)
+
+  createdAt       DateTime @default(now())
+
+  outlet    Outlet? @relation(fields: [outletId], references: [id])
+  staff     User    @relation("StaffSettlements", fields: [staffId], references: [id])
+  settledBy User    @relation("ManagerApprovedSettlements", fields: [settledById], references: [id])
+  orders    Order[]
+
+  @@index([outletId, createdAt])
+  @@index([staffId])
+  @@map("cash_settlements")
 }
 
 model Kitchen {
@@ -1567,3 +1608,4 @@ model OutletIngredientSupplier {
   @@unique([outletId, ingredientId])
   @@map("outlet_ingredient_suppliers")
 }
+

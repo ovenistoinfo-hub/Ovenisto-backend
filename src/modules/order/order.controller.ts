@@ -25,6 +25,20 @@ const TYPE_TO_PRISMA: Record<string, string> = {
   'Self Order': 'SELF_ORDER',
   'Foodpanda': 'FOODPANDA',
   'Walk-in': 'WALKIN',
+  'DINE_IN': 'DINE_IN',
+  'TAKE_AWAY': 'TAKE_AWAY',
+  'DELIVERY': 'DELIVERY',
+  'ONLINE': 'ONLINE',
+  'SELF_ORDER': 'SELF_ORDER',
+  'FOODPANDA': 'FOODPANDA',
+  'WALKIN': 'WALKIN',
+  'dine_in': 'DINE_IN',
+  'take_away': 'TAKE_AWAY',
+  'delivery': 'DELIVERY',
+  'online': 'ONLINE',
+  'self_order': 'SELF_ORDER',
+  'foodpanda': 'FOODPANDA',
+  'walkin': 'WALKIN',
 };
 
 const TYPE_TO_DISPLAY: Record<string, string> = {
@@ -160,15 +174,15 @@ export function mapOrderOut(order: any): any {
       createdAt: pendingCancelReq.createdAt,
     } : (order.pendingCancellationRequest || null),
     // Normalise Decimal fields to numbers so JSON serialises cleanly
-    subtotal: Number(order.subtotal),
-    discount: Number(order.discount),
-    tax: Number(order.tax),
-    total: Number(order.total),
-    advancePayment: Number(order.advancePayment),
+    subtotal: order.subtotal != null ? Number(order.subtotal) : 0,
+    discount: order.discount != null ? Number(order.discount) : 0,
+    tax: order.tax != null ? Number(order.tax) : 0,
+    total: order.total != null ? Number(order.total) : 0,
+    advancePayment: order.advancePayment != null ? Number(order.advancePayment) : 0,
     items: (order.items ?? []).map((i: any) => ({
       ...i,
-      price: Number(i.price),
-      discount: Number(i.discount),
+      price: i.price != null ? Number(i.price) : 0,
+      discount: i.discount != null ? Number(i.discount) : 0,
       categoryName: i.menuItem?.category?.name ?? null,
     })),
     kitchenProgress: (order.kitchenProgress ?? []).map((p: any) => ({
@@ -373,7 +387,9 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
       const categoryName = item.menuItem?.category?.name;
       if (!categoryName) continue;
       for (const kitch of activeKitchens) {
-        if (kitch.assignedCategories.includes(categoryName)) matchedKitchenIds.add(kitch.id);
+        if (Array.isArray(kitch.assignedCategories) && kitch.assignedCategories.includes(categoryName)) {
+          matchedKitchenIds.add(kitch.id);
+        }
       }
     }
 
@@ -426,7 +442,21 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
   if (discount !== undefined) dataToUpdate.discount = isNaN(Number(discount)) ? 0 : Number(discount);
   if (tax !== undefined) dataToUpdate.tax = isNaN(Number(tax)) ? 0 : Number(tax);
   if (total !== undefined) dataToUpdate.total = isNaN(Number(total)) ? 0 : Number(total);
-  if (paymentMethod !== undefined) dataToUpdate.paymentMethod = paymentMethod || null;
+  if (paymentMethod !== undefined) {
+    dataToUpdate.paymentMethod = paymentMethod || null;
+    // Cash Hub attributes uncleared cash by order.staffId — re-stamp it to whoever
+    // actually collects the payment (Pay Bill / Collect Payment), not whoever merely
+    // created the order, the moment it transitions out of Pending/Unpaid. Riders are
+    // unaffected (cash-settlement.service.ts already prefers order.riderId for them).
+    const prevPm = (existing.paymentMethod || '').toLowerCase().trim();
+    const wasUncollected = !prevPm || prevPm === 'pending' || prevPm === 'unpaid';
+    const newPm = String(paymentMethod || '').toLowerCase().trim();
+    const isNowCollected = !!newPm && newPm !== 'pending' && newPm !== 'unpaid';
+    if (wasUncollected && isNowCollected && req.user) {
+      dataToUpdate.staffId = req.user.id;
+      if (staffName === undefined) dataToUpdate.staffName = req.user.name || existing.staffName;
+    }
+  }
   if (tableNumber !== undefined) dataToUpdate.tableNumber = tableNumber !== null && !isNaN(Number(tableNumber)) ? Number(tableNumber) : null;
   if (deliveryAddress !== undefined) dataToUpdate.deliveryAddress = deliveryAddress || null;
   if (riderId !== undefined) dataToUpdate.riderId = riderId ? String(riderId) : null;
