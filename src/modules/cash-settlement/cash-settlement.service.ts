@@ -3,6 +3,27 @@ import { prisma } from '../../config/database.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { emitToOutlets } from '../../socket.js';
 
+function getCashierPaymentMethodString(pmString: string | null | undefined): string {
+  if (!pmString) return 'Cash';
+  const match = pmString.match(/Advance\s*\(([^)]+)\)/i);
+  if (match) {
+    return match[0];
+  }
+  if (pmString.toLowerCase().includes('cash on delivery')) {
+    return 'Cash';
+  }
+  return pmString;
+}
+
+function getRiderPaymentMethodString(pmString: string | null | undefined): string {
+  if (!pmString) return 'Cash';
+  const match = pmString.match(/COD Balance\s*\(([^)]+)\)/i);
+  if (match) {
+    return match[0];
+  }
+  return pmString;
+}
+
 function parsePaymentMethodAmounts(
   pmString: string | null | undefined,
   totalAmount: number,
@@ -34,28 +55,61 @@ function parsePaymentMethodAmounts(
     return result;
   }
 
-  // 2. Split payment string parsing (e.g. "Cash: Rs.1000, EasyPaisa: Rs.333" or "Advance (Cash): Rs.500, Net (Credit Card): Rs.400")
+  // 2. Split payment string parsing (e.g. "Cash: Rs.1000, EasyPaisa: Rs.333" or "Advance (Cash: Rs.500), COD Balance (JazzCash): Rs.1000")
   if (raw.includes(':') || raw.includes(',')) {
     const parts = raw.split(',');
     let parsedSum = 0;
     for (const part of parts) {
-      const subParts = part.split(':');
-      if (subParts.length >= 2) {
-        let methodLabel = subParts[0].trim();
-        const parenMatch = methodLabel.match(/\(([^)]+)\)/);
-        if (parenMatch) {
-          methodLabel = parenMatch[1].trim();
-        }
+      let methodLabel = '';
+      let valueStr = '';
 
-        const valueStr = subParts[subParts.length - 1].replace(/Rs\.?|PKR/gi, '').trim();
-        const val = parseFloat(valueStr);
+      const advanceMatch = part.match(/Advance\s*\(([^)]+)\)/i);
+      const codMatch = part.match(/COD Balance\s*\(([^)]+)\)/i);
+
+      if (advanceMatch) {
+        const inner = advanceMatch[1];
+        if (inner.includes(':')) {
+          const [m, v] = inner.split(':');
+          methodLabel = m.trim();
+          valueStr = v;
+        } else {
+          methodLabel = inner.trim();
+          const colIdx = part.lastIndexOf(':');
+          if (colIdx !== -1) valueStr = part.substring(colIdx + 1);
+        }
+      } else if (codMatch) {
+        const inner = codMatch[1];
+        if (inner.includes(':')) {
+          const [m, v] = inner.split(':');
+          methodLabel = m.trim();
+          valueStr = v;
+        } else {
+          methodLabel = inner.trim();
+          const colIdx = part.lastIndexOf(':');
+          if (colIdx !== -1) valueStr = part.substring(colIdx + 1);
+        }
+      } else {
+        const subParts = part.split(':');
+        if (subParts.length >= 2) {
+          methodLabel = subParts[0].trim();
+          const parenMatch = methodLabel.match(/\(([^)]+)\)/);
+          if (parenMatch) {
+            methodLabel = parenMatch[1].trim();
+          }
+          valueStr = subParts[subParts.length - 1];
+        }
+      }
+
+      if (methodLabel && valueStr) {
+        const cleanedValueStr = valueStr.replace(/Rs\.?|PKR/gi, '').trim();
+        const val = parseFloat(cleanedValueStr);
         if (!isNaN(val) && val > 0) {
           const lml = methodLabel.toLowerCase();
           const matchedMethod =
             configuredMethods.find((m) => m.toLowerCase() === lml) ||
             configuredMethods.find((m) => {
               const lm = m.toLowerCase();
-              if (lm === 'cash' && lml === 'cash') return true;
+              if (lm === 'cash' && (lml === 'cash' || lml.includes('cash'))) return true;
               if (lm.includes('card') && (lml.includes('card') || lml.includes('credit'))) return true;
               if (lm.includes('jazz') && lml.includes('jazz')) return true;
               if (lm.includes('easy') && lml.includes('easy')) return true;
@@ -106,6 +160,7 @@ export function mapOrder(o: any) {
   return {
     id: o.id,
     orderNumber: o.orderNumber,
+    customerName: o.customerName || o.customer?.name || "Walk-in",
     total: Number(o.total),
     subtotal: Number(o.subtotal ?? 0),
     tax: Number(o.tax ?? 0),
@@ -207,32 +262,15 @@ export async function getActiveBalances(outletScope: string | null) {
     }
   >();
 
-  for (const order of orders) {
-    let staffId: string;
-    let staffName: string;
-    let staffRole: string;
-
-    if (order.riderId && order.rider) {
-      staffId = order.rider.userId || order.rider.id;
-      staffName = order.rider.user?.name || order.rider.name;
-      staffRole = order.rider.user?.role || 'Rider';
-    } else if (order.staffId && order.staff) {
-      staffId = order.staff.id;
-      staffName = order.staff.name;
-      staffRole = order.staff.role;
-    } else if (order.staffId) {
-      staffId = order.staffId;
-      staffName = order.staffName || 'Unknown Staff';
-      staffRole = 'Staff';
-    } else if (order.staffName) {
-      staffId = order.staffName;
-      staffName = order.staffName;
-      staffRole = 'Staff';
-    } else {
-      staffId = 'unassigned';
-      staffName = 'Unassigned';
-      staffRole = 'Staff';
-    }
+  const allocateToStaffGroup = (
+    staffId: string,
+    staffName: string,
+    staffRole: string,
+    pmString: string,
+    amount: number,
+    orderObj: any
+  ) => {
+    if (amount <= 0) return;
 
     if (!staffMap.has(staffId)) {
       const initialByMethod: Record<string, number> = {};
@@ -252,29 +290,103 @@ export async function getActiveBalances(outletScope: string | null) {
     }
 
     const group = staffMap.get(staffId)!;
-    const orderTotal = Number(order.total);
-    const parsedAmounts = parsePaymentMethodAmounts(order.paymentMethod, orderTotal, configuredMethods);
+    const parsedAmounts = parsePaymentMethodAmounts(pmString, amount, configuredMethods);
 
     let hasNonZero = false;
-    for (const [method, amount] of Object.entries(parsedAmounts)) {
-      if (amount > 0) hasNonZero = true;
-      group.byMethod[method] = Number(((group.byMethod[method] || 0) + amount).toFixed(2));
+    for (const [method, parsedAmt] of Object.entries(parsedAmounts)) {
+      if (parsedAmt > 0) hasNonZero = true;
+      group.byMethod[method] = Number(((group.byMethod[method] || 0) + parsedAmt).toFixed(2));
 
       const lowerM = method.toLowerCase().trim();
       const isCash = lowerM === 'cash';
       const isCard = lowerM.includes('card') || lowerM.includes('bank');
 
       if (isCash) {
-        group.expectedCash += amount;
+        group.expectedCash += parsedAmt;
       } else if (isCard) {
-        group.expectedCard += amount;
+        group.expectedCard += parsedAmt;
       } else {
-        group.expectedOnline += amount;
+        group.expectedOnline += parsedAmt;
       }
     }
 
     if (hasNonZero) {
-      group.orders.push(mapOrder(order));
+      if (!group.orders.some((o: any) => o.id === orderObj.id)) {
+        group.orders.push(mapOrder(orderObj));
+      }
+    }
+  };
+
+  for (const order of orders) {
+    const orderTotal = Number(order.total || 0);
+    const advanceAmount = Number(order.advancePayment || 0);
+    const isPrepaid = advanceAmount >= orderTotal;
+
+    let cashierAmount = 0;
+    let riderAmount = 0;
+
+    if (isPrepaid) {
+      cashierAmount = orderTotal;
+      riderAmount = 0;
+    } else {
+      const remainingCOD = Math.max(0, orderTotal - advanceAmount);
+      if (order.riderId && order.rider) {
+        cashierAmount = advanceAmount;
+        riderAmount = remainingCOD;
+      } else {
+        cashierAmount = orderTotal;
+        riderAmount = 0;
+      }
+    }
+
+    if (cashierAmount > 0) {
+      let cashierStaffId: string;
+      let cashierStaffName: string;
+      let cashierStaffRole: string;
+
+      if (order.staffId && order.staff) {
+        cashierStaffId = order.staff.id;
+        cashierStaffName = order.staff.name;
+        cashierStaffRole = order.staff.role;
+      } else if (order.staffId) {
+        cashierStaffId = order.staffId;
+        cashierStaffName = order.staffName || 'Unknown Staff';
+        cashierStaffRole = 'Staff';
+      } else if (order.staffName) {
+        cashierStaffId = order.staffName;
+        cashierStaffName = order.staffName;
+        cashierStaffRole = 'Staff';
+      } else {
+        cashierStaffId = 'unassigned';
+        cashierStaffName = 'Unassigned';
+        cashierStaffRole = 'Staff';
+      }
+
+      const cashierPm = getCashierPaymentMethodString(order.paymentMethod);
+      allocateToStaffGroup(
+        cashierStaffId,
+        cashierStaffName,
+        cashierStaffRole,
+        cashierPm,
+        cashierAmount,
+        order
+      );
+    }
+
+    if (riderAmount > 0 && order.riderId && order.rider) {
+      const riderStaffId = order.rider.userId || order.rider.id;
+      const riderStaffName = order.rider.user?.name || order.rider.name;
+      const riderStaffRole = order.rider.user?.role || 'Rider';
+
+      const riderPm = getRiderPaymentMethodString(order.paymentMethod);
+      allocateToStaffGroup(
+        riderStaffId,
+        riderStaffName,
+        riderStaffRole,
+        riderPm,
+        riderAmount,
+        order
+      );
     }
   }
 
@@ -535,6 +647,7 @@ export async function getSettlementHistory(
           select: {
             id: true,
             orderNumber: true,
+            customerName: true,
             total: true,
             subtotal: true,
             tax: true,

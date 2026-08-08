@@ -238,12 +238,26 @@ export const assignRider = asyncHandler(async (req: Request, res: Response) => {
 /** PUT /api/delivery/assignments/:id/status */
 export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { status } = req.body;
+  const { status, paymentMethod } = req.body;
 
   const allowed = ['accepted', 'dispatched', 'delivered', 'returned'];
   if (!allowed.includes(status)) throw ApiError.badRequest(`Status must be one of: ${allowed.join(', ')}`);
 
-  const assignment = await prisma.deliveryAssignment.findUnique({ where: { id }, include: { rider: true, order: { select: { outletId: true } } } });
+  const assignment = await prisma.deliveryAssignment.findUnique({
+    where: { id },
+    include: {
+      rider: true,
+      order: {
+        select: {
+          id: true,
+          outletId: true,
+          total: true,
+          advancePayment: true,
+          paymentMethod: true,
+        },
+      },
+    },
+  });
   if (!assignment) throw ApiError.notFound('Assignment not found');
   const scope = resolveOutletScope(req);
   if (scope && assignment.order?.outletId !== scope) throw ApiError.notFound('Assignment not found');
@@ -252,7 +266,30 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
   if (status === 'accepted')   data.acceptedAt   = new Date();
   if (status === 'delivered')  data.deliveredAt  = new Date();
 
-  const ops: any[] = [prisma.deliveryAssignment.update({ where: { id }, data, include: { order: { select: { id: true, orderNumber: true, total: true, customerName: true } }, rider: true } })];
+  const ops: any[] = [
+    prisma.deliveryAssignment.update({
+      where: { id },
+      data,
+      include: {
+        order: {
+          select: {
+            id: true,
+            orderNumber: true,
+            total: true,
+            subtotal: true,
+            tax: true,
+            discount: true,
+            advancePayment: true,
+            paymentMethod: true,
+            customerName: true,
+            deliveryAddress: true,
+            phone: true,
+          },
+        },
+        rider: true,
+      },
+    }),
+  ];
 
   // Rider accepts → mark as on_delivery now (assignment was pending until this point)
   if (status === 'accepted') {
@@ -276,6 +313,27 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
         data: { activeDeliveries: { decrement: 1 }, isAvailable: true, status: 'available' },
       }),
     );
+
+    if (paymentMethod && typeof paymentMethod === 'string' && paymentMethod.trim() !== '') {
+      const pmTrimmed = paymentMethod.trim();
+      const advanceAmount = Number(assignment.order?.advancePayment ?? 0);
+      const total = Number(assignment.order?.total ?? 0);
+      const remainingCOD = Math.max(0, total - advanceAmount);
+
+      let updatedPaymentMethod: string;
+      if (advanceAmount > 0) {
+        updatedPaymentMethod = `Advance (Cash: Rs.${advanceAmount}), COD Balance (${pmTrimmed}): Rs.${remainingCOD}`;
+      } else {
+        updatedPaymentMethod = pmTrimmed;
+      }
+
+      ops.push(
+        prisma.order.update({
+          where: { id: assignment.orderId },
+          data: { paymentMethod: updatedPaymentMethod },
+        }),
+      );
+    }
   }
   if (status === 'returned') {
     ops.push(
