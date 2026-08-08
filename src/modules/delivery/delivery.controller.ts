@@ -133,7 +133,7 @@ export const getMyAssignments = asyncHandler(async (req: Request, res: Response)
 
   const assignments = await prisma.deliveryAssignment.findMany({
     where: { riderId: riderProfile.id, status: { in: ['pending', 'accepted', 'dispatched'] } },
-    include: { order: { select: { id: true, orderNumber: true, total: true, advancePayment: true, paymentMethod: true, customerName: true, deliveryAddress: true, phone: true } } },
+    include: { order: { select: { id: true, orderNumber: true, total: true, advancePayment: true, paymentMethod: true, status: true, customerName: true, deliveryAddress: true, phone: true } } },
     orderBy: { assignedAt: 'desc' },
   });
   res.json(ApiResponse.success({ rider: mapRider(riderProfile), assignments: assignments.map(mapAssignment) }));
