@@ -4,13 +4,12 @@ import { authorize } from '../../middleware/authorize.js';
 import {
   getRiders, createRider, updateRider,
   getAssignments, getMyAssignments, getMyStats,
-  assignRider, updateAssignmentStatus, collectAmount,
+  assignRider, updateAssignmentStatus,
   getRiderStats, getDeliveryDashboard,
 } from './delivery.controller.js';
 
 const managerRoles  = ['Super Admin', 'Admin', 'Manager', 'Cashier', 'Delivery Manager'];
 const riderRoles    = ['Super Admin', 'Admin', 'Manager', 'Cashier', 'Delivery Manager', 'Rider'];
-const collectRoles  = ['Super Admin', 'Admin', 'Manager', 'Cashier', 'Delivery Manager'];
 
 export const deliveryRouter = Router();
 
@@ -28,7 +27,6 @@ deliveryRouter.get   ('/my-stats',       authenticate, authorize(riderRoles),   
 deliveryRouter.get   ('/assignments',             authenticate, authorize(managerRoles), getAssignments);
 deliveryRouter.post  ('/assign',                  authenticate, authorize(riderRoles),   assignRider);
 deliveryRouter.put   ('/assignments/:id/status',  authenticate, authorize(riderRoles),   updateAssignmentStatus);
-deliveryRouter.put   ('/assignments/:id/collect', authenticate, authorize(collectRoles),  collectAmount);
 
 // Dashboard
 deliveryRouter.get   ('/dashboard', authenticate, authorize(managerRoles), getDeliveryDashboard);

@@ -422,53 +422,6 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
   res.json(ApiResponse.success(mapAssignment(updated)));
 });
 
-/** PUT /api/delivery/assignments/:id/collect — manager collects cash from rider */
-export const collectAmount = asyncHandler(async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const assignment = await prisma.deliveryAssignment.findUnique({
-    where: { id },
-    include: {
-      order: { select: { id: true, outletId: true, paymentMethod: true, total: true, advancePayment: true } },
-    },
-  });
-  if (!assignment) throw ApiError.notFound('Assignment not found');
-  const scope = resolveOutletScope(req);
-  if (scope && assignment.order?.outletId !== scope) throw ApiError.notFound('Assignment not found');
-  if (assignment.status !== 'delivered') throw ApiError.badRequest('Can only collect from delivered orders');
-  if (assignment.collectedAt) throw ApiError.badRequest('Amount already collected');
-
-  const collectedAmount = Number(assignment.amountToCollect ?? assignment.order?.total ?? 0);
-  const paymentMethod   = assignment.order?.paymentMethod ?? '';
-
-  let updatedPaymentMethod: string;
-  if (paymentMethod === 'Cash on Delivery') {
-    updatedPaymentMethod = 'Cash on Delivery (Collected)';
-  } else if (paymentMethod.startsWith('Advance (')) {
-    updatedPaymentMethod = `${paymentMethod}, COD Balance (Cash): Rs.${collectedAmount}`;
-  } else {
-    updatedPaymentMethod = paymentMethod; // prepaid — no change needed
-  }
-
-  const [updated] = await prisma.$transaction([
-    prisma.deliveryAssignment.update({
-      where: { id },
-      data: { collectedAt: new Date(), collectedBy: req.user?.name || 'Manager' },
-      include: { order: { select: { id: true, orderNumber: true, total: true } }, rider: true },
-    }),
-    prisma.order.update({
-      where: { id: assignment.orderId },
-      data: { paymentMethod: updatedPaymentMethod },
-    }),
-  ]);
-
-  // Emit real-time event so Delivery.tsx Riders Dashboard updates live
-  emitDeliveryEvent('delivery:collected', {
-    assignmentId: id,
-    outletId: assignment.order?.outletId,
-  }, [assignment.order?.outletId]);
-  res.json(ApiResponse.success(mapAssignment(updated), 'Amount collected'));
-});
-
 /** GET /api/delivery/riders/:id/stats — per-rider daily stats for manager dashboard */
 export const getRiderStats = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;

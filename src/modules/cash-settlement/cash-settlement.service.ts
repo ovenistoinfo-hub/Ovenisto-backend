@@ -267,6 +267,8 @@ export async function getActiveBalances(outletScope: string | null) {
       staffId: string;
       staffName: string;
       staffRole: string;
+      accountLinked: boolean;
+      oldestOrderAt: Date;
       expectedCash: number;
       expectedCard: number;
       expectedOnline: number;
@@ -279,6 +281,7 @@ export async function getActiveBalances(outletScope: string | null) {
     staffId: string,
     staffName: string,
     staffRole: string,
+    accountLinked: boolean,
     pmString: string,
     amount: number,
     orderObj: any
@@ -294,6 +297,8 @@ export async function getActiveBalances(outletScope: string | null) {
         staffId,
         staffName,
         staffRole,
+        accountLinked,
+        oldestOrderAt: orderObj.createdAt,
         expectedCash: 0,
         expectedCard: 0,
         expectedOnline: 0,
@@ -303,6 +308,7 @@ export async function getActiveBalances(outletScope: string | null) {
     }
 
     const group = staffMap.get(staffId)!;
+    if (orderObj.createdAt < group.oldestOrderAt) group.oldestOrderAt = orderObj.createdAt;
     const parsedAmounts = parsePaymentMethodAmounts(pmString, amount, configuredMethods);
 
     let hasNonZero = false;
@@ -312,7 +318,9 @@ export async function getActiveBalances(outletScope: string | null) {
 
       const lowerM = method.toLowerCase().trim();
       const isCash = lowerM === 'cash';
-      const isCard = lowerM.includes('card') || lowerM.includes('bank');
+      // Bank belongs under "Online" per the cash-hub design spec — only genuine
+      // card-network methods (Credit/Debit Card) count as "Card" here.
+      const isCard = lowerM.includes('card');
 
       if (isCash) {
         group.expectedCash += parsedAmt;
@@ -391,6 +399,11 @@ export async function getActiveBalances(outletScope: string | null) {
       let cashierStaffId: string;
       let cashierStaffName: string;
       let cashierStaffRole: string;
+      // accountLinked = false means this staffId does NOT resolve to a real User row,
+      // so it can never be written to CashSettlement.staffId (a required FK to User).
+      // These orders still surface in Active Balances for visibility, but createSettlement
+      // rejects settling them until a real account is linked — see the account guard there.
+      let accountLinked = true;
 
       if (order.staffId && order.staff) {
         cashierStaffId = order.staff.id;
@@ -404,10 +417,12 @@ export async function getActiveBalances(outletScope: string | null) {
         cashierStaffId = order.staffName;
         cashierStaffName = order.staffName;
         cashierStaffRole = 'Staff';
+        accountLinked = false;
       } else {
         cashierStaffId = 'unassigned';
         cashierStaffName = 'Unassigned';
         cashierStaffRole = 'Staff';
+        accountLinked = false;
       }
 
       // Pass the clean method name (e.g. "JazzCash") so parsePaymentMethodAmounts
@@ -416,6 +431,7 @@ export async function getActiveBalances(outletScope: string | null) {
         cashierStaffId,
         cashierStaffName,
         cashierStaffRole,
+        accountLinked,
         cashierPm,
         cashierAmount,
         order
@@ -428,11 +444,17 @@ export async function getActiveBalances(outletScope: string | null) {
       const riderStaffId = order.rider.userId || order.rider.id;
       const riderStaffName = order.rider.user?.name || order.rider.name;
       const riderStaffRole = order.rider.user?.role || 'Rider';
+      // DeliveryRider.userId is optional — a rider can be created without login access
+      // (see delivery.controller.ts createRider). Their cash still needs to be visible
+      // here, but it can't be settled (CashSettlement.staffId requires a real User) until
+      // an admin links an account, so flag it rather than letting settlement crash.
+      const accountLinked = !!order.rider.userId;
 
       allocateToStaffGroup(
         riderStaffId,
         riderStaffName,
         riderStaffRole,
+        accountLinked,
         riderPm,  // clean method name, e.g. "Cash"
         riderAmount,
         order
@@ -446,6 +468,8 @@ export async function getActiveBalances(outletScope: string | null) {
       staffId: g.staffId,
       staffName: g.staffName,
       staffRole: g.staffRole,
+      accountLinked: g.accountLinked,
+      oldestOrderAt: g.oldestOrderAt,
       expectedCash: Number(g.expectedCash.toFixed(2)),
       expectedCard: Number(g.expectedCard.toFixed(2)),
       expectedOnline: Number(g.expectedOnline.toFixed(2)),
@@ -525,6 +549,8 @@ export async function getStaffActiveBalance(staffId: string, outletScope: string
     staffId,
     staffName: staffName || 'Staff Member',
     staffRole,
+    accountLinked: true,
+    oldestOrderAt: null,
     expectedCash: 0,
     expectedCard: 0,
     expectedOnline: 0,
@@ -552,6 +578,17 @@ export async function createSettlement(
 
   if (!staffBalance || staffBalance.orders.length === 0) {
     throw ApiError.badRequest('No uncleared orders found for this staff member');
+  }
+
+  // CashSettlement.staffId is a required foreign key to User — a rider with no linked
+  // login (DeliveryRider.userId is optional) or a legacy order missing staffId would
+  // otherwise crash this insert with a raw FK constraint violation and leave the cash
+  // permanently stuck as "uncleared". Reject with an actionable message instead.
+  if (!staffBalance.accountLinked) {
+    throw ApiError.badRequest(
+      `${staffBalance.staffName} has no linked login account, so their cash cannot be settled yet. ` +
+      `Ask an admin to link a user account for them (Delivery → Riders, or Users) and try again.`
+    );
   }
 
   let staffName = staffBalance.staffName;
