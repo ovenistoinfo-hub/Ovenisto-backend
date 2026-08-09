@@ -852,7 +852,9 @@ model Order {
   acceptedById    String?
   acceptedByName  String?     @db.VarChar(100)
   rejectionReason String?
-  settlementId    String?
+  settlementId           String?
+  cashierSettlementId    String?  // tracks cashier's advance portion settlement
+  riderSettlementId      String?  // tracks rider's COD portion settlement
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
@@ -871,6 +873,8 @@ model Order {
   staffPenalties       StaffPenalty[]
   kitchenProgress      OrderKitchenProgress[]
   settlement           CashSettlement?        @relation(fields: [settlementId], references: [id])
+  cashierSettlement    CashSettlement?        @relation("CashierSettledOrders", fields: [cashierSettlementId], references: [id])
+  riderSettlement      CashSettlement?        @relation("RiderSettledOrders", fields: [riderSettlementId], references: [id])
 
   @@index([createdAt])
   @@index([status])
@@ -1019,7 +1023,9 @@ model CashSettlement {
   outlet    Outlet? @relation(fields: [outletId], references: [id])
   staff     User    @relation("StaffSettlements", fields: [staffId], references: [id])
   settledBy User    @relation("ManagerApprovedSettlements", fields: [settledById], references: [id])
-  orders    Order[]
+  orders         Order[]
+  cashierOrders  Order[]   @relation("CashierSettledOrders")
+  riderOrders    Order[]   @relation("RiderSettledOrders")
 
   @@index([outletId, createdAt])
   @@index([staffId])

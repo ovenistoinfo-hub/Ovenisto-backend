@@ -5,9 +5,11 @@ import { emitToOutlets } from '../../socket.js';
 
 function getCashierPaymentMethodString(pmString: string | null | undefined): string {
   if (!pmString) return 'Cash';
-  const match = pmString.match(/Advance\s*\(([^)]+)\)/i);
+  // Extract just the method name from "Advance (JazzCash): Rs.507" → "JazzCash"
+  // Stops at ) or : or , to avoid including embedded amounts
+  const match = pmString.match(/Advance\s*\(([^):,]+)/i);
   if (match) {
-    return match[0];
+    return match[1].trim();
   }
   if (pmString.toLowerCase().includes('cash on delivery')) {
     return 'Cash';
@@ -17,9 +19,10 @@ function getCashierPaymentMethodString(pmString: string | null | undefined): str
 
 function getRiderPaymentMethodString(pmString: string | null | undefined): string {
   if (!pmString) return 'Cash';
-  const match = pmString.match(/COD Balance\s*\(([^)]+)\)/i);
+  // Extract just the method name from "COD Balance (Cash): Rs.1000" → "Cash"
+  const match = pmString.match(/COD Balance\s*\(([^):,]+)/i);
   if (match) {
-    return match[0];
+    return match[1].trim();
   }
   return pmString;
 }
@@ -215,6 +218,7 @@ export async function getActiveBalances(outletScope: string | null) {
   } catch {}
 
   const where: Prisma.OrderWhereInput = {
+    // Not legacy-settled (covers regular orders settled before this split-settlement feature)
     settlementId: null,
     status: { not: 'CANCELLED' },
     AND: [
@@ -227,6 +231,15 @@ export async function getActiveBalances(outletScope: string | null) {
         paymentMethod: {
           not: null,
         },
+      },
+      {
+        // Include only orders where at least one portion is still unsettled.
+        // For split advance/COD orders: cashier and rider each have their own ID.
+        // For regular orders: both are null, so OR is trivially true.
+        OR: [
+          { cashierSettlementId: null },
+          { riderSettlementId: null },
+        ],
       },
     ],
   };
@@ -312,34 +325,69 @@ export async function getActiveBalances(outletScope: string | null) {
 
     if (hasNonZero) {
       if (!group.orders.some((o: any) => o.id === orderObj.id)) {
-        group.orders.push(mapOrder(orderObj));
+        // staffAmount = what this staff member is responsible for from this order
+        // (e.g. advance amount for cashier, remaining COD for rider — not the full order total)
+        group.orders.push({ ...mapOrder(orderObj), staffAmount: amount });
       }
     }
   };
 
   for (const order of orders) {
     const orderTotal = Number(order.total || 0);
+    const pm = order.paymentMethod || '';
+    const pmLower = pm.toLowerCase().trim();
+    const hasAdvanceInPM  = /advance\s*\(/i.test(pm);
+    const hasCODBalanceInPM = /cod balance\s*\(/i.test(pm);
     const advanceAmount = Number(order.advancePayment || 0);
-    const isPrepaid = advanceAmount >= orderTotal;
+    // isPrepaid: advance covers entire order (advance >= total AND advance > 0)
+    const isPrepaid = advanceAmount > 0 && advanceAmount >= orderTotal;
 
-    let cashierAmount = 0;
-    let riderAmount = 0;
-
-    if (isPrepaid) {
-      cashierAmount = orderTotal;
-      riderAmount = 0;
-    } else {
-      const remainingCOD = Math.max(0, orderTotal - advanceAmount);
-      if (order.riderId && order.rider) {
-        cashierAmount = advanceAmount;
-        riderAmount = remainingCOD;
-      } else {
-        cashierAmount = orderTotal;
-        riderAmount = 0;
-      }
+    // Pure COD orders not yet delivered: paymentMethod is still "Cash on Delivery" (or similar).
+    // No money has been collected by anyone — skip this order entirely.
+    if (!isPrepaid && !hasAdvanceInPM && (
+      pmLower === 'cash on delivery' ||
+      pmLower === 'cod' ||
+      pmLower === 'cash-on-delivery' ||
+      pmLower === 'pending' ||
+      pmLower === 'unpaid'
+    )) {
+      continue;
     }
 
-    if (cashierAmount > 0) {
+    let cashierAmount = 0;
+    let cashierPm = '';
+    let riderAmount = 0;
+    let riderPm = '';
+
+    if (isPrepaid) {
+      // Full prepaid — cashier collected the entire order amount
+      cashierAmount = orderTotal;
+      cashierPm = pm;
+    } else if (hasAdvanceInPM && hasCODBalanceInPM) {
+      // Rider has delivered and updated the payment method:
+      // "Advance (JazzCash: Rs.507), COD Balance (Cash): Rs.1000"
+      // Cashier keeps the advance, rider gets the remaining COD
+      cashierAmount = advanceAmount;
+      cashierPm = getCashierPaymentMethodString(pm);  // → "JazzCash"
+      riderAmount = Math.max(0, orderTotal - advanceAmount);
+      riderPm = getRiderPaymentMethodString(pm);      // → "Cash"
+    } else if (hasAdvanceInPM) {
+      // Advance collected by cashier, but rider has NOT delivered yet (no COD Balance).
+      // Only credit cashier with the advance; rider's COD is still outstanding.
+      cashierAmount = advanceAmount;
+      cashierPm = getCashierPaymentMethodString(pm);  // → "JazzCash"
+      // riderAmount stays 0
+    } else {
+      // Regular non-delivery payment (dine-in, takeaway, fully resolved delivery) —
+      // cashier collected the entire amount.
+      cashierAmount = orderTotal;
+      cashierPm = pm;
+    }
+
+    // Only allocate cashier portion if it hasn't been independently settled yet.
+    // cashierSettlementId is null for regular orders (handled via legacy settlementId)
+    // and for split orders not yet settled.
+    if (cashierAmount > 0 && (order as any).cashierSettlementId === null) {
       let cashierStaffId: string;
       let cashierStaffName: string;
       let cashierStaffRole: string;
@@ -362,7 +410,8 @@ export async function getActiveBalances(outletScope: string | null) {
         cashierStaffRole = 'Staff';
       }
 
-      const cashierPm = getCashierPaymentMethodString(order.paymentMethod);
+      // Pass the clean method name (e.g. "JazzCash") so parsePaymentMethodAmounts
+      // exact-matches it rather than re-parsing embedded amounts from the PM string.
       allocateToStaffGroup(
         cashierStaffId,
         cashierStaffName,
@@ -373,17 +422,18 @@ export async function getActiveBalances(outletScope: string | null) {
       );
     }
 
-    if (riderAmount > 0 && order.riderId && order.rider) {
+    // Rider only appears after they deliver and update paymentMethod with COD Balance.
+    // Only allocate if riderSettlementId hasn't been independently settled yet.
+    if (riderAmount > 0 && order.riderId && order.rider && (order as any).riderSettlementId === null) {
       const riderStaffId = order.rider.userId || order.rider.id;
       const riderStaffName = order.rider.user?.name || order.rider.name;
       const riderStaffRole = order.rider.user?.role || 'Rider';
 
-      const riderPm = getRiderPaymentMethodString(order.paymentMethod);
       allocateToStaffGroup(
         riderStaffId,
         riderStaffName,
         riderStaffRole,
-        riderPm,
+        riderPm,  // clean method name, e.g. "Cash"
         riderAmount,
         order
       );
@@ -548,6 +598,41 @@ export async function createSettlement(
   const orderIds = staffBalance.orders.map((o) => o.id);
   const outletId = staffBalance.orders[0]?.outletId || outletScope || reqUser.outletId || null;
 
+  // Determine whether the staff member being settled is a Delivery Rider vs Cashier/Staff
+  let isRiderStaff = (staffRole || '').toLowerCase().includes('rider');
+  if (!isRiderStaff) {
+    try {
+      const riderMatch = await prisma.deliveryRider.findFirst({
+        where: { OR: [{ id: data.staffId }, { userId: data.staffId }] },
+      });
+      if (riderMatch) isRiderStaff = true;
+    } catch {}
+  }
+
+  const regularOrderIds: string[] = [];
+  const cashierAdvanceOrderIds: string[] = [];
+  const riderOrderIds: string[] = [];
+
+  for (const o of staffBalance.orders) {
+    const pm = o.paymentMethod || '';
+    const hasAdvance = /advance\s*\(/i.test(pm);
+    const hasCODBalance = /cod balance\s*\(/i.test(pm);
+
+    if (isRiderStaff) {
+      // Settling a Rider: every order in their collection updates riderSettlementId
+      riderOrderIds.push(o.id);
+    } else {
+      // Settling a Cashier / Staff member:
+      if (hasAdvance || hasCODBalance) {
+        // Cashier's advance portion
+        cashierAdvanceOrderIds.push(o.id);
+      } else {
+        // Regular non-split order
+        regularOrderIds.push(o.id);
+      }
+    }
+  }
+
   const createdSettlement = await prisma.$transaction(async (tx) => {
     const settlement = await tx.cashSettlement.create({
       data: {
@@ -577,17 +662,39 @@ export async function createSettlement(
       },
     });
 
-    // Guard against a concurrent settlement claiming the same orders between the
-    // balance snapshot above and this transaction — if any order was already
-    // settled in the meantime, abort (rolls back the settlement row too) instead
-    // of silently double-recording the same cash as settled twice.
-    const claimed = await tx.order.updateMany({
-      where: { id: { in: orderIds }, settlementId: null },
-      data: { settlementId: settlement.id },
-    });
+    // Guard against concurrent settlements — if any order was already settled
+    // in the meantime, abort so we don't double-record cash.
+    // Each order type uses its own field: regular → settlementId,
+    // advance cashier portion → cashierSettlementId, rider COD → riderSettlementId.
 
-    if (claimed.count !== orderIds.length) {
-      throw ApiError.badRequest('Some of these orders were already settled by another request. Please refresh and try again.');
+    if (regularOrderIds.length > 0) {
+      const claimed = await tx.order.updateMany({
+        where: { id: { in: regularOrderIds }, settlementId: null },
+        data: { settlementId: settlement.id },
+      });
+      if (claimed.count !== regularOrderIds.length) {
+        throw ApiError.badRequest('Some orders were already settled by another request. Please refresh and try again.');
+      }
+    }
+
+    if (cashierAdvanceOrderIds.length > 0) {
+      const claimed = await tx.order.updateMany({
+        where: { id: { in: cashierAdvanceOrderIds }, cashierSettlementId: null },
+        data: { cashierSettlementId: settlement.id },
+      });
+      if (claimed.count !== cashierAdvanceOrderIds.length) {
+        throw ApiError.badRequest('Some advance orders were already settled by another request. Please refresh and try again.');
+      }
+    }
+
+    if (riderOrderIds.length > 0) {
+      const claimed = await tx.order.updateMany({
+        where: { id: { in: riderOrderIds }, riderSettlementId: null },
+        data: { riderSettlementId: settlement.id },
+      });
+      if (claimed.count !== riderOrderIds.length) {
+        throw ApiError.badRequest('Some COD orders were already settled by another request. Please refresh and try again.');
+      }
     }
 
     return settlement;

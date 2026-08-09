@@ -7,7 +7,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
-import { checkPendingCancellation } from '../order/order.controller.js';
+import { checkPendingCancellation, runOrderStatusPostEffects } from '../order/order.controller.js';
 import { emitDeliveryEvent } from '../../socket.js';
 
 function mapRider(r: any) {
@@ -133,7 +133,7 @@ export const getMyAssignments = asyncHandler(async (req: Request, res: Response)
 
   const assignments = await prisma.deliveryAssignment.findMany({
     where: { riderId: riderProfile.id, status: { in: ['pending', 'accepted', 'dispatched'] } },
-    include: { order: { select: { id: true, orderNumber: true, total: true, advancePayment: true, paymentMethod: true, status: true, customerName: true, deliveryAddress: true, phone: true } } },
+    include: { order: { select: { id: true, orderNumber: true, total: true, advancePayment: true, paymentMethod: true, status: true, customerName: true, deliveryAddress: true, phone: true, type: true, tableNumber: true } } },
     orderBy: { assignedAt: 'desc' },
   });
   res.json(ApiResponse.success({ rider: mapRider(riderProfile), assignments: assignments.map(mapAssignment) }));
@@ -215,7 +215,7 @@ export const assignRider = asyncHandler(async (req: Request, res: Response) => {
         })(),
         notes: notes || null,
       },
-      include: { order: { select: { id: true, orderNumber: true, total: true, customerName: true, deliveryAddress: true } }, rider: true },
+      include: { order: { select: { id: true, orderNumber: true, total: true, customerName: true, deliveryAddress: true, type: true, tableNumber: true, status: true } }, rider: true },
     }),
     prisma.deliveryRider.update({
       where: { id: riderId },
@@ -254,6 +254,9 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
           total: true,
           advancePayment: true,
           paymentMethod: true,
+          type: true,
+          tableNumber: true,
+          status: true,
         },
       },
     },
@@ -301,8 +304,9 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
     );
   }
 
-  // When delivered — decrement active deliveries, restore availability
-  // (order completion now happens via Order Monitor, not here)
+  // When delivered — decrement active deliveries, restore availability, and transition order to COMPLETED
+  let shouldCompleteOrder = false;
+
   if (status === 'delivered') {
     if (await checkPendingCancellation(assignment.orderId)) {
       throw ApiError.badRequest('Cannot mark delivered while a cancellation request is pending approval');
@@ -314,6 +318,12 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
       }),
     );
 
+    const orderDataUpdate: any = {};
+    if (assignment.order && (assignment.order as any).status !== 'COMPLETED') {
+      orderDataUpdate.status = 'COMPLETED';
+      shouldCompleteOrder = true;
+    }
+
     if (paymentMethod && typeof paymentMethod === 'string' && paymentMethod.trim() !== '') {
       const pmTrimmed = paymentMethod.trim();
       const advanceAmount = Number(assignment.order?.advancePayment ?? 0);
@@ -322,19 +332,44 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
 
       let updatedPaymentMethod: string;
       if (advanceAmount > 0) {
-        updatedPaymentMethod = `Advance (Cash: Rs.${advanceAmount}), COD Balance (${pmTrimmed}): Rs.${remainingCOD}`;
+        let advanceMethod = 'Cash'; // safe fallback
+        const existingPM = assignment.order?.paymentMethod || '';
+        const advMatch = existingPM.match(/Advance\s*\(([^):,]+)/i);
+        if (advMatch) advanceMethod = advMatch[1].trim();
+
+        updatedPaymentMethod = `Advance (${advanceMethod}: Rs.${advanceAmount}), COD Balance (${pmTrimmed}): Rs.${remainingCOD}`;
       } else {
         updatedPaymentMethod = pmTrimmed;
       }
 
+      orderDataUpdate.paymentMethod = updatedPaymentMethod;
+    }
+
+    if (Object.keys(orderDataUpdate).length > 0) {
       ops.push(
         prisma.order.update({
           where: { id: assignment.orderId },
-          data: { paymentMethod: updatedPaymentMethod },
+          data: orderDataUpdate,
         }),
       );
     }
+
+    if (shouldCompleteOrder && assignment.order) {
+      ops.push(
+        prisma.reservation.updateMany({
+          where: {
+            OR: [
+              { orderId: assignment.orderId },
+              ...(assignment.order.tableNumber ? [{ tableNumber: String(assignment.order.tableNumber), status: 'seated' }] : [])
+            ],
+            status: { not: 'completed' }
+          },
+          data: { status: 'completed' }
+        })
+      );
+    }
   }
+
   if (status === 'returned') {
     ops.push(
       prisma.deliveryRider.update({
@@ -345,6 +380,21 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
   }
 
   const [updated] = await prisma.$transaction(ops);
+
+  if (shouldCompleteOrder && assignment.order) {
+    try {
+      const fullUpdatedOrder = await prisma.order.findUnique({
+        where: { id: assignment.orderId },
+        include: { items: true },
+      });
+      if (fullUpdatedOrder) {
+        await runOrderStatusPostEffects(prisma, assignment.order as any, fullUpdatedOrder, 'COMPLETED', req);
+      }
+    } catch (e) {
+      // Non-blocking side effect
+    }
+  }
+
   // Emit real-time event so Delivery.tsx updates live
   emitDeliveryEvent('delivery:status_updated', {
     assignmentId: id,
