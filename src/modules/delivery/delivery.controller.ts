@@ -192,10 +192,13 @@ export const assignRider = asyncHandler(async (req: Request, res: Response) => {
   const scope = resolveOutletScope(req);
   if (scope && order.outletId !== scope) throw ApiError.notFound('Order not found');
   if (scope && rider.user?.outletId !== scope) throw ApiError.badRequest('Rider is not in your outlet');
-  if (!rider.isAvailable) throw ApiError.badRequest('Rider is not available');
+  if (rider.status === 'off_duty') throw ApiError.badRequest('Rider is currently off duty');
+  if ((rider.activeDeliveries || 0) >= 5) throw ApiError.badRequest('Rider has reached maximum active delivery limit (5 orders)');
 
   const existing = await prisma.deliveryAssignment.findFirst({ where: { orderId, status: { notIn: ['returned'] } } });
   if (existing) throw ApiError.badRequest('Order already has an active assignment');
+
+  const nextActiveCount = (rider.activeDeliveries || 0) + 1;
 
   const [assignment] = await prisma.$transaction([
     prisma.deliveryAssignment.create({
@@ -219,7 +222,11 @@ export const assignRider = asyncHandler(async (req: Request, res: Response) => {
     }),
     prisma.deliveryRider.update({
       where: { id: riderId },
-      data: { activeDeliveries: { increment: 1 }, isAvailable: false },
+      data: {
+        activeDeliveries: { increment: 1 },
+        isAvailable: nextActiveCount < 5,
+        status: 'on_delivery',
+      },
     }),
     prisma.order.update({ where: { id: orderId }, data: { riderId } }),
   ]);
@@ -311,10 +318,15 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
     if (await checkPendingCancellation(assignment.orderId)) {
       throw ApiError.badRequest('Cannot mark delivered while a cancellation request is pending approval');
     }
+    const currentRemaining = Math.max(0, (assignment.rider.activeDeliveries || 1) - 1);
     ops.push(
       prisma.deliveryRider.update({
         where: { id: assignment.riderId },
-        data: { activeDeliveries: { decrement: 1 }, isAvailable: true, status: 'available' },
+        data: {
+          activeDeliveries: { decrement: 1 },
+          isAvailable: assignment.rider.status !== 'off_duty' && currentRemaining < 5,
+          status: currentRemaining === 0 ? 'available' : 'on_delivery',
+        },
       }),
     );
 
@@ -371,10 +383,15 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
   }
 
   if (status === 'returned') {
+    const currentRemaining = Math.max(0, (assignment.rider.activeDeliveries || 1) - 1);
     ops.push(
       prisma.deliveryRider.update({
         where: { id: assignment.riderId },
-        data: { activeDeliveries: { decrement: 1 }, isAvailable: true, status: 'available' },
+        data: {
+          activeDeliveries: { decrement: 1 },
+          isAvailable: assignment.rider.status !== 'off_duty' && currentRemaining < 5,
+          status: currentRemaining === 0 ? 'available' : 'on_delivery',
+        },
       }),
     );
   }
