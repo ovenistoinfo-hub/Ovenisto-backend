@@ -188,6 +188,7 @@ export function mapOrderOut(order: any): any {
     kitchenProgress: (order.kitchenProgress ?? []).map((p: any) => ({
       kitchenId: p.kitchenId,
       status: p.status,
+      updatedAt: p.updatedAt,
     })),
   };
 }
