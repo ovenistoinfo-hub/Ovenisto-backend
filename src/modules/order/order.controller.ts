@@ -821,8 +821,22 @@ export const updateOrderKitchenStatus = asyncHandler(async (req: Request, res: R
     throw ApiError.badRequest('Cannot change order status while a cancellation request is pending approval');
   }
 
-  const progress = existing.kitchenProgress.find((p) => p.kitchenId === kitchenId);
-  if (!progress) throw ApiError.badRequest('This kitchen has no items on this order');
+  let progress = existing.kitchenProgress.find((p) => p.kitchenId === kitchenId);
+  if (!progress) {
+    // Self-healing: if an order was created before progress rows were populated
+    // (e.g. historic self-orders), dynamically create the missing progress row.
+    const kitchenObj = await prisma.kitchen.findUnique({ where: { id: kitchenId } });
+    if (!kitchenObj) throw ApiError.notFound('Kitchen not found');
+
+    progress = await prisma.orderKitchenProgress.create({
+      data: {
+        orderId: id,
+        kitchenId,
+        status: 'pending',
+      },
+    });
+    existing.kitchenProgress.push(progress);
+  }
 
   // Derive the whole order's status from ALL of its kitchens' progress, as it will be
   // right after this one row updates — not just from this one kitchen's own change.
