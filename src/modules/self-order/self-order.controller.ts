@@ -258,6 +258,34 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
   // Deliberately does NOT occupy the table yet — this order is unverified until a
   // waiter accepts it. Table occupancy is triggered from acceptSelfOrder instead.
 
+  // Mirror the same kitchen-matching logic that createOrder runs so that kitchen
+  // staff can accept this order via PUT /orders/:id/kitchen-status. Without these
+  // rows, that endpoint always throws 400 "This kitchen has no items on this order".
+  const activeKitchens = await prisma.kitchen.findMany({ where: { status: 'active' } });
+  const matchedKitchenIds = new Set<string>();
+  for (const item of order.items as any[]) {
+    const categoryName = item.menuItem?.category?.name;
+    if (!categoryName) continue;
+    for (const kitch of activeKitchens) {
+      if (Array.isArray(kitch.assignedCategories) && kitch.assignedCategories.includes(categoryName)) {
+        matchedKitchenIds.add(kitch.id);
+      }
+    }
+  }
+  if (matchedKitchenIds.size > 0) {
+    await prisma.orderKitchenProgress.createMany({
+      data: Array.from(matchedKitchenIds).map((kitchenId) => ({
+        orderId: order.id,
+        kitchenId,
+        status: 'pending',
+      })),
+    });
+  } else {
+    // No kitchen assigned to any item in this order — mark it ready immediately
+    // (e.g., a drinks-only order on an outlet with no beverage kitchen).
+    await prisma.order.update({ where: { id: order.id }, data: { status: 'READY' as any } });
+  }
+
   emitOrderEvent('order:created', mapOrderOut(order));
   emitSelfOrderTableEvent(table.id, 'order:updated', {
     orderId: order.id,
