@@ -294,6 +294,7 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
             customerName: true,
             deliveryAddress: true,
             phone: true,
+            status: true,
           },
         },
         rider: true,
@@ -468,7 +469,7 @@ export const getDeliveryDashboard = asyncHandler(async (req: Request, res: Respo
     }),
     prisma.deliveryAssignment.findMany({
       where: { status: { in: ['pending', 'accepted', 'dispatched'] }, ...(scope ? { order: { outletId: scope } } : {}) },
-      include: { order: { select: { id: true, orderNumber: true, total: true, advancePayment: true, paymentMethod: true, customerName: true, deliveryAddress: true } }, rider: true },
+      include: { order: { select: { id: true, orderNumber: true, total: true, advancePayment: true, paymentMethod: true, customerName: true, deliveryAddress: true, status: true } }, rider: true },
       orderBy: { assignedAt: 'desc' },
     }),
   ]);
