@@ -774,6 +774,7 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
             },
           },
         },
+        kitchenProgress: true,
       },
     });
 
@@ -847,12 +848,14 @@ export const updateOrderKitchenStatus = asyncHandler(async (req: Request, res: R
           data: { status: newPrismaStatus as any },
           include: {
             items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
+            kitchenProgress: true,
           },
         })
       : await tx.order.findUniqueOrThrow({
           where: { id },
           include: {
             items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
+            kitchenProgress: true,
           },
         });
 
@@ -898,6 +901,7 @@ export const acceptSelfOrder = asyncHandler(async (req: Request, res: Response) 
     where: { id },
     include: {
       items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
+      kitchenProgress: true,
     },
   });
 
