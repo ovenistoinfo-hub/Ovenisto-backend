@@ -84,10 +84,10 @@ export const getSupervisorOptions = asyncHandler(async (req: Request, res: Respo
   return res.json(ApiResponse.success(data));
 });
 
-const REQUIRED_FIELDS = ['firstName', 'phone', 'designation', 'hireDate', 'rateType', 'rate'] as const;
+const REQUIRED_FIELDS = ['firstName', 'phone', 'designation', 'hireDate', 'rateType', 'rate', 'email'] as const;
 const RATE_TYPES = ['Hourly', 'Daily', 'Monthly', 'PerShift'];
 
-function validateBody(body: any) {
+export function validateBody(body: any) {
   for (const field of REQUIRED_FIELDS) {
     if (body[field] === undefined || body[field] === null || body[field] === '') {
       throw new ApiError(`${field} is required`, 400);
@@ -117,14 +117,12 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
     }
   }
 
-  if (email?.trim()) {
-    const cleanEmail = email.trim().toLowerCase();
-    const existingEmail = await prisma.employee.findFirst({
-      where: { email: { equals: cleanEmail, mode: 'insensitive' } },
-    });
-    if (existingEmail) {
-      throw new ApiError(`Email "${email}" is already assigned to another employee`, 400);
-    }
+  const cleanEmail = email.trim().toLowerCase();
+  const existingEmail = await prisma.employee.findFirst({
+    where: { email: { equals: cleanEmail, mode: 'insensitive' } },
+  });
+  if (existingEmail) {
+    throw new ApiError(`Email "${email}" is already assigned to another employee`, 400);
   }
 
   try {
@@ -177,6 +175,10 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
 
   if (rateType !== undefined && !RATE_TYPES.includes(rateType)) {
     throw new ApiError(`rateType must be one of: ${RATE_TYPES.join(', ')}`, 400);
+  }
+
+  if (email !== undefined && !email?.trim()) {
+    throw new ApiError('email is required', 400);
   }
 
   if (supervisorId) {
