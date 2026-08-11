@@ -211,12 +211,15 @@ export const assignRider = asyncHandler(async (req: Request, res: Response) => {
         customerAddress: order.deliveryAddress || '',
         customerPhone:   order.phone || '',
         amountToCollect: (() => {
-          const pmLower = (order.paymentMethod || '').toLowerCase().trim();
+          const pm = (order.paymentMethod || '').trim();
+          const pmLower = pm.toLowerCase();
           const isCOD = pmLower === 'cash on delivery' || pmLower === 'cod' || pmLower === 'cash-on-delivery';
           const advance = Number(order.advancePayment ?? 0);
           const orderTotal = Number(order.total);
+          const isPrepaid = (advance > 0 && advance >= orderTotal) || (!isCOD && !pm.includes('Advance (') && !pm.includes('COD Balance (') && pmLower !== 'pending' && pmLower !== 'unpaid' && pm !== '');
+
+          if (isPrepaid) return 0;
           if (isCOD) return orderTotal;
-          if (advance >= orderTotal) return 0;
           return Math.max(0, orderTotal - advance);
         })(),
         notes: notes || null,
