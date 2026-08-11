@@ -3,7 +3,12 @@ import { prisma } from '../../config/database.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { emitToOutlets } from '../../socket.js';
 
-function getCashierPaymentMethodString(pmString: string | null | undefined): string {
+// Tag on each order in a staff balance identifying where the sale came from —
+// shown in Cash Hub, and used by createSettlement to route each order to its
+// correct settlement field per-order rather than guessing once for the whole batch.
+const RIDER_CHANNEL = 'Delivery Rider (COD)';
+
+export function getCashierPaymentMethodString(pmString: string | null | undefined): string {
   if (!pmString) return 'Cash';
   // Extract just the method name from "Advance (JazzCash): Rs.507" → "JazzCash"
   // Stops at ) or : or , to avoid including embedded amounts
@@ -284,7 +289,8 @@ export async function getActiveBalances(outletScope: string | null) {
     accountLinked: boolean,
     pmString: string,
     amount: number,
-    orderObj: any
+    orderObj: any,
+    channel: string
   ) => {
     if (amount <= 0) return;
 
@@ -335,9 +341,20 @@ export async function getActiveBalances(outletScope: string | null) {
       if (!group.orders.some((o: any) => o.id === orderObj.id)) {
         // staffAmount = what this staff member is responsible for from this order
         // (e.g. advance amount for cashier, remaining COD for rider — not the full order total)
-        group.orders.push({ ...mapOrder(orderObj), staffAmount: amount });
+        // channel = where this sale came from (POS / Waiter Panel / Delivery Rider COD) —
+        // shown in Cash Hub so a mixed-role login's sales stay distinguishable, and used
+        // by createSettlement to route each order to its correct settlement field
+        // per-order instead of guessing once for the whole batch.
+        group.orders.push({ ...mapOrder(orderObj), staffAmount: amount, channel });
       }
     }
+  };
+
+  const getCashierChannel = (orderObj: any): string => {
+    const src = (orderObj.orderSource || '').toLowerCase();
+    if (src === 'waiter' || src === 'table') return 'Waiter Panel';
+    if (src === 'self-order') return 'Self-Order (QR)';
+    return 'POS Counter';
   };
 
   for (const order of orders) {
@@ -384,9 +401,16 @@ export async function getActiveBalances(outletScope: string | null) {
       // Only credit cashier with the advance; rider's COD is still outstanding.
       cashierAmount = advanceAmount;
       cashierPm = getCashierPaymentMethodString(pm);  // → "JazzCash"
-      // riderAmount stays 0
+      // riderAmount stays 0 until delivered
+    } else if (order.riderId || order.type === 'Delivery') {
+      // Full COD Delivery Order delivered by rider (no advance payment):
+      // The Delivery Rider collected the entire order total at doorstep!
+      // Rider gets orderTotal, Cashier gets 0.
+      riderAmount = orderTotal;
+      riderPm = getRiderPaymentMethodString(pm);
+      cashierAmount = 0;
     } else {
-      // Regular non-delivery payment (dine-in, takeaway, fully resolved delivery) —
+      // Regular non-delivery payment (dine-in, takeaway) —
       // cashier collected the entire amount.
       cashierAmount = orderTotal;
       cashierPm = pm;
@@ -434,7 +458,8 @@ export async function getActiveBalances(outletScope: string | null) {
         accountLinked,
         cashierPm,
         cashierAmount,
-        order
+        order,
+        getCashierChannel(order)
       );
     }
 
@@ -457,7 +482,8 @@ export async function getActiveBalances(outletScope: string | null) {
         accountLinked,
         riderPm,  // clean method name, e.g. "Cash"
         riderAmount,
-        order
+        order,
+        RIDER_CHANNEL
       );
     }
   }
@@ -635,38 +661,31 @@ export async function createSettlement(
   const orderIds = staffBalance.orders.map((o) => o.id);
   const outletId = staffBalance.orders[0]?.outletId || outletScope || reqUser.outletId || null;
 
-  // Determine whether the staff member being settled is a Delivery Rider vs Cashier/Staff
-  let isRiderStaff = (staffRole || '').toLowerCase().includes('rider');
-  if (!isRiderStaff) {
-    try {
-      const riderMatch = await prisma.deliveryRider.findFirst({
-        where: { OR: [{ id: data.staffId }, { userId: data.staffId }] },
-      });
-      if (riderMatch) isRiderStaff = true;
-    } catch {}
-  }
-
+  // Route each order to its settlement field based on ITS OWN channel tag (set in
+  // getActiveBalances) — not a single per-batch guess about the staff member. A staffId
+  // can legitimately mix cashier/waiter sales with rider COD (e.g. one login used for
+  // both roles); misclassifying even one order here means it can never be re-claimed by
+  // a future settlement (the where-guards below only match orders still at null).
   const regularOrderIds: string[] = [];
   const cashierAdvanceOrderIds: string[] = [];
   const riderOrderIds: string[] = [];
 
-  for (const o of staffBalance.orders) {
+  for (const o of staffBalance.orders as any[]) {
+    if (o.channel === RIDER_CHANNEL) {
+      // This specific order was collected via Delivery Rider COD
+      riderOrderIds.push(o.id);
+      continue;
+    }
+    // This specific order was a POS / Waiter Panel / Self-Order sale
     const pm = o.paymentMethod || '';
     const hasAdvance = /advance\s*\(/i.test(pm);
     const hasCODBalance = /cod balance\s*\(/i.test(pm);
-
-    if (isRiderStaff) {
-      // Settling a Rider: every order in their collection updates riderSettlementId
-      riderOrderIds.push(o.id);
+    if (hasAdvance || hasCODBalance) {
+      // Cashier's advance portion
+      cashierAdvanceOrderIds.push(o.id);
     } else {
-      // Settling a Cashier / Staff member:
-      if (hasAdvance || hasCODBalance) {
-        // Cashier's advance portion
-        cashierAdvanceOrderIds.push(o.id);
-      } else {
-        // Regular non-split order
-        regularOrderIds.push(o.id);
-      }
+      // Regular non-split order
+      regularOrderIds.push(o.id);
     }
   }
 

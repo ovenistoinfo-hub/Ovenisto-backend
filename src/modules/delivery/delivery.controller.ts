@@ -148,7 +148,7 @@ export const getMyStats = asyncHandler(async (req: Request, res: Response) => {
   const [todayAssignments, allAssignments] = await Promise.all([
     prisma.deliveryAssignment.findMany({
       where: { riderId: riderProfile.id, status: 'delivered', deliveredAt: { gte: today } },
-      include: { order: { select: { total: true, settlementId: true } } },
+      include: { order: { select: { total: true, settlementId: true, riderSettlementId: true } } },
     }),
     prisma.deliveryAssignment.findMany({
       where: { riderId: riderProfile.id, status: 'delivered' },
@@ -158,9 +158,10 @@ export const getMyStats = asyncHandler(async (req: Request, res: Response) => {
 
   const todaySales   = todayAssignments.reduce((s, a) => s + Number(a.order?.total ?? 0), 0);
   const totalSales   = allAssignments.reduce((s, a)   => s + Number(a.order?.total ?? 0), 0);
-  // "Cleared" now means settled via Cash Hub (Order.settlementId), not the legacy
-  // per-assignment collectedAt flag — Cash Hub is the only place this gets set now.
-  const pendingCash  = todayAssignments.filter(a => !a.order?.settlementId).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
+  // "Cleared" means settled via Cash Hub. A rider's COD portion is settled through
+  // Order.riderSettlementId (split-settlement model), not the legacy Order.settlementId
+  // (which only regular, non-split orders use) — check both.
+  const pendingCash  = todayAssignments.filter(a => !a.order?.settlementId && !a.order?.riderSettlementId).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
 
   res.json(ApiResponse.success({
     rider: mapRider(riderProfile),
@@ -209,11 +210,13 @@ export const assignRider = asyncHandler(async (req: Request, res: Response) => {
         customerAddress: order.deliveryAddress || '',
         customerPhone:   order.phone || '',
         amountToCollect: (() => {
-          const isCOD = order.paymentMethod === 'Cash on Delivery';
+          const pm = (order.paymentMethod || '').toLowerCase().trim();
+          const isCOD = pm === 'cash on delivery' || pm === 'cod' || pm === 'cash-on-delivery';
           const advance = Number(order.advancePayment ?? 0);
           const orderTotal = Number(order.total);
           if (isCOD) return orderTotal;
           if (advance >= orderTotal) return 0;
+          if (!isCOD && !pm.includes('advance') && pm !== 'pending' && pm !== 'unpaid' && pm !== '') return 0;
           return Math.max(0, orderTotal - advance);
         })(),
         notes: notes || null,
@@ -343,19 +346,23 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
       const total = Number(assignment.order?.total ?? 0);
       const remainingCOD = Math.max(0, total - advanceAmount);
 
-      let updatedPaymentMethod: string;
-      if (advanceAmount > 0) {
-        let advanceMethod = 'Cash'; // safe fallback
-        const existingPM = assignment.order?.paymentMethod || '';
-        const advMatch = existingPM.match(/Advance\s*\(([^):,]+)/i);
-        if (advMatch) advanceMethod = advMatch[1].trim();
+      const isPrepaidOrder = (assignment.amountToCollect != null && Number(assignment.amountToCollect) === 0) || (advanceAmount > 0 && advanceAmount >= total);
 
-        updatedPaymentMethod = `Advance (${advanceMethod}: Rs.${advanceAmount}), COD Balance (${pmTrimmed}): Rs.${remainingCOD}`;
-      } else {
-        updatedPaymentMethod = pmTrimmed;
+      if (!isPrepaidOrder) {
+        let updatedPaymentMethod: string;
+        if (advanceAmount > 0) {
+          let advanceMethod = 'Cash'; // safe fallback
+          const existingPM = assignment.order?.paymentMethod || '';
+          const advMatch = existingPM.match(/Advance\s*\(([^):,]+)/i);
+          if (advMatch) advanceMethod = advMatch[1].trim();
+
+          updatedPaymentMethod = `Advance (${advanceMethod}: Rs.${advanceAmount}), COD Balance (${pmTrimmed}): Rs.${remainingCOD}`;
+        } else {
+          updatedPaymentMethod = `COD Balance (${pmTrimmed}): Rs.${remainingCOD}`;
+        }
+
+        orderDataUpdate.paymentMethod = updatedPaymentMethod;
       }
-
-      orderDataUpdate.paymentMethod = updatedPaymentMethod;
     }
 
     if (Object.keys(orderDataUpdate).length > 0) {
@@ -439,12 +446,13 @@ export const getRiderStats = asyncHandler(async (req: Request, res: Response) =>
 
   const todayDelivered = await prisma.deliveryAssignment.findMany({
     where: { riderId: id, status: 'delivered', deliveredAt: { gte: day, lte: dayEnd } },
-    include: { order: { select: { total: true, settlementId: true } } },
+    include: { order: { select: { total: true, settlementId: true, riderSettlementId: true } } },
   });
 
   const todaySales    = todayDelivered.reduce((s, a) => s + Number(a.order?.total ?? 0), 0);
-  const pendingCash   = todayDelivered.filter(a => !a.order?.settlementId).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
-  const collectedCash = todayDelivered.filter(a =>  a.order?.settlementId).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
+  const isCleared      = (a: any) => !!(a.order?.settlementId || a.order?.riderSettlementId);
+  const pendingCash   = todayDelivered.filter(a => !isCleared(a)).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
+  const collectedCash = todayDelivered.filter(a =>  isCleared(a)).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
 
   res.json(ApiResponse.success({
     rider: mapRider(rider),
@@ -465,7 +473,7 @@ export const getDeliveryDashboard = asyncHandler(async (req: Request, res: Respo
     prisma.deliveryRider.findMany({ where: scope ? { user: { outletId: scope } } : {}, orderBy: { name: 'asc' } }),
     prisma.deliveryAssignment.findMany({
       where: { status: 'delivered', deliveredAt: { gte: today, lte: todayEnd }, ...(scope ? { order: { outletId: scope } } : {}) },
-      include: { order: { select: { total: true, settlementId: true } } },
+      include: { order: { select: { total: true, settlementId: true, riderSettlementId: true } } },
     }),
     prisma.deliveryAssignment.findMany({
       where: { status: { in: ['pending', 'accepted', 'dispatched'] }, ...(scope ? { order: { outletId: scope } } : {}) },
@@ -474,11 +482,12 @@ export const getDeliveryDashboard = asyncHandler(async (req: Request, res: Respo
     }),
   ]);
 
+  const isCleared = (a: any) => !!(a.order?.settlementId || a.order?.riderSettlementId);
   const riderStats = riders.map(r => {
     const myDeliveries = todayDeliveries.filter(a => a.riderId === r.id);
     const todaySales   = myDeliveries.reduce((s, a) => s + Number(a.order?.total ?? 0), 0);
-    const pendingCash  = myDeliveries.filter(a => !a.order?.settlementId).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
-    const collectedCash = myDeliveries.filter(a => a.order?.settlementId).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
+    const pendingCash  = myDeliveries.filter(a => !isCleared(a)).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
+    const collectedCash = myDeliveries.filter(a => isCleared(a)).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
     return { ...mapRider(r), todayOrders: myDeliveries.length, todaySales, pendingCash, collectedCash };
   });
 
