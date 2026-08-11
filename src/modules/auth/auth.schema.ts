@@ -56,18 +56,33 @@ const userRoleEnum = z.enum([
   'Customer Screen',
 ]);
 
-export const createUserSchema = z.object({
-  name: z.string().min(1, 'Name is required').max(100),
-  email: z.string().email('Invalid email format').max(100),
-  password: z.string().min(6, 'Password must be at least 6 characters').max(100),
-  phone: z.string().max(20).optional().nullable(),
-  role: userRoleEnum,
-  branch: z.string().max(100).optional().nullable(),
-  outletId: z.string().uuid().optional().nullable(),
-  avatar: z.string().optional().nullable(),
-  status: z.enum(['active', 'inactive']).optional().default('active'),
-  employeeId: z.string().uuid().optional().nullable(),
-});
+// Roles that can be created without a linked Employee record: the two owner
+// roles (not "staff" in the HR sense) plus Customer Screen (a shared kiosk
+// display, not a person to onboard).
+const employeeLinkExemptRoles = ['Super Admin', 'Admin', 'Customer Screen'];
+
+export const createUserSchema = z
+  .object({
+    name: z.string().min(1, 'Name is required').max(100),
+    email: z.string().email('Invalid email format').max(100),
+    password: z.string().min(6, 'Password must be at least 6 characters').max(100),
+    phone: z.string().max(20).optional().nullable(),
+    role: userRoleEnum,
+    branch: z.string().max(100).optional().nullable(),
+    outletId: z.string().uuid().optional().nullable(),
+    avatar: z.string().optional().nullable(),
+    status: z.enum(['active', 'inactive']).optional().default('active'),
+    employeeId: z.string().uuid().optional().nullable(),
+  })
+  .superRefine((data, ctx) => {
+    if (!employeeLinkExemptRoles.includes(data.role) && !data.employeeId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['employeeId'],
+        message: 'An onboarded Employee must be linked to create a login for this role',
+      });
+    }
+  });
 
 export const updateUserSchema = z.object({
   name: z.string().min(1).max(100).optional(),
