@@ -18,7 +18,9 @@ function mapRider(r: any) {
 function mapAssignment(a: any) {
   return {
     ...a,
-    amountToCollect: a.amountToCollect != null ? Number(a.amountToCollect) : null,
+    amountToCollect:  a.amountToCollect  != null ? Number(a.amountToCollect)  : null,
+    commissionRate:   Number(a.commissionRate   ?? 0),
+    commissionEarned: Number(a.commissionEarned ?? 0),
     order: a.order ? {
       ...a.order,
       total:          Number(a.order.total ?? 0),
@@ -281,6 +283,20 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
   const data: any = { status };
   if (status === 'accepted')   data.acceptedAt   = new Date();
   if (status === 'delivered')  data.deliveredAt  = new Date();
+
+  // When delivered, look up the rider's Employee profile to stamp commission
+  let commissionPerDelivery = 0;
+  if (status === 'delivered' && assignment.rider.userId) {
+    const employeeProfile = await prisma.employee.findUnique({
+      where: { userId: assignment.rider.userId },
+      select: { commissionPerDelivery: true },
+    });
+    commissionPerDelivery = Number(employeeProfile?.commissionPerDelivery ?? 0);
+  }
+  if (status === 'delivered') {
+    data.commissionRate   = commissionPerDelivery;
+    data.commissionEarned = commissionPerDelivery;
+  }
 
   const ops: any[] = [
     prisma.deliveryAssignment.update({

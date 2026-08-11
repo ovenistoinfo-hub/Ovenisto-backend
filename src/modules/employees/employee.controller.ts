@@ -17,6 +17,7 @@ function mapEmployee(e: any) {
     ...e,
     rate: Number(e.rate),
     penaltyFee: e.penaltyFee != null ? Number(e.penaltyFee) : null,
+    commissionPerDelivery: Number(e.commissionPerDelivery ?? 0),
   };
 }
 
@@ -104,6 +105,7 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
     division, designation, dutyType, hireDate, rateType, rate, payFrequency, penaltyFee, defaultOffDay,
     dateOfBirth, gender, maritalStatus, cnic,
     emergencyContactName, emergencyContactRelation, emergencyContactPhone,
+    commissionPerDelivery,
   } = req.body;
 
   const outletId = resolveCreateOutlet(req);
@@ -142,6 +144,7 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
         payFrequency: payFrequency || null,
         penaltyFee: penaltyFee != null ? Number(penaltyFee) : null,
         defaultOffDay: defaultOffDay != null ? Number(defaultOffDay) : 1,
+        commissionPerDelivery: commissionPerDelivery !== undefined ? Number(commissionPerDelivery) : undefined,
         dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
         gender: gender || null,
         maritalStatus: maritalStatus || null,
@@ -169,6 +172,7 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
     division, designation, dutyType, hireDate, rateType, rate, payFrequency, penaltyFee, defaultOffDay,
     dateOfBirth, gender, maritalStatus, cnic,
     emergencyContactName, emergencyContactRelation, emergencyContactPhone, status,
+    commissionPerDelivery,
   } = req.body;
 
   if (rateType !== undefined && !RATE_TYPES.includes(rateType)) {
@@ -218,6 +222,7 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
         payFrequency: payFrequency !== undefined ? payFrequency : existing.payFrequency,
         penaltyFee: penaltyFee !== undefined ? (penaltyFee != null ? Number(penaltyFee) : null) : existing.penaltyFee,
         defaultOffDay: defaultOffDay !== undefined ? (defaultOffDay != null ? Number(defaultOffDay) : 1) : existing.defaultOffDay,
+        commissionPerDelivery: commissionPerDelivery !== undefined ? Number(commissionPerDelivery) : undefined,
         dateOfBirth: dateOfBirth !== undefined ? (dateOfBirth ? new Date(dateOfBirth) : null) : existing.dateOfBirth,
         gender: gender !== undefined ? gender : existing.gender,
         maritalStatus: maritalStatus !== undefined ? maritalStatus : existing.maritalStatus,
