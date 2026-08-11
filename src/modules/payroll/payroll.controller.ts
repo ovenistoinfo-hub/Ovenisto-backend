@@ -18,6 +18,8 @@ function mapPaymentLog(log: any) {
     isAdvance: isAdvanceFlag,
     rate: log.rate != null ? Number(log.rate) : null,
     unitsWorked: log.unitsWorked != null ? Number(log.unitsWorked) : null,
+    completedDeliveries: Number(log.completedDeliveries ?? 0),
+    totalDeliveryCommissions: Number(log.totalDeliveryCommissions ?? 0),
   };
 }
 
@@ -25,6 +27,7 @@ export const createPaymentLog = asyncHandler(async (req: Request, res: Response)
   const {
     employeeId, startDate, endDate, basePay, penalties, rewards, finalPay, notes,
     rateType, rate, unitsWorked, absentDays, penaltyIds, advanceAmount, isAdvance,
+    completedDeliveries, totalDeliveryCommissions,
   } = req.body;
   const paidById = req.user?.id;
 
@@ -88,6 +91,8 @@ export const createPaymentLog = asyncHandler(async (req: Request, res: Response)
         absentDays,
         advanceAmount: advanceAmount || 0,
         isAdvance: isAdvanceFlag,
+        completedDeliveries: completedDeliveries ?? 0,
+        totalDeliveryCommissions: totalDeliveryCommissions ?? 0,
       },
       include: {
         employee: {
@@ -178,6 +183,8 @@ export const createBatchPaymentLogs = asyncHandler(async (req: Request, res: Res
           absentDays: p.absentDays,
           advanceAmount: p.advanceAmount || 0,
           isAdvance: Boolean(p.isAdvance || (p.notes && typeof p.notes === 'string' && p.notes.startsWith('Salary Advance'))),
+          completedDeliveries: p.completedDeliveries ?? 0,
+          totalDeliveryCommissions: p.totalDeliveryCommissions ?? 0,
         },
       });
       if (Array.isArray(p.penaltyIds) && p.penaltyIds.length > 0) {
@@ -235,4 +242,54 @@ export const getPaymentLogs = asyncHandler(async (req: Request, res: Response) =
   });
 
   return res.json(ApiResponse.success(logs.map(mapPaymentLog)));
+});
+
+export const calculateDeliveryCommissions = asyncHandler(async (req: Request, res: Response) => {
+  const { employeeId, startDate, endDate } = req.query as Record<string, string>;
+  if (!employeeId || !startDate || !endDate) {
+    throw new ApiError('employeeId, startDate, and endDate are required', 400);
+  }
+
+  // Find the Employee's linked User, then their DeliveryRider record
+  const employee = await prisma.employee.findUnique({
+    where: { id: employeeId },
+    select: { userId: true, commissionPerDelivery: true },
+  });
+  if (!employee) throw new ApiError('Employee not found', 404);
+
+  const rider = employee.userId
+    ? await prisma.deliveryRider.findFirst({ where: { userId: employee.userId } })
+    : null;
+
+  if (!rider) {
+    return res.json(ApiResponse.success({
+      completedDeliveries: 0,
+      commissionRate: Number(employee.commissionPerDelivery ?? 0),
+      totalDeliveryCommissions: 0,
+    }));
+  }
+
+  // Count delivered assignments in the date window using deliveredAt
+  const assignments = await prisma.deliveryAssignment.findMany({
+    where: {
+      riderId: rider.id,
+      status: 'delivered',
+      deliveredAt: {
+        gte: new Date(`${startDate}T00:00:00.000Z`),
+        lte: new Date(`${endDate}T23:59:59.999Z`),
+      },
+    },
+    select: { commissionEarned: true },
+  });
+
+  const completedDeliveries = assignments.length;
+  const totalDeliveryCommissions = assignments.reduce(
+    (sum, a) => sum + Number(a.commissionEarned ?? 0), 0
+  );
+
+  return res.json(ApiResponse.success({
+    completedDeliveries,
+    commissionRate: Number(employee.commissionPerDelivery ?? 0),
+    totalDeliveryCommissions,
+  }));
 });
