@@ -402,7 +402,7 @@ export async function getActiveBalances(outletScope: string | null) {
       cashierAmount = advanceAmount;
       cashierPm = getCashierPaymentMethodString(pm);  // → "JazzCash"
       // riderAmount stays 0 until delivered
-    } else if (order.riderId || order.type === 'Delivery') {
+    } else if (order.riderId || (order.type as any) === 'Delivery' || (order.type as any) === 'DELIVERY') {
       // Full COD Delivery Order delivered by rider (no advance payment):
       // The Delivery Rider collected the entire order total at doorstep!
       // Rider gets orderTotal, Cashier gets 0.
