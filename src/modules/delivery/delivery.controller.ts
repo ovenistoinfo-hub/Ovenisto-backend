@@ -9,6 +9,7 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { checkPendingCancellation, runOrderStatusPostEffects } from '../order/order.controller.js';
 import { emitDeliveryEvent } from '../../socket.js';
+import { getCashierPaymentMethodString } from '../cash-settlement/cash-settlement.service.js';
 
 function mapRider(r: any) {
   return { ...r, activeDeliveries: Number(r.activeDeliveries ?? 0) };
@@ -210,13 +211,12 @@ export const assignRider = asyncHandler(async (req: Request, res: Response) => {
         customerAddress: order.deliveryAddress || '',
         customerPhone:   order.phone || '',
         amountToCollect: (() => {
-          const pm = (order.paymentMethod || '').toLowerCase().trim();
-          const isCOD = pm === 'cash on delivery' || pm === 'cod' || pm === 'cash-on-delivery';
+          const pmLower = (order.paymentMethod || '').toLowerCase().trim();
+          const isCOD = pmLower === 'cash on delivery' || pmLower === 'cod' || pmLower === 'cash-on-delivery';
           const advance = Number(order.advancePayment ?? 0);
           const orderTotal = Number(order.total);
           if (isCOD) return orderTotal;
           if (advance >= orderTotal) return 0;
-          if (!isCOD && !pm.includes('advance') && pm !== 'pending' && pm !== 'unpaid' && pm !== '') return 0;
           return Math.max(0, orderTotal - advance);
         })(),
         notes: notes || null,
@@ -351,10 +351,8 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
       if (!isPrepaidOrder) {
         let updatedPaymentMethod: string;
         if (advanceAmount > 0) {
-          let advanceMethod = 'Cash'; // safe fallback
           const existingPM = assignment.order?.paymentMethod || '';
-          const advMatch = existingPM.match(/Advance\s*\(([^):,]+)/i);
-          if (advMatch) advanceMethod = advMatch[1].trim();
+          const advanceMethod = getCashierPaymentMethodString(existingPM); // safe fallback to 'Cash' built in
 
           updatedPaymentMethod = `Advance (${advanceMethod}: Rs.${advanceAmount}), COD Balance (${pmTrimmed}): Rs.${remainingCOD}`;
         } else {

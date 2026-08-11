@@ -66,7 +66,7 @@ describe('computeCogs', () => {
 });
 
 import {
-  monthBoundaries, dayBoundaries, classifyChannel, growthPct, fillChannels, groupPayments, normalizePaymentMethod,
+  monthBoundaries, dayBoundaries, classifyChannel, growthPct, fillChannels, groupPayments,
   CHANNEL_ORDER,
 } from '../reports.helpers.js';
 
@@ -133,42 +133,41 @@ describe('fillChannels', () => {
 });
 
 describe('groupPayments', () => {
-  it('sums by method, ignores null methods, sorts desc, rounds', () => {
+  it('sums by exact-match method name, canonicalizes an alias ("Card" -> "Credit Card"), defaults a null method to Cash, sorts desc, rounds', () => {
     const out = groupPayments([
       { method: 'Cash', amount: 100 }, { method: 'Card', amount: 50 },
       { method: 'Cash', amount: 22.4 }, { method: null, amount: 999 },
     ]);
-    expect(out).toEqual([{ method: 'Cash', amount: 122 }, { method: 'Card', amount: 50 }]);
+    // Cash = 100 + 22.4 + 999 (null defaults to Cash) = 1121.4 -> rounds to 1121
+    // 'Card' canonicalizes to the configured 'Credit Card' bucket via alias matching.
+    expect(out).toEqual([{ method: 'Cash', amount: 1121 }, { method: 'Credit Card', amount: 50 }]);
   });
 
-  it('normalizes messy POS payment strings to a clean method name', () => {
+  it('splits a genuine multi-method payment across ALL its methods with their own amounts, not just the first segment', () => {
     // Real POS data stores method+amount in one string, sometimes split payments.
     const out = groupPayments([
       { method: 'Cash: Rs.400', amount: 400 },
       { method: 'Cash: Rs.8700', amount: 8700 },
       { method: 'Advance (Cash): Rs.1500', amount: 1500 },
-      { method: 'Cash: Rs.1000, JazzCash: Rs.980', amount: 1980 }, // split -> first method
+      { method: 'Cash: Rs.1000, JazzCash: Rs.980', amount: 1980 }, // split -> BOTH methods credited
       { method: 'JazzCash', amount: 500 },
     ]);
-    // Cash bucket = 400+8700+1500+1980 = 12580 ; JazzCash = 500
+    // Cash = 400+8700+1500+1000 = 11600 ; JazzCash = 980+500 = 1480 (no dropped JazzCash portion)
+    // Total 11600+1480=13080 matches the sum of the raw amounts (400+8700+1500+1980+500=13080).
     expect(out).toEqual([
-      { method: 'Cash', amount: 12580 },
-      { method: 'JazzCash', amount: 500 },
+      { method: 'Cash', amount: 11600 },
+      { method: 'JazzCash', amount: 1480 },
     ]);
   });
-});
 
-describe('normalizePaymentMethod', () => {
-  it('extracts the method name from messy strings', () => {
-    expect(normalizePaymentMethod('Cash: Rs.400')).toBe('Cash');
-    expect(normalizePaymentMethod('Advance (Cash): Rs.1500')).toBe('Cash');
-    expect(normalizePaymentMethod('Cash: Rs.1000, JazzCash: Rs.980')).toBe('Cash');
-    expect(normalizePaymentMethod('JazzCash')).toBe('JazzCash');
-    expect(normalizePaymentMethod('  Card  ')).toBe('Card');
-  });
-  it('returns null for empty/null', () => {
-    expect(normalizePaymentMethod(null)).toBe(null);
-    expect(normalizePaymentMethod('')).toBe(null);
+  it('extracts clean method labels from a delivered-COD order\'s Advance(...)/COD Balance(...) string, not a truncated "Advance (JazzCash" label', () => {
+    const out = groupPayments([
+      { method: 'Advance (JazzCash: Rs.507), COD Balance (Cash): Rs.1000', amount: 1507 },
+    ]);
+    expect(out).toEqual([
+      { method: 'Cash', amount: 1000 },
+      { method: 'JazzCash', amount: 507 },
+    ]);
   });
 });
 

@@ -22,7 +22,7 @@ export function getCashierPaymentMethodString(pmString: string | null | undefine
   return pmString;
 }
 
-function getRiderPaymentMethodString(pmString: string | null | undefined): string {
+export function getRiderPaymentMethodString(pmString: string | null | undefined): string {
   if (!pmString) return 'Cash';
   // Extract just the method name from "COD Balance (Cash): Rs.1000" → "Cash"
   const match = pmString.match(/COD Balance\s*\(([^):,]+)/i);
@@ -32,7 +32,7 @@ function getRiderPaymentMethodString(pmString: string | null | undefined): strin
   return pmString;
 }
 
-function parsePaymentMethodAmounts(
+export function parsePaymentMethodAmounts(
   pmString: string | null | undefined,
   totalAmount: number,
   configuredMethods: string[]
@@ -364,8 +364,11 @@ export async function getActiveBalances(outletScope: string | null) {
     const hasAdvanceInPM  = /advance\s*\(/i.test(pm);
     const hasCODBalanceInPM = /cod balance\s*\(/i.test(pm);
     const advanceAmount = Number(order.advancePayment || 0);
-    // isPrepaid: advance covers entire order (advance >= total AND advance > 0)
-    const isPrepaid = advanceAmount > 0 && advanceAmount >= orderTotal;
+
+    const isCODPM = pmLower === 'cash on delivery' || pmLower === 'cod' || pmLower === 'cash-on-delivery' || hasCODBalanceInPM;
+    // isPrepaid: advance covers entire order (advance >= total AND advance > 0), OR
+    // paymentMethod is a direct paid string (e.g. "Cash", "JazzCash", "Credit Card", "Cash: Rs.1500") and NOT COD and NOT Advance.
+    const isPrepaid = (advanceAmount > 0 && advanceAmount >= orderTotal) || (!isCODPM && !hasAdvanceInPM && pmLower !== 'pending' && pmLower !== 'unpaid' && pmLower !== '');
 
     // Pure COD orders not yet delivered: paymentMethod is still "Cash on Delivery" (or similar).
     // No money has been collected by anyone — skip this order entirely.
@@ -385,11 +388,11 @@ export async function getActiveBalances(outletScope: string | null) {
     let riderPm = '';
 
     if (isPrepaid) {
-      // Full prepaid — cashier collected the entire order amount
+      // Full prepaid (Dine In, Takeaway, or Delivery Prepaid) — POS cashier/online collected full bill
       cashierAmount = orderTotal;
       cashierPm = pm;
     } else if (hasAdvanceInPM && hasCODBalanceInPM) {
-      // Rider has delivered and updated the payment method:
+      // Rider has delivered and updated payment method for split advance order:
       // "Advance (JazzCash: Rs.507), COD Balance (Cash): Rs.1000"
       // Cashier keeps the advance, rider gets the remaining COD
       cashierAmount = advanceAmount;
@@ -402,8 +405,8 @@ export async function getActiveBalances(outletScope: string | null) {
       cashierAmount = advanceAmount;
       cashierPm = getCashierPaymentMethodString(pm);  // → "JazzCash"
       // riderAmount stays 0 until delivered
-    } else if (order.riderId || (order.type as any) === 'Delivery' || (order.type as any) === 'DELIVERY') {
-      // Full COD Delivery Order delivered by rider (no advance payment):
+    } else if (hasCODBalanceInPM || ((order.riderId || (order.type as any) === 'Delivery' || (order.type as any) === 'DELIVERY') && isCODPM)) {
+      // Delivered Full COD Delivery Order (no advance payment):
       // The Delivery Rider collected the entire order total at doorstep!
       // Rider gets orderTotal, Cashier gets 0.
       riderAmount = orderTotal;

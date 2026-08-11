@@ -1,4 +1,5 @@
 import { ApiError } from '../../utils/ApiError.js';
+import { parsePaymentMethodAmounts } from '../cash-settlement/cash-settlement.service.js';
 
 const TYPE_TO_DISPLAY: Record<string, string> = {
   DINE_IN: 'Dine In', TAKE_AWAY: 'Take Away', DELIVERY: 'Delivery',
@@ -121,34 +122,41 @@ export function fillChannels(
 }
 
 /**
- * Reduce a messy POS payment string to a clean method name.
- * Real data looks like "Cash: Rs.400", "Advance (Cash): Rs.1500",
- * "Cash: Rs.1000, JazzCash: Rs.980" (split). We take the first segment (before a
- * comma), drop the amount (before a colon), and unwrap an "Advance (X)" wrapper.
- * Returns null for empty/null.
+ * Default payment-method buckets used when grouping payments (mirrors the fallback list in
+ * cash-settlement.service.ts's getActiveBalances/getStaffActiveBalance). Only affects alias
+ * canonicalization (e.g. "card" -> "Credit Card") — parsePaymentMethodAmounts falls back to the
+ * raw extracted label for anything not on this list, so no amount is ever lost because a method
+ * name isn't in it.
  */
-export function normalizePaymentMethod(raw: string | null): string | null {
-  if (!raw) return null;
-  // first payment segment of a possible split ("Cash: x, JazzCash: y" -> "Cash: x")
-  let s = raw.split(',')[0];
-  // drop amount ("Cash: Rs.400" -> "Cash")
-  s = s.split(':')[0];
-  // unwrap "Advance (Cash)" -> "Cash"
-  const m = s.match(/\(([^)]+)\)/);
-  if (m) s = m[1];
-  s = s.trim();
-  return s.length ? s : null;
-}
+const DEFAULT_PAYMENT_METHODS = ['Cash', 'Credit Card', 'Account', 'JazzCash', 'EasyPaisa'];
 
-/** Sum amounts by payment method (normalized), ignoring empty methods; sorted desc, rounded. */
+/**
+ * Sum amounts by payment method across many orders.
+ *
+ * Reuses cash-settlement.service.ts's parsePaymentMethodAmounts — the SAME parser Cash Hub
+ * settlement relies on — per order, instead of an independently-maintained re-derivation. This
+ * fixes two real bugs the previous normalizePaymentMethod/groupPayments here had:
+ *  1. A genuine split ("Cash: Rs.1000, JazzCash: Rs.980") now credits BOTH methods their own
+ *     parsed amount, instead of taking only the first comma segment and dumping the ENTIRE
+ *     order total on it (silently dropping the rest from the dashboard breakdown).
+ *  2. A delivered-COD string like "Advance (JazzCash: Rs.507), COD Balance (Cash): Rs.1000" now
+ *     yields clean "JazzCash"/"Cash" labels, instead of a garbled "Advance (JazzCash" (truncated
+ *     before the closing paren by the old split(',')[0].split(':')[0] logic).
+ * A null/empty method defaults to Cash (parsePaymentMethodAmounts' own convention, matching how
+ * Cash Hub treats a missing payment method) rather than being silently dropped from the total.
+ * Ignores non-positive per-method amounts. Sorted desc, rounded.
+ */
 export function groupPayments(
   rows: { method: string | null; amount: number }[]
 ): { method: string; amount: number }[] {
   const map = new Map<string, number>();
   for (const r of rows) {
-    const method = normalizePaymentMethod(r.method);
-    if (!method) continue;
-    map.set(method, (map.get(method) ?? 0) + r.amount);
+    if (!r.amount) continue;
+    const parsed = parsePaymentMethodAmounts(r.method, r.amount, DEFAULT_PAYMENT_METHODS);
+    for (const [method, amt] of Object.entries(parsed)) {
+      if (amt <= 0) continue;
+      map.set(method, (map.get(method) ?? 0) + amt);
+    }
   }
   return [...map.entries()]
     .map(([method, amount]) => ({ method, amount: Math.round(amount) }))
