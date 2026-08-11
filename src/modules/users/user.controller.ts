@@ -199,44 +199,73 @@ export const createUser = asyncHandler(async (req: Request, res: Response) => {
     throw ApiError.conflict('A user with this email already exists');
   }
 
+  const employeeId = (req.body as any).employeeId as string | undefined | null;
+
+  // Validate the linked employee BEFORE creating anything, so a bad employeeId fails
+  // fast with a clear error instead of surfacing as a generic transaction rollback.
+  if (employeeId) {
+    const employee = await prisma.employee.findUnique({ where: { id: employeeId } });
+    if (!employee) {
+      throw ApiError.notFound('Employee not found');
+    }
+    if (employee.userId !== null) {
+      throw ApiError.conflict('This employee already has a login account');
+    }
+    const scope = resolveOutletScope(req);
+    if (scope && employee.outletId !== scope) {
+      throw ApiError.notFound('Employee not found');
+    }
+  }
+
   // Hash password
   const passwordHash = await bcrypt.hash(input.password, 10);
 
-  const user = await prisma.user.create({
-    data: {
-      name: input.name,
-      email: input.email.toLowerCase(),
-      passwordHash,
-      phone: input.phone ?? null,
-      role: toPrismaRole(input.role),
-      branch: input.branch ?? null,
-      outletId: input.outletId ?? null,
-      avatar: input.avatar ?? null,
-      status: input.status ?? 'active',
-    },
-    select: {
-      id: true,
-      name: true,
-      email: true,
-      phone: true,
-      role: true,
-      branch: true,
-      outletId: true,
-      avatar: true,
-      status: true,
-      createdAt: true,
-      outlet: { select: { id: true, name: true, code: true } },
-    },
-  });
-
-  // Link employee profile if employeeId provided
-  const employeeId = (req.body as any).employeeId as string | undefined;
-  if (employeeId) {
-    await prisma.employee.update({
-      where: { id: employeeId },
-      data: { userId: user.id },
+  // Create the User and claim the Employee row atomically. The claim uses a
+  // conditional updateMany + affected-count check (same race-safety pattern as
+  // cash-settlement.service.ts's createSettlement) so that if two requests try to
+  // link the same employee at once, the loser's whole transaction — including the
+  // User row it just created — rolls back instead of leaving an orphaned login or
+  // double-linking the employee.
+  const user = await prisma.$transaction(async (tx) => {
+    const created = await tx.user.create({
+      data: {
+        name: input.name,
+        email: input.email.toLowerCase(),
+        passwordHash,
+        phone: input.phone ?? null,
+        role: toPrismaRole(input.role),
+        branch: input.branch ?? null,
+        outletId: input.outletId ?? null,
+        avatar: input.avatar ?? null,
+        status: input.status ?? 'active',
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+        branch: true,
+        outletId: true,
+        avatar: true,
+        status: true,
+        createdAt: true,
+        outlet: { select: { id: true, name: true, code: true } },
+      },
     });
-  }
+
+    if (employeeId) {
+      const claimed = await tx.employee.updateMany({
+        where: { id: employeeId, userId: null },
+        data: { userId: created.id },
+      });
+      if (claimed.count !== 1) {
+        throw ApiError.conflict('This employee was just linked to another login. Please refresh and try again.');
+      }
+    }
+
+    return created;
+  });
 
   // Auto-create DeliveryRider profile for Rider role
   if (input.role === 'Rider') {
