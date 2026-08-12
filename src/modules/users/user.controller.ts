@@ -193,6 +193,13 @@ export const getUser = asyncHandler(async (req: Request, res: Response) => {
 export const createUser = asyncHandler(async (req: Request, res: Response) => {
   const input = req.body as CreateUserInput;
 
+  // Only an Admin/Super Admin actor may create another owner-role (Super Admin/Admin)
+  // account — Manager is authorized on this route but must not be able to escalate.
+  const actorRole = req.user?.role;
+  if (['Super Admin', 'Admin'].includes(input.role) && !['Super Admin', 'Admin'].includes(actorRole ?? '')) {
+    throw ApiError.forbidden('Only an Admin or Super Admin can create an owner account');
+  }
+
   // Check if email already exists
   const existing = await prisma.user.findUnique({ where: { email: input.email.toLowerCase() } });
   if (existing) {
@@ -284,8 +291,12 @@ export const createUser = asyncHandler(async (req: Request, res: Response) => {
  * Returns employees that have no portal user account yet (userId is null)
  */
 export const getUnlinkedEmployees = asyncHandler(async (req: Request, res: Response) => {
+  const scope = resolveOutletScope(req);
+  const where: any = { userId: null, status: 'active' };
+  if (scope) where.outletId = scope;
+
   const employees = await prisma.employee.findMany({
-    where: { userId: null, status: 'active' },
+    where,
     orderBy: { firstName: 'asc' },
     select: {
       id: true,
