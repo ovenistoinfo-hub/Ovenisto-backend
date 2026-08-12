@@ -9,7 +9,11 @@ const MAX_RETRIES = 6;
 const WAIT_MS = 6000;
 
 const acceptDataLoss = process.argv.includes('--accept-data-loss') || process.env.PRISMA_ACCEPT_DATA_LOSS === 'true';
-const pushCommand = acceptDataLoss ? 'npx prisma db push --accept-data-loss' : 'npx prisma db push';
+// --skip-generate: prisma generate already ran during `npm run build` in Docker,
+// re-running it at startup causes EACCES on node_modules/.prisma/client in non-root containers.
+const pushCommand = acceptDataLoss
+  ? 'npx prisma db push --skip-generate --accept-data-loss'
+  : 'npx prisma db push --skip-generate';
 
 for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
   try {

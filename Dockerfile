@@ -23,6 +23,8 @@ RUN npm prune --production
 
 # Run as non-root user for security
 RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
+# Give appuser ownership of /app so Prisma can write to node_modules/.prisma at runtime
+RUN chown -R appuser:appgroup /app
 USER appuser
 
 # Expose API port
