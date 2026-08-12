@@ -22,9 +22,16 @@ setInterval(() => {
 const server = http.createServer(app);
 
 // Initialize Socket.IO for real-time order push (KDS / POS / status boards).
+const allowedOrigins = env.CORS_ORIGIN.split(',').map((origin) => origin.trim());
+
 const io = new SocketServer(server, {
   cors: {
-    origin: env.CORS_ORIGIN.split(',').map((origin) => origin.trim()),
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app') || origin.includes('localhost')) {
+        return callback(null, true);
+      }
+      return callback(new Error('CORS not allowed'));
+    },
     methods: ['GET', 'POST'],
     credentials: true,
   },

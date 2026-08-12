@@ -18,10 +18,26 @@ const app: Application = express();
 // MIDDLEWARE
 // ============================================
 
-// CORS - Allow frontend to access API
+// CORS - Allow frontend to access API (supports exact origins, wildcards, and all *.vercel.app preview URLs)
+const allowedOrigins = env.CORS_ORIGIN.split(',').map((o) => o.trim());
+
 app.use(
   cors({
-    origin: env.CORS_ORIGIN.split(',').map((origin) => origin.trim()),
+    origin: (origin, callback) => {
+      // Allow requests with no origin (e.g. mobile apps, curl, server-to-server)
+      if (!origin) return callback(null, true);
+
+      // Check exact match or localhost or *.vercel.app domain
+      const isAllowed =
+        allowedOrigins.includes(origin) ||
+        origin.endsWith('.vercel.app') ||
+        origin.includes('localhost');
+
+      if (isAllowed) {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS policy blocked request from origin: ${origin}`));
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Outlet-Id'],
