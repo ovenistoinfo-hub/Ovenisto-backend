@@ -404,6 +404,37 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
       },
     });
 
+    // Auto-link to ProductionItem if name matches an active ProductionItem
+    const matchingProdItem = await tx.productionItem.findFirst({
+      where: { name: { equals: itemName.trim(), mode: 'insensitive' }, isActive: true },
+    });
+    if (matchingProdItem) {
+      let kwId = warehouseId || null;
+      if (!kwId) {
+        const kw = await tx.warehouse.findFirst({
+          where: { type: 'KITCHEN' as never, isActive: true, ...(prodOutletId ? { outletId: prodOutletId } : {}) },
+          select: { id: true },
+        });
+        kwId = kw?.id ?? null;
+      }
+      if (kwId) {
+        await tx.productionBatch.create({
+          data: {
+            productionItemId: matchingProdItem.id,
+            warehouseId: kwId,
+            batchQty: Number(quantity),
+            remainingQty: Number(quantity),
+            shelfLifeMinutes: batchShelfLifeMinutes ?? (matchingProdItem.shelfLifeHours ? matchingProdItem.shelfLifeHours * 60 : null),
+          },
+        });
+        await tx.productionWarehouseStock.upsert({
+          where: { productionItemId_warehouseId: { productionItemId: matchingProdItem.id, warehouseId: kwId } },
+          update: { currentStock: { increment: Number(quantity) } },
+          create: { productionItemId: matchingProdItem.id, warehouseId: kwId, currentStock: Number(quantity) },
+        });
+      }
+    }
+
     // Path A (existing): deduct a menu item's recipe ingredients — from BOTH global stock
     // and the kitchen warehouse stock (so the Kitchen Stock page reflects the consumption).
     if (menuItemId && deductIngredients) {

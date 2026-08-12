@@ -471,6 +471,13 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
   const prismaStatus = STATUS_TO_PRISMA[status] ?? status.toUpperCase();
 
   const order = await prisma.$transaction(async (tx) => {
+    // Read current order status inside the transaction to prevent double-deduction on concurrent status calls
+    const freshOrder = await tx.order.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+    const currentStatus = freshOrder?.status ?? existing.status;
+
     const updated = await tx.order.update({
       where: { id },
       data: { status: prismaStatus as any },
@@ -490,7 +497,7 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
     // not when the order is later marked complete. Idempotent: fires exactly once per
     // order, whichever of these three states it reaches first.
     const CONSUMED_STATES = ['PREPARING', 'READY', 'COMPLETED'];
-    const alreadyConsumed = CONSUMED_STATES.includes(existing.status);
+    const alreadyConsumed = CONSUMED_STATES.includes(currentStatus);
     const enteringConsumedState = CONSUMED_STATES.includes(prismaStatus);
     if (enteringConsumedState && !alreadyConsumed) {
       const menuItemIds = updated.items
@@ -516,11 +523,24 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
         const prodDeductions: Record<string, number> = {};
         for (const item of updated.items) {
           if (!item.menuItemId) continue;
-          const itemRecipes = recipes.filter((r) => {
-            if (r.menuItemId !== item.menuItemId) return false;
-            if (item.variantId) return r.variantId === item.variantId;
-            return !r.variantId; // item-level recipe (no variant)
-          });
+          const allForItem = recipes.filter((r) => r.menuItemId === item.menuItemId);
+          const itemRecipes = (() => {
+            if (item.variantId) {
+              const variantSpecific = allForItem.filter((r) => r.variantId === item.variantId);
+              if (variantSpecific.length > 0) return variantSpecific;
+            }
+            const baseRecipes = allForItem.filter((r) => !r.variantId);
+            const uniqueBase: typeof baseRecipes = [];
+            const seenKeys = new Set<string>();
+            for (const r of baseRecipes) {
+              const key = r.ingredientId ? `ing_${r.ingredientId}` : `prod_${r.productionItemId}`;
+              if (!seenKeys.has(key)) {
+                seenKeys.add(key);
+                uniqueBase.push(r);
+              }
+            }
+            return uniqueBase;
+          })();
           for (const r of itemRecipes) {
             const qty = Number(r.qtyPerUnit) * item.qty;
             if (r.ingredientId) {
@@ -625,15 +645,15 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
 
         // 4. Production item FIFO drawdown
         const prodEntries = Object.entries(prodDeductions);
-        if (prodEntries.length > 0 && kitchenWarehouseId) {
+        if (prodEntries.length > 0) {
           for (const [productionItemId, qty] of prodEntries) {
             const batches = await tx.productionBatch.findMany({
               where: {
                 productionItemId,
-                warehouseId: kitchenWarehouseId,
                 remainingQty: { gt: 0 },
+                ...(kitchenWarehouseId ? { warehouseId: kitchenWarehouseId } : {}),
               },
-              select: { id: true, remainingQty: true },
+              select: { id: true, remainingQty: true, warehouseId: true },
               orderBy: { createdAt: 'asc' },
             });
             const draws = fifoDrawdown(
@@ -645,11 +665,17 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
                 where: { id: d.id },
                 data: { remainingQty: d.newRemaining },
               });
+              const batchObj = batches.find((b) => b.id === d.id);
+              if (batchObj) {
+                const drawnQty = Number(batchObj.remainingQty) - d.newRemaining;
+                if (drawnQty > 0) {
+                  await tx.productionWarehouseStock.updateMany({
+                    where: { productionItemId, warehouseId: batchObj.warehouseId },
+                    data: { currentStock: { decrement: drawnQty } },
+                  });
+                }
+              }
             }
-            await tx.productionWarehouseStock.updateMany({
-              where: { productionItemId, warehouseId: kitchenWarehouseId },
-              data: { currentStock: { decrement: qty } },
-            });
           }
         }
       }
