@@ -11,8 +11,8 @@ import { emitOrderEvent, emitCancellationRequestEvent } from '../../socket.js';
 // (e.g. 'SUPER_ADMIN'), NOT the @map'd display string. req.user!.role (from the JWT,
 // mapped at login) is the display string ('Super Admin'). Two lists, two sources —
 // see the outlet-scoping / enum gotcha in CLAUDE.md.
-const AUTHORIZER_ENUM_ROLES = ['SUPER_ADMIN', 'ADMIN', 'MANAGER'];
-const AUTHORIZER_DISPLAY_ROLES = ['Super Admin', 'Admin', 'Manager'];
+const AUTHORIZER_ENUM_ROLES = ['ADMIN', 'MANAGER'];
+const AUTHORIZER_DISPLAY_ROLES = ['Admin', 'Manager'];
 
 function todayPKT(): string {
   const pkt = new Date(Date.now() + 5 * 60 * 60 * 1000);

@@ -135,7 +135,11 @@ export const getMyAssignments = asyncHandler(async (req: Request, res: Response)
   if (!riderProfile) throw ApiError.notFound('No rider profile linked to your account. Ask admin to link your profile.');
 
   const assignments = await prisma.deliveryAssignment.findMany({
-    where: { riderId: riderProfile.id, status: { in: ['pending', 'accepted', 'dispatched'] } },
+    where: {
+      riderId: riderProfile.id,
+      status: { in: ['pending', 'accepted', 'dispatched'] },
+      order: { status: { not: 'CANCELLED' } },
+    },
     include: { order: { select: { id: true, orderNumber: true, total: true, advancePayment: true, paymentMethod: true, status: true, customerName: true, deliveryAddress: true, phone: true, type: true, tableNumber: true } } },
     orderBy: { assignedAt: 'desc' },
   });
@@ -159,8 +163,10 @@ export const getMyStats = asyncHandler(async (req: Request, res: Response) => {
     }),
   ]);
 
-  const todaySales   = todayAssignments.reduce((s, a) => s + Number(a.order?.total ?? 0), 0);
-  const totalSales   = allAssignments.reduce((s, a)   => s + Number(a.order?.total ?? 0), 0);
+  const todaySales      = todayAssignments.reduce((s, a) => s + Number(a.order?.total ?? 0), 0);
+  const todayCommissions  = todayAssignments.reduce((s, a) => s + Number(a.commissionEarned ?? 0), 0);
+  const totalSales      = allAssignments.reduce((s, a)   => s + Number(a.order?.total ?? 0), 0);
+  const totalCommissions  = allAssignments.reduce((s, a)   => s + Number(a.commissionEarned ?? 0), 0);
   // "Cleared" means settled via Cash Hub. A rider's COD portion is settled through
   // Order.riderSettlementId (split-settlement model), not the legacy Order.settlementId
   // (which only regular, non-split orders use) — check both.
@@ -170,8 +176,10 @@ export const getMyStats = asyncHandler(async (req: Request, res: Response) => {
     rider: mapRider(riderProfile),
     todayOrders:  todayAssignments.length,
     todaySales,
+    todayCommissions,
     totalOrders:  allAssignments.length,
     totalSales,
+    totalCommissions,
     pendingCash,
   }));
 });
@@ -466,7 +474,8 @@ export const getRiderStats = asyncHandler(async (req: Request, res: Response) =>
     include: { order: { select: { total: true, settlementId: true, riderSettlementId: true } } },
   });
 
-  const todaySales    = todayDelivered.reduce((s, a) => s + Number(a.order?.total ?? 0), 0);
+  const todaySales     = todayDelivered.reduce((s, a) => s + Number(a.order?.total ?? 0), 0);
+  const todayCommissions = todayDelivered.reduce((s, a) => s + Number(a.commissionEarned ?? 0), 0);
   const isCleared      = (a: any) => !!(a.order?.settlementId || a.order?.riderSettlementId);
   const pendingCash   = todayDelivered.filter(a => !isCleared(a)).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
   const collectedCash = todayDelivered.filter(a =>  isCleared(a)).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
@@ -475,6 +484,7 @@ export const getRiderStats = asyncHandler(async (req: Request, res: Response) =>
     rider: mapRider(rider),
     todayOrders:  todayDelivered.length,
     todaySales,
+    todayCommissions,
     pendingCash,
     collectedCash,
   }));
@@ -493,7 +503,13 @@ export const getDeliveryDashboard = asyncHandler(async (req: Request, res: Respo
       include: { order: { select: { total: true, settlementId: true, riderSettlementId: true } } },
     }),
     prisma.deliveryAssignment.findMany({
-      where: { status: { in: ['pending', 'accepted', 'dispatched'] }, ...(scope ? { order: { outletId: scope } } : {}) },
+      where: {
+        status: { in: ['pending', 'accepted', 'dispatched'] },
+        order: {
+          status: { not: 'CANCELLED' },
+          ...(scope ? { outletId: scope } : {}),
+        },
+      },
       include: { order: { select: { id: true, orderNumber: true, total: true, advancePayment: true, paymentMethod: true, customerName: true, deliveryAddress: true, status: true } }, rider: true },
       orderBy: { assignedAt: 'desc' },
     }),
@@ -503,9 +519,10 @@ export const getDeliveryDashboard = asyncHandler(async (req: Request, res: Respo
   const riderStats = riders.map(r => {
     const myDeliveries = todayDeliveries.filter(a => a.riderId === r.id);
     const todaySales   = myDeliveries.reduce((s, a) => s + Number(a.order?.total ?? 0), 0);
+    const todayCommissions = myDeliveries.reduce((s, a) => s + Number(a.commissionEarned ?? 0), 0);
     const pendingCash  = myDeliveries.filter(a => !isCleared(a)).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
     const collectedCash = myDeliveries.filter(a => isCleared(a)).reduce((s, a) => s + Number(a.amountToCollect ?? a.order?.total ?? 0), 0);
-    return { ...mapRider(r), todayOrders: myDeliveries.length, todaySales, pendingCash, collectedCash };
+    return { ...mapRider(r), todayOrders: myDeliveries.length, todaySales, todayCommissions, pendingCash, collectedCash };
   });
 
   res.json(ApiResponse.success({ riderStats, activeAssignments: activeAssignments.map(mapAssignment) }));

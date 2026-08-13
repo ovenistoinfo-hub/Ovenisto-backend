@@ -9,7 +9,7 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { emitOrderEvent, emitTableEvent, emitReservationEvent } from '../../socket.js';
+import { emitOrderEvent, emitTableEvent, emitReservationEvent, emitDeliveryEvent } from '../../socket.js';
 import { fifoDrawdown } from '../stock/dough.helpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
@@ -781,6 +781,13 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
 
     await deductStockForConsumedStates(tx, existing, updated.items, prismaStatus, req.user?.id);
 
+    if (prismaStatus === 'READY' || prismaStatus === 'COMPLETED') {
+      await tx.orderKitchenProgress.updateMany({
+        where: { orderId: id },
+        data: { status: 'ready' },
+      });
+    }
+
     if (prismaStatus === 'COMPLETED') {
       await tx.reservation.updateMany({
         where: {
@@ -839,16 +846,40 @@ export const updateOrderKitchenStatus = asyncHandler(async (req: Request, res: R
     existing.kitchenProgress.push(progress);
   }
 
-  // Derive the whole order's status from ALL of its kitchens' progress, as it will be
-  // right after this one row updates — not just from this one kitchen's own change.
-  const otherProgress = existing.kitchenProgress.filter((p) => p.id !== progress.id);
-  const allReadyAfter = status === 'ready' && otherProgress.every((p) => p.status === 'ready');
+  const activeKitchens = await prisma.kitchen.findMany({ where: { status: 'active' } });
+
+  // Map each kitchen's status after this update:
+  const getKitchenStatusAfter = (kId: string): string => {
+    if (kId === kitchenId) return status;
+    const p = existing.kitchenProgress.find((row) => row.kitchenId === kId);
+    return p ? p.status : 'pending';
+  };
+
+  // An order is READY automatically when all items' assigned kitchens are 'ready'
+  let allReadyAfter = status === 'ready';
+  if (allReadyAfter && existing.items.length > 0) {
+    for (const item of existing.items as any[]) {
+      const catName = item.categoryName || item.menuItem?.category?.name;
+      if (!catName) continue;
+      const assigned = activeKitchens.filter(
+        (k) => Array.isArray(k.assignedCategories) && k.assignedCategories.includes(catName)
+      );
+      if (assigned.length > 0) {
+        const itemReady = assigned.every((k) => getKitchenStatusAfter(k.id) === 'ready');
+        if (!itemReady) {
+          allReadyAfter = false;
+          break;
+        }
+      }
+    }
+  }
+
   const anyStartedAfter = status === 'preparing' || status === 'ready'
-    || otherProgress.some((p) => p.status === 'preparing' || p.status === 'ready');
+    || existing.kitchenProgress.some((p) => p.status === 'preparing' || p.status === 'ready');
 
   let newPrismaStatus = existing.status;
   if (allReadyAfter) newPrismaStatus = 'READY' as any;
-  else if (anyStartedAfter && existing.status === 'PENDING') newPrismaStatus = 'PREPARING' as any;
+  else if (anyStartedAfter && (existing.status === 'PENDING' || existing.status === 'SCHEDULED')) newPrismaStatus = 'PREPARING' as any;
 
   const order = await prisma.$transaction(async (tx) => {
     await tx.orderKitchenProgress.update({
@@ -1066,6 +1097,42 @@ export async function executeCancellation(
       data: { status: 'cancelled' },
     });
     await tx.order.update({ where: { id }, data: { status: 'CANCELLED' } });
+
+    // Handle active delivery assignments for this cancelled order
+    const activeAssignments = await tx.deliveryAssignment.findMany({
+      where: { orderId: id, status: { in: ['pending', 'accepted', 'dispatched'] } },
+      include: { rider: true },
+    });
+
+    for (const assignment of activeAssignments) {
+      await tx.deliveryAssignment.update({
+        where: { id: assignment.id },
+        data: {
+          status: 'returned',
+          notes: reason ? `Order Cancelled: ${reason}` : 'Order Cancelled',
+        },
+      });
+
+      if (assignment.rider) {
+        const currentRemaining = Math.max(0, (assignment.rider.activeDeliveries || 1) - 1);
+        await tx.deliveryRider.update({
+          where: { id: assignment.rider.id },
+          data: {
+            activeDeliveries: { decrement: 1 },
+            isAvailable: assignment.rider.status !== 'off_duty' && currentRemaining < 5,
+            status: currentRemaining === 0 ? 'available' : 'on_delivery',
+          },
+        });
+      }
+
+      emitDeliveryEvent('delivery:status_updated', {
+        assignmentId: assignment.id,
+        orderId: id,
+        riderId: assignment.riderId,
+        status: 'returned',
+        outletId: existing.outletId,
+      }, [existing.outletId]);
+    }
   }
 
     // Waste accounting — only if this order had already entered the kitchen pipeline

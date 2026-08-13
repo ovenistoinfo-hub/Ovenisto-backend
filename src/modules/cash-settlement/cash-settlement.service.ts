@@ -782,12 +782,30 @@ export async function getSettlementHistory(
 
   const where: Prisma.CashSettlementWhereInput = {};
 
-  if (outletScope) {
-    where.outletId = outletScope;
-  }
-
   if (params.staffId) {
-    where.staffId = params.staffId;
+    const candidateStaffIds: string[] = [params.staffId];
+    try {
+      const rider = await prisma.deliveryRider.findFirst({
+        where: { OR: [{ id: params.staffId }, { userId: params.staffId }] },
+      });
+      if (rider) {
+        if (rider.id && !candidateStaffIds.includes(rider.id)) candidateStaffIds.push(rider.id);
+        if (rider.userId && !candidateStaffIds.includes(rider.userId)) candidateStaffIds.push(rider.userId);
+      }
+    } catch {}
+    try {
+      const user = await prisma.user.findUnique({ where: { id: params.staffId } });
+      if (user?.name && !candidateStaffIds.includes(user.name)) {
+        candidateStaffIds.push(user.name);
+      }
+    } catch {}
+
+    where.staffId = { in: candidateStaffIds };
+  } else if (outletScope) {
+    where.OR = [
+      { outletId: outletScope },
+      { outletId: null },
+    ];
   }
 
   if (params.role) {
