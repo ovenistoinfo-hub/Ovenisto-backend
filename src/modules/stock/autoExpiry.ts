@@ -86,18 +86,27 @@ export async function autoProcessExpiredBatches(): Promise<{
         });
 
         if (updated.count > 0) {
-          // Decrement global ingredient stock
-          await tx.ingredient.update({
-            where: { id: b.ingredientId },
-            data: { currentStock: { decrement: remaining } },
-          });
-
-          // Decrement warehouse stock
-          if (b.warehouseId) {
-            await tx.warehouseStock.updateMany({
-              where: { warehouseId: b.warehouseId, ingredientId: b.ingredientId },
-              data: { currentStock: { decrement: remaining } },
+          // Decrement global ingredient stock safely
+          const ing = await tx.ingredient.findUnique({ where: { id: b.ingredientId }, select: { currentStock: true } });
+          if (ing) {
+            await tx.ingredient.update({
+              where: { id: b.ingredientId },
+              data: { currentStock: Math.max(0, Number(ing.currentStock) - remaining) },
             });
+          }
+
+          // Decrement warehouse stock safely
+          if (b.warehouseId) {
+            const ws = await tx.warehouseStock.findUnique({
+              where: { warehouseId_ingredientId: { warehouseId: b.warehouseId, ingredientId: b.ingredientId } },
+              select: { currentStock: true },
+            });
+            if (ws) {
+              await tx.warehouseStock.update({
+                where: { warehouseId_ingredientId: { warehouseId: b.warehouseId, ingredientId: b.ingredientId } },
+                data: { currentStock: Math.max(0, Number(ws.currentStock) - remaining) },
+              });
+            }
           }
 
           // Create WasteRecord
@@ -162,10 +171,16 @@ export async function autoProcessExpiredBatches(): Promise<{
         });
 
         if (updated.count > 0) {
-          await tx.productionWarehouseStock.updateMany({
+          const pws = await tx.productionWarehouseStock.findFirst({
             where: { productionItemId: b.productionItemId, warehouseId: b.warehouseId },
-            data: { currentStock: { decrement: remaining } },
+            select: { id: true, currentStock: true },
           });
+          if (pws) {
+            await tx.productionWarehouseStock.update({
+              where: { id: pws.id },
+              data: { currentStock: Math.max(0, Number(pws.currentStock) - remaining) },
+            });
+          }
 
           const unitCost = b.unitCost != null ? Number(b.unitCost) : 0;
           await tx.wasteRecord.create({

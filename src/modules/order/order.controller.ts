@@ -323,6 +323,8 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
     ? cashApproved
     : (orderSource === 'waiter' ? false : true);
 
+  await validateOrderStock(prisma, scope, items);
+
   const order = await prisma.order.create({
     data: {
       orderNumber,
@@ -522,6 +524,116 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
  * whichever of these three states it reaches first. Shared by both status-change
  * endpoints (whole-order and per-kitchen) so this delicate logic exists in one place.
  */
+/**
+ * Validates stock availability for ingredients and production items required by recipes in the order.
+ * Throws ApiError.badRequest if any required ingredient or production item is out of stock.
+ */
+export async function validateOrderStock(
+  tx: Prisma.TransactionClient | typeof prisma,
+  outletId: string | null,
+  items: { menuItemId?: string | null; variantId?: string | null; qty: number }[]
+): Promise<void> {
+  const menuItemIds = items
+    .filter((i) => i.menuItemId && Number(i.qty) > 0)
+    .map((i) => i.menuItemId as string);
+
+  if (menuItemIds.length === 0) return;
+
+  const recipes = await tx.foodRecipe.findMany({
+    where: { menuItemId: { in: menuItemIds } },
+    select: {
+      menuItemId: true,
+      variantId: true,
+      ingredientId: true,
+      productionItemId: true,
+      qtyPerUnit: true,
+      ingredient: { select: { id: true, name: true, unit: { select: { name: true, symbol: true } } } },
+      productionItem: { select: { id: true, name: true, unit: true } },
+    },
+  });
+
+  if (recipes.length === 0) return;
+
+  let kitchenWarehouseId: string | null = null;
+  if (outletId) {
+    const kw = await tx.warehouse.findFirst({
+      where: { outletId, type: 'KITCHEN' as never, isActive: true },
+      select: { id: true },
+    });
+    kitchenWarehouseId = kw?.id ?? null;
+  }
+
+  const requiredIngredients: Record<string, { qty: number; name: string; unit: string }> = {};
+  const requiredProdItems: Record<string, { qty: number; name: string; unit: string }> = {};
+
+  for (const item of items) {
+    if (!item.menuItemId || Number(item.qty) <= 0) continue;
+    const itemRecipes = recipes.filter((r) => {
+      if (r.menuItemId !== item.menuItemId) return false;
+      if (item.variantId) return r.variantId === item.variantId;
+      return !r.variantId;
+    });
+
+    for (const r of itemRecipes) {
+      const qtyNeeded = Number(r.qtyPerUnit) * Number(item.qty);
+      if (r.ingredientId && r.ingredient) {
+        const unitName = r.ingredient.unit?.symbol || r.ingredient.unit?.name || 'unit';
+        if (!requiredIngredients[r.ingredientId]) {
+          requiredIngredients[r.ingredientId] = { qty: 0, name: r.ingredient.name, unit: unitName };
+        }
+        requiredIngredients[r.ingredientId].qty += qtyNeeded;
+      } else if (r.productionItemId && r.productionItem) {
+        const unitName = r.productionItem.unit || 'unit';
+        if (!requiredProdItems[r.productionItemId]) {
+          requiredProdItems[r.productionItemId] = { qty: 0, name: r.productionItem.name, unit: unitName };
+        }
+        requiredProdItems[r.productionItemId].qty += qtyNeeded;
+      }
+    }
+  }
+
+  // Check ingredient stock
+  for (const [ingredientId, reqData] of Object.entries(requiredIngredients)) {
+    let availableStock = 0;
+    if (kitchenWarehouseId) {
+      const ws = await tx.warehouseStock.findUnique({
+        where: { warehouseId_ingredientId: { warehouseId: kitchenWarehouseId, ingredientId } },
+        select: { currentStock: true },
+      });
+      availableStock = Math.max(0, Number(ws?.currentStock ?? 0));
+    } else {
+      const ing = await tx.ingredient.findUnique({
+        where: { id: ingredientId },
+        select: { currentStock: true },
+      });
+      availableStock = Math.max(0, Number(ing?.currentStock ?? 0));
+    }
+
+    if (availableStock < reqData.qty) {
+      throw ApiError.badRequest(
+        `Insufficient stock for ingredient "${reqData.name}" (Required: ${reqData.qty.toFixed(2)} ${reqData.unit}, Available: ${availableStock.toFixed(2)} ${reqData.unit}). Order cannot be placed.`
+      );
+    }
+  }
+
+  // Check production item stock (e.g. Pizza Dough)
+  if (kitchenWarehouseId) {
+    for (const [productionItemId, reqData] of Object.entries(requiredProdItems)) {
+      const pws = await tx.productionWarehouseStock.findFirst({
+        where: { productionItemId, warehouseId: kitchenWarehouseId },
+        select: { currentStock: true },
+      });
+      const availableStock = Math.max(0, Number(pws?.currentStock ?? 0));
+
+      if (availableStock < reqData.qty) {
+        throw ApiError.badRequest(
+          `Insufficient stock for production item "${reqData.name}" (Required: ${reqData.qty.toFixed(2)} ${reqData.unit}, Available: ${availableStock.toFixed(2)} ${reqData.unit}). Order cannot be placed.`
+        );
+      }
+    }
+  }
+}
+
 export async function deductStockForConsumedStates(
   tx: Prisma.TransactionClient,
   existing: { status: string; outletId: string | null; orderNumber: string },
@@ -533,6 +645,8 @@ export async function deductStockForConsumedStates(
   const alreadyConsumed = CONSUMED_STATES.includes(existing.status);
   const enteringConsumedState = CONSUMED_STATES.includes(newPrismaStatus);
   if (!(enteringConsumedState && !alreadyConsumed)) return;
+
+  await validateOrderStock(tx, existing.outletId, items);
 
   const menuItemIds = items
     .filter((i) => i.menuItemId)
@@ -597,16 +711,32 @@ export async function deductStockForConsumedStates(
     for (const ing of ings) lowStockById.set(ing.id, Number(ing.lowStockLevel ?? 0));
   }
 
-  // Apply per-ingredient stock decrements (values differ per row, so these stay individual)
+  // Apply per-ingredient stock decrements safely (clamped to Math.max(0, ...))
   for (const [ingredientId, qty] of deductionEntries) {
     // 1. Deduct global ingredient stock (backward compat)
-    await tx.ingredient.update({
+    const ing = await tx.ingredient.findUnique({
       where: { id: ingredientId },
-      data: { currentStock: { decrement: qty } },
+      select: { currentStock: true },
     });
+    if (ing) {
+      await tx.ingredient.update({
+        where: { id: ingredientId },
+        data: { currentStock: Math.max(0, Number(ing.currentStock) - qty) },
+      });
+    }
 
     // 2. Deduct kitchen warehouse stock (if linked)
     if (kitchenWarehouseId) {
+      const ws = await tx.warehouseStock.findUnique({
+        where: {
+          warehouseId_ingredientId: {
+            warehouseId: kitchenWarehouseId,
+            ingredientId,
+          },
+        },
+        select: { currentStock: true },
+      });
+      const newWsStock = Math.max(0, (ws ? Number(ws.currentStock) : 0) - qty);
       await tx.warehouseStock.upsert({
         where: {
           warehouseId_ingredientId: {
@@ -614,11 +744,11 @@ export async function deductStockForConsumedStates(
             ingredientId,
           },
         },
-        update: { currentStock: { decrement: qty } },
+        update: { currentStock: newWsStock },
         create: {
           warehouseId: kitchenWarehouseId,
           ingredientId,
-          currentStock: -qty,   // negative = consumed before stock received (audit flag)
+          currentStock: 0,
           lowStockLevel: lowStockById.get(ingredientId) ?? 0,
         },
       });
@@ -688,10 +818,16 @@ export async function deductStockForConsumedStates(
           data: { remainingQty: d.newRemaining },
         });
       }
-      await tx.productionWarehouseStock.updateMany({
+      const pws = await tx.productionWarehouseStock.findFirst({
         where: { productionItemId, warehouseId: kitchenWarehouseId },
-        data: { currentStock: { decrement: qty } },
+        select: { id: true, currentStock: true },
       });
+      if (pws) {
+        await tx.productionWarehouseStock.update({
+          where: { id: pws.id },
+          data: { currentStock: Math.max(0, Number(pws.currentStock) - qty) },
+        });
+      }
     }
   }
 }

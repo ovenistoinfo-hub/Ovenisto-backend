@@ -17,4 +17,5 @@ cashSettlementRouter.use(authenticate);
 cashSettlementRouter.get('/active-balances', authorize(managerRoles), getActiveBalancesController);
 cashSettlementRouter.get('/staff/:staffId/active', getStaffActiveBalanceController);
 cashSettlementRouter.post('/', authorize(managerRoles), createSettlementController);
-cashSettlementRouter.get('/history', authorize(managerRoles), getSettlementHistoryController);
+cashSettlementRouter.get('/history', getSettlementHistoryController);
+

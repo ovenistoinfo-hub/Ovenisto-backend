@@ -3,6 +3,7 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
+import { prisma } from '../../config/database.js';
 import {
   getActiveBalances,
   getStaffActiveBalance,
@@ -44,7 +45,26 @@ export const createSettlementController = asyncHandler(async (req: Request, res:
 
 export const getSettlementHistoryController = asyncHandler(async (req: Request, res: Response) => {
   const scope = resolveOutletScope(req);
-  const { staffId, role, page, limit, date } = req.query as Record<string, string>;
+  if (!req.user) {
+    throw ApiError.unauthorized('User not authenticated');
+  }
+
+  let { staffId, role, page, limit, date } = req.query as Record<string, string>;
+
+  // Non-managers may only view their own settlement history
+  if (!managerRoles.includes(req.user.role as string)) {
+    if (staffId && staffId !== req.user.id) {
+      const rider = await prisma.deliveryRider.findFirst({
+        where: { userId: req.user.id },
+      });
+      if (!rider || rider.id !== staffId) {
+        throw ApiError.forbidden('You can only view your own settlement history');
+      }
+    } else {
+      staffId = req.user.id;
+    }
+  }
+
   const history = await getSettlementHistory(scope, {
     staffId,
     role,
@@ -61,3 +81,4 @@ export const getSettlementHistoryController = asyncHandler(async (req: Request, 
     )
   );
 });
+

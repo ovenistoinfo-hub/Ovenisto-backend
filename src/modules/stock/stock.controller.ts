@@ -336,16 +336,37 @@ export const createProduction = asyncHandler(async (req: Request, res: Response)
     }
     const piUnitCost = Number(piQty) > 0 ? totalCost / Number(piQty) : 0;
 
+    // Validate raw ingredients stock availability before producing
+    for (const c of piConsumed) {
+      const ing = await prisma.ingredient.findUnique({ where: { id: c.ingredientId }, select: { name: true, currentStock: true } });
+      const ws = await prisma.warehouseStock.findUnique({
+        where: { warehouseId_ingredientId: { warehouseId: piWarehouseId, ingredientId: c.ingredientId } },
+        select: { currentStock: true },
+      });
+      const avail = Math.max(0, Number(ws ? ws.currentStock : (ing?.currentStock ?? 0)));
+      if (avail < Number(c.qty)) {
+        throw ApiError.badRequest(`Insufficient stock for raw ingredient "${ing?.name || 'Item'}" (Required: ${Number(c.qty)}, Available: ${avail}). Production failed.`);
+      }
+    }
+
     await prisma.$transaction(async (tx) => {
       for (const c of piConsumed) {
-        await tx.ingredient.update({
-          where: { id: c.ingredientId },
-          data: { currentStock: { decrement: Number(c.qty) } },
+        const ing = await tx.ingredient.findUnique({ where: { id: c.ingredientId }, select: { currentStock: true } });
+        if (ing) {
+          await tx.ingredient.update({
+            where: { id: c.ingredientId },
+            data: { currentStock: Math.max(0, Number(ing.currentStock) - Number(c.qty)) },
+          });
+        }
+        const ws = await tx.warehouseStock.findUnique({
+          where: { warehouseId_ingredientId: { warehouseId: piWarehouseId, ingredientId: c.ingredientId } },
+          select: { currentStock: true },
         });
+        const newWs = Math.max(0, (ws ? Number(ws.currentStock) : 0) - Number(c.qty));
         await tx.warehouseStock.upsert({
           where: { warehouseId_ingredientId: { warehouseId: piWarehouseId, ingredientId: c.ingredientId } },
-          update: { currentStock: { decrement: Number(c.qty) } },
-          create: { warehouseId: piWarehouseId, ingredientId: c.ingredientId, currentStock: -Number(c.qty), lowStockLevel: 0 },
+          update: { currentStock: newWs },
+          create: { warehouseId: piWarehouseId, ingredientId: c.ingredientId, currentStock: 0, lowStockLevel: 0 },
         });
       }
       await tx.productionBatch.create({

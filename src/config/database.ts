@@ -31,6 +31,7 @@ export async function connectDatabase(): Promise<void> {
     try {
       await prisma.$connect();
       console.log('✅ Database connected successfully');
+      await sanitizeNegativeStock();
       return;
     } catch (error) {
       retries++;
@@ -54,6 +55,20 @@ export async function connectDatabase(): Promise<void> {
 export async function disconnectDatabase(): Promise<void> {
   await prisma.$disconnect();
   console.log('📴 Database disconnected');
+}
+
+/**
+  Sanitize negative stock values across ingredients, warehouse_stock, and production_warehouse_stock
+ */
+export async function sanitizeNegativeStock(): Promise<void> {
+  try {
+    await prisma.$executeRaw`UPDATE "ingredients" SET "currentStock" = 0 WHERE "currentStock" < 0`;
+    await prisma.$executeRaw`UPDATE "warehouse_stock" SET "currentStock" = 0 WHERE "currentStock" < 0`;
+    await prisma.$executeRaw`UPDATE "production_warehouse_stock" SET "currentStock" = 0 WHERE "currentStock" < 0`;
+    console.log('🧹 Negative stock values sanitized');
+  } catch (err) {
+    console.error('⚠️ Failed to sanitize negative stock:', err);
+  }
 }
 
 // NOTE: A keep-alive ping was intentionally REMOVED here. Pinging the DB on an
