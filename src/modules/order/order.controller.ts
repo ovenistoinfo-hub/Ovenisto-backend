@@ -570,7 +570,7 @@ export async function validateOrderStock(
     if (!item.menuItemId || Number(item.qty) <= 0) continue;
     const itemRecipes = recipes.filter((r) => {
       if (r.menuItemId !== item.menuItemId) return false;
-      if (item.variantId) return r.variantId === item.variantId;
+      if (item.variantId) return !r.variantId || r.variantId === item.variantId;
       return !r.variantId;
     });
 
@@ -1255,7 +1255,7 @@ export async function executeCancellation(
           where: { id: assignment.rider.id },
           data: {
             activeDeliveries: { decrement: 1 },
-            isAvailable: assignment.rider.status !== 'off_duty' && currentRemaining < 5,
+            isAvailable: assignment.rider.status !== 'off_duty' && assignment.rider.status !== 'offline' && currentRemaining < 5,
             status: currentRemaining === 0 ? 'available' : 'on_delivery',
           },
         });

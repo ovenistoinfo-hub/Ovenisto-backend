@@ -388,14 +388,14 @@ export const updateUser = asyncHandler(async (req: Request, res: Response) => {
 
 /**
  * DELETE /api/users/:id
- * Soft deletes (deactivates) the user
+ * Permanently deletes the user from database (unlinks linked Employee account)
  */
 export const deleteUser = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
 
   // Prevent self-deletion
   if (req.user!.id === id) {
-    throw ApiError.badRequest('You cannot deactivate your own account');
+    throw ApiError.badRequest('You cannot delete your own account');
   }
 
   const user = await prisma.user.findUnique({ where: { id } });
@@ -403,10 +403,41 @@ export const deleteUser = asyncHandler(async (req: Request, res: Response) => {
     throw ApiError.notFound('User not found');
   }
 
-  await prisma.user.update({
-    where: { id },
-    data: { status: 'inactive' },
-  });
+  const scope = resolveOutletScope(req);
+  if (scope && user.outletId !== scope) {
+    throw ApiError.notFound('User not found');
+  }
 
-  res.json(ApiResponse.success(null, 'User deactivated successfully'));
+  await prisma.$transaction(async (tx) => {
+    // 1. Unlink linked Employee (sets userId to null so Employee profile remains intact)
+    await tx.employee.updateMany({
+      where: { userId: id },
+      data: { userId: null },
+    });
+
+    // 2. Delete linked DeliveryRider profile if present
+    await tx.deliveryRider.deleteMany({ where: { userId: id } });
+
+    // 3. Delete user attendance, schedules, leaves, penalties if any
+    await tx.attendanceRecord.deleteMany({ where: { userId: id } });
+    await tx.leaveRequest.deleteMany({ where: { OR: [{ userId: id }, { reviewedById: id }] } });
+    await tx.leaveBalance.deleteMany({ where: { userId: id } });
+    await tx.staffSchedule.deleteMany({ where: { userId: id } });
+    await tx.staffPenalty.deleteMany({ where: { userId: id } });
+
+    // 4. Clear User FK references on operational logs so historical logs remain intact
+    await tx.order.updateMany({ where: { staffId: id }, data: { staffId: null } });
+    await tx.order.updateMany({ where: { acceptedById: id }, data: { acceptedById: null } });
+    await tx.shift.updateMany({ where: { cashierId: id }, data: { cashierId: null } });
+    await tx.stockAdjustment.updateMany({ where: { adjustedById: id }, data: { adjustedById: null } });
+    await tx.warehouse.updateMany({ where: { managerId: id }, data: { managerId: null } });
+    await tx.purchaseRequest.deleteMany({ where: { requestedById: id } });
+    await tx.purchaseRequest.updateMany({ where: { approvedById: id }, data: { approvedById: null } });
+    await tx.purchase.updateMany({ where: { createdById: id }, data: { createdById: null } });
+
+    // 5. Permanently delete User row from Database
+    await tx.user.delete({ where: { id } });
+  }, { timeout: 60000 });
+
+  res.json(ApiResponse.success(null, 'User permanently deleted from database'));
 });

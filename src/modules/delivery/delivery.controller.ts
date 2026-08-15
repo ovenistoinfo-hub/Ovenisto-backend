@@ -204,7 +204,7 @@ export const assignRider = asyncHandler(async (req: Request, res: Response) => {
   const scope = resolveOutletScope(req);
   if (scope && order.outletId !== scope) throw ApiError.notFound('Order not found');
   if (scope && rider.user?.outletId !== scope) throw ApiError.badRequest('Rider is not in your outlet');
-  if (rider.status === 'off_duty') throw ApiError.badRequest('Rider is currently off duty');
+  if (rider.status === 'off_duty' || rider.status === 'offline') throw ApiError.badRequest('Rider is currently off duty');
   if ((rider.activeDeliveries || 0) >= 5) throw ApiError.badRequest('Rider has reached maximum active delivery limit (5 orders)');
 
   const existing = await prisma.deliveryAssignment.findFirst({ where: { orderId, status: { notIn: ['returned'] } } });
@@ -355,7 +355,7 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
         where: { id: assignment.riderId },
         data: {
           activeDeliveries: { decrement: 1 },
-          isAvailable: assignment.rider.status !== 'off_duty' && currentRemaining < 5,
+          isAvailable: assignment.rider.status !== 'off_duty' && assignment.rider.status !== 'offline' && currentRemaining < 5,
           status: currentRemaining === 0 ? 'available' : 'on_delivery',
         },
       }),
@@ -422,7 +422,7 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
         where: { id: assignment.riderId },
         data: {
           activeDeliveries: { decrement: 1 },
-          isAvailable: assignment.rider.status !== 'off_duty' && currentRemaining < 5,
+          isAvailable: assignment.rider.status !== 'off_duty' && assignment.rider.status !== 'offline' && currentRemaining < 5,
           status: currentRemaining === 0 ? 'available' : 'on_delivery',
         },
       }),

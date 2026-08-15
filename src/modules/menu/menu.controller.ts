@@ -37,6 +37,16 @@ export function normalizeMenuItem(item: any): any {
       status:     m.modifier?.status ?? m.status,
       variantIds: m.variantIds ?? [],
     })),
+    recipes: item.recipes ? item.recipes.map((r: any) => ({
+      ...r,
+      qtyPerUnit: Number(r.qtyPerUnit),
+      ingredient: r.ingredient ? {
+        ...r.ingredient,
+        purchasePrice: r.ingredient.purchasePrice != null ? Number(r.ingredient.purchasePrice) : null,
+        currentStock: r.ingredient.currentStock != null ? Number(r.ingredient.currentStock) : 0,
+        lowStockLevel: r.ingredient.lowStockLevel != null ? Number(r.ingredient.lowStockLevel) : 0,
+      } : null,
+    })) : undefined,
   };
 }
 
@@ -148,6 +158,12 @@ export const getMenuItems = asyncHandler(async (req: Request, res: Response) => 
         category: { select: { id: true, name: true } },
         variants: { orderBy: { displayOrder: 'asc' } },
         modifiers: { include: { modifier: true } },
+        recipes: {
+          include: {
+            ingredient: { select: { id: true, name: true, currentStock: true, lowStockLevel: true, unit: { select: { id: true, name: true, symbol: true } } } },
+            productionItem: { select: { id: true, name: true, unit: true } },
+          },
+        },
       },
     }),
     prisma.foodMenuItem.count({ where }),
