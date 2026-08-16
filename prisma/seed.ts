@@ -263,14 +263,14 @@ async function main() {
   // Create sample ingredients without vendors
   // ============================================
   const sampleIngredients = [
-    { name: 'Beef Patty', brand: 'K&N\'s', catName: 'Meat', unitSymbol: 'pcs', lowStockLevel: 50 },
-    { name: 'Chicken Breast', brand: 'Dawn', catName: 'Meat', unitSymbol: 'kg', lowStockLevel: 10 },
-    { name: 'Namak', brand: 'National', catName: 'Spices', unitSymbol: 'g', lowStockLevel: 500 },
-    { name: 'Cheese Mozzarella', brand: 'Olper\'s', catName: 'Dairy', unitSymbol: 'kg', lowStockLevel: 5 },
-    { name: 'Butter', brand: 'Nurpur', catName: 'Dairy', unitSymbol: 'kg', lowStockLevel: 5 },
-    { name: 'Tomato', brand: 'Local Market', catName: 'Vegetables', unitSymbol: 'kg', lowStockLevel: 15 },
-    { name: 'Onion', brand: 'Local Market', catName: 'Vegetables', unitSymbol: 'kg', lowStockLevel: 20 },
-    { name: 'Podina', brand: 'Local Market', catName: 'Vegetables', unitSymbol: 'g', lowStockLevel: 100 },
+    { name: 'Beef Patty', brand: 'K&N\'s', catName: 'Meat', unitSymbol: 'pcs', purchasePrice: 120, lowStockLevel: 50 },
+    { name: 'Chicken Breast', brand: 'Dawn', catName: 'Meat', unitSymbol: 'kg', purchasePrice: 750, lowStockLevel: 10 },
+    { name: 'Namak', brand: 'National', catName: 'Spices', unitSymbol: 'g', purchasePrice: 0.1, lowStockLevel: 500 },
+    { name: 'Cheese Mozzarella', brand: 'Olper\'s', catName: 'Dairy', unitSymbol: 'kg', purchasePrice: 1200, lowStockLevel: 5 },
+    { name: 'Butter', brand: 'Nurpur', catName: 'Dairy', unitSymbol: 'kg', purchasePrice: 900, lowStockLevel: 5 },
+    { name: 'Tomato', brand: 'Local Market', catName: 'Vegetables', unitSymbol: 'kg', purchasePrice: 180, lowStockLevel: 15 },
+    { name: 'Onion', brand: 'Local Market', catName: 'Vegetables', unitSymbol: 'kg', purchasePrice: 100, lowStockLevel: 20 },
+    { name: 'Podina', brand: 'Local Market', catName: 'Vegetables', unitSymbol: 'g', purchasePrice: 0.5, lowStockLevel: 100 },
   ];
 
   for (const ing of sampleIngredients) {
@@ -280,6 +280,7 @@ async function main() {
         brand: ing.brand,
         categoryId: catMap.get(ing.catName) || null,
         unitId: unitMap.get(ing.unitSymbol) || null,
+        purchasePrice: ing.purchasePrice,
         lowStockLevel: ing.lowStockLevel,
         currentStock: 0,
         supplierId: null, // No Vendor

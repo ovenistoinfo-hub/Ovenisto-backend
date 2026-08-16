@@ -275,23 +275,28 @@ model FoodMenuVariant {
 }
 
 model Modifier {
-  id     String  @id @default(uuid())
-  name   String  @db.VarChar(100)
-  price  Decimal @default(0) @db.Decimal(10, 2)
-  type   String? @db.VarChar(20) // addon, removal
-  status String  @default("active") @db.VarChar(20)
+  id           String  @id @default(uuid())
+  name         String  @db.VarChar(100)
+  price        Decimal @default(0) @db.Decimal(10, 2)  // selling price (what customer pays)
+  type         String? @db.VarChar(20) // addon, removal
+  status       String  @default("active") @db.VarChar(20)
+  ingredientId String? // if set, this modifier is backed by an ingredient
 
   // Relations
-  menuItems MenuItemModifier[]
+  menuItems  MenuItemModifier[]
+  ingredient Ingredient? @relation(fields: [ingredientId], references: [id])
 
   @@map("modifiers")
 }
 
 model MenuItemModifier {
-  id         String   @id @default(uuid())
-  menuItemId String
-  modifierId String
-  variantIds String[] // empty = all variants; populated = only these variant IDs
+  id            String  @id @default(uuid())
+  menuItemId    String
+  modifierId    String
+  variantIds    String[]  // kept for backward compat; empty = all variants
+  qty           Decimal   @default(1) @db.Decimal(10, 4)  // qty of ingredient used per serving (simple pricing)
+  sellingPrice  Decimal   @default(0) @db.Decimal(10, 2)  // selling price override (simple pricing)
+  variantConfig Json      @default("[]")                  // [{variantId, qty, sellingPrice}] for variant pricing
 
   // Relations
   menuItem FoodMenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
@@ -373,6 +378,7 @@ model Ingredient {
   purchaseRequestItems PurchaseRequestItem[]
   stockBatches         StockBatch[]
   outletIngredientSuppliers OutletIngredientSupplier[]
+  modifiers            Modifier[]
 
   @@map("ingredients")
 }
@@ -896,7 +902,8 @@ model OrderItem {
   price       Decimal  @db.Decimal(10, 2)
   qty         Int
   discount    Decimal  @default(0) @db.Decimal(10, 2)
-  modifiers   String[]
+  modifiers    String[]
+  modifierIds  Json     @default("[]") // [{modifierId, qty}] for stock deduction
   cookingTime Int?
   notes       String?
   status      String   @default("active") @db.VarChar(20) // active | cancelled

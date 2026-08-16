@@ -364,6 +364,7 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
           qty: item.qty,
           discount: item.discount ?? 0,
           modifiers: item.modifiers ?? [],
+          modifierIds: Array.isArray(item.modifierIds) ? item.modifierIds : [],
           cookingTime: item.cookingTime ?? null,
           notes: item.notes || null,
         })),
@@ -486,6 +487,7 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
           qty: isNaN(Number(item.qty)) ? 1 : Number(item.qty),
           discount: isNaN(Number(item.discount)) ? 0 : Number(item.discount),
           modifiers: Array.isArray(item.modifiers) ? item.modifiers : [],
+          modifierIds: Array.isArray(item.modifierIds) ? item.modifierIds : [],
           cookingTime: item.cookingTime != null ? Number(item.cookingTime) : null,
           notes: item.notes || null,
         })),
@@ -685,6 +687,32 @@ export async function deductStockForConsumedStates(
         prodDeductions[r.productionItemId] = (prodDeductions[r.productionItemId] || 0) + qty;
       }
       // skip rows where both are null (shouldn't happen but be safe)
+    }
+  }
+
+  // ── Also deduct modifier ingredient stock ──
+  // Each ordered item carries modifierIds: [{ modifierId, qty }]
+  // For modifier-backed ingredients, deduct qty * item.qty from stock
+  const allModifierIds = new Set<string>();
+  for (const item of items) {
+    const mods = Array.isArray((item as any).modifierIds) ? (item as any).modifierIds : [];
+    for (const m of mods) {
+      if (m.modifierId) allModifierIds.add(m.modifierId);
+    }
+  }
+  if (allModifierIds.size > 0) {
+    const modifiers = await tx.modifier.findMany({
+      where: { id: { in: [...allModifierIds] }, ingredientId: { not: null } },
+      select: { id: true, ingredientId: true },
+    });
+    for (const item of items) {
+      const mods = Array.isArray((item as any).modifierIds) ? (item as any).modifierIds : [];
+      for (const m of mods) {
+        const mod = modifiers.find(md => md.id === m.modifierId);
+        if (!mod?.ingredientId) continue;
+        const modQty = (Number(m.qty) || 1) * Number(item.qty);
+        deductions[mod.ingredientId] = (deductions[mod.ingredientId] || 0) + modQty;
+      }
     }
   }
 

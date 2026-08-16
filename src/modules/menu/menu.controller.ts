@@ -30,12 +30,21 @@ export function normalizeMenuItem(item: any): any {
       foodpandaPrice: v.foodpandaPrice != null ? Number(v.foodpandaPrice) : null,
     })),
     modifiers: (item.modifiers ?? []).map((m: any) => ({
-      id:         m.modifier?.id     ?? m.id,
-      name:       m.modifier?.name   ?? m.name,
-      price:      Number(m.modifier?.price ?? m.price ?? 0),
-      type:       m.modifier?.type   ?? m.type,
-      status:     m.modifier?.status ?? m.status,
-      variantIds: m.variantIds ?? [],
+      id:           m.modifier?.id     ?? m.id,
+      name:         m.modifier?.name   ?? m.name,
+      price:        Number(m.modifier?.price ?? m.price ?? 0),
+      type:         m.modifier?.type   ?? m.type,
+      status:       m.modifier?.status ?? m.status,
+      variantIds:   m.variantIds ?? [],
+      qty:          Number(m.qty ?? 1),
+      sellingPrice: Number(m.sellingPrice ?? 0),
+      variantConfig: Array.isArray(m.variantConfig) ? m.variantConfig : [],
+      // ingredient info
+      ingredientId:   m.modifier?.ingredientId ?? null,
+      ingredientCost: m.modifier?.ingredient?.purchasePrice != null
+        ? Number(m.modifier.ingredient.purchasePrice)
+        : null,
+      ingredientUnit: m.modifier?.ingredient?.unit?.name ?? null,
     })),
     recipes: item.recipes ? item.recipes.map((r: any) => ({
       ...r,
@@ -138,6 +147,26 @@ export const deleteCategory = asyncHandler(async (req: Request, res: Response) =
 // FOOD MENU ITEMS
 // ============================================================
 
+const MENU_ITEM_INCLUDE = {
+  category: { select: { id: true, name: true } },
+  variants: { orderBy: { displayOrder: 'asc' as const } },
+  modifiers: {
+    include: {
+      modifier: {
+        include: {
+          ingredient: { select: { id: true, name: true, purchasePrice: true, unit: { select: { id: true, name: true, symbol: true } } } },
+        },
+      },
+    },
+  },
+  recipes: {
+    include: {
+      ingredient: { select: { id: true, name: true, purchasePrice: true, currentStock: true, lowStockLevel: true, unit: { select: { id: true, name: true, symbol: true } } } },
+      productionItem: { select: { id: true, name: true, unit: true } },
+    },
+  },
+} as const;
+
 /** GET /api/menu/items */
 export const getMenuItems = asyncHandler(async (req: Request, res: Response) => {
   const { search, category, available, page = '1', limit = '100' } = req.query;
@@ -154,17 +183,7 @@ export const getMenuItems = asyncHandler(async (req: Request, res: Response) => 
       skip,
       take: Number(limit),
       orderBy: [{ category: { displayOrder: 'asc' } }, { name: 'asc' }],
-      include: {
-        category: { select: { id: true, name: true } },
-        variants: { orderBy: { displayOrder: 'asc' } },
-        modifiers: { include: { modifier: true } },
-        recipes: {
-          include: {
-            ingredient: { select: { id: true, name: true, currentStock: true, lowStockLevel: true, unit: { select: { id: true, name: true, symbol: true } } } },
-            productionItem: { select: { id: true, name: true, unit: true } },
-          },
-        },
-      },
+      include: MENU_ITEM_INCLUDE,
     }),
     prisma.foodMenuItem.count({ where }),
   ]);
@@ -179,13 +198,53 @@ export const getMenuItem = asyncHandler(async (req: Request, res: Response) => {
     include: {
       category: { select: { id: true, name: true } },
       variants: { orderBy: { displayOrder: 'asc' } },
-      recipes: { include: { ingredient: { include: { unit: true } }, productionItem: { select: { id: true, name: true, unit: true } }, usageUnit: { select: { id: true, name: true } } } },
-      modifiers: { include: { modifier: true } },
+      recipes: {
+        include: {
+          ingredient: { include: { unit: true } },
+          productionItem: { select: { id: true, name: true, unit: true } },
+          usageUnit: { select: { id: true, name: true } },
+        },
+      },
+      modifiers: {
+        include: {
+          modifier: {
+            include: {
+              ingredient: { select: { id: true, name: true, purchasePrice: true, unit: { select: { id: true, name: true, symbol: true } } } },
+            },
+          },
+        },
+      },
     },
   });
   if (!item) throw ApiError.notFound('Menu item not found');
   res.json(ApiResponse.success(normalizeMenuItem(item)));
 });
+
+/**
+ * Parse the modifiers input array (supports both legacy and new format).
+ * Returns: { modifierId, variantIds, qty, sellingPrice, variantConfig }[]
+ */
+function parseModData(modifiersInput: any[] | undefined, modifierIds: string[] | undefined) {
+  if (modifiersInput?.length) {
+    return modifiersInput.map((m: any) => ({
+      modifierId:    m.id,
+      variantIds:    m.variantIds ?? [],
+      qty:           m.qty ?? 1,
+      sellingPrice:  m.sellingPrice ?? 0,
+      variantConfig: m.variantConfig ?? [],
+    }));
+  }
+  if (modifierIds?.length) {
+    return modifierIds.map((mid: string) => ({
+      modifierId:    mid,
+      variantIds:    [] as string[],
+      qty:           1,
+      sellingPrice:  0,
+      variantConfig: [],
+    }));
+  }
+  return [];
+}
 
 /** POST /api/menu/items */
 export const createMenuItem = asyncHandler(async (req: Request, res: Response) => {
@@ -207,12 +266,7 @@ export const createMenuItem = asyncHandler(async (req: Request, res: Response) =
     finalCode = await generateUniqueCode(name);
   }
 
-  // Resolve modifier data: support both legacy `modifierIds` (string[]) and new `modifiers` ([{ id, variantIds }])
-  const modData = modifiersInput?.length
-    ? modifiersInput.map((m: any) => ({ modifierId: m.id, variantIds: m.variantIds ?? [] }))
-    : modifierIds?.length
-      ? modifierIds.map((mid: string) => ({ modifierId: mid, variantIds: [] as string[] }))
-      : [];
+  const modData = parseModData(modifiersInput, modifierIds);
 
   const item = await prisma.foodMenuItem.create({
     data: {
@@ -240,11 +294,7 @@ export const createMenuItem = asyncHandler(async (req: Request, res: Response) =
         ? { create: modData }
         : undefined,
     },
-    include: {
-      category: { select: { id: true, name: true } },
-      variants: { orderBy: { displayOrder: 'asc' } },
-      modifiers: { include: { modifier: true } },
-    },
+    include: MENU_ITEM_INCLUDE,
   });
   res.status(201).json(ApiResponse.created(normalizeMenuItem(item), 'Menu item created'));
 });
@@ -267,11 +317,7 @@ export const updateMenuItem = asyncHandler(async (req: Request, res: Response) =
 
   // Resolve modifier data
   const hasModInput = modifiersInput !== undefined || modifierIds !== undefined;
-  const modData = modifiersInput?.length
-    ? modifiersInput.map((m: any) => ({ modifierId: m.id, variantIds: m.variantIds ?? [] }))
-    : modifierIds?.length
-      ? modifierIds.map((mid: string) => ({ modifierId: mid, variantIds: [] as string[] }))
-      : [];
+  const modData = parseModData(modifiersInput, modifierIds);
 
   // Update item + replace variants & modifiers if provided
   const item = await prisma.$transaction(async (tx) => {
@@ -308,13 +354,9 @@ export const updateMenuItem = asyncHandler(async (req: Request, res: Response) =
           modifiers: { create: modData },
         }),
       },
-      include: {
-        category: { select: { id: true, name: true } },
-        variants: { orderBy: { displayOrder: 'asc' } },
-        modifiers: { include: { modifier: true } },
-      },
+      include: MENU_ITEM_INCLUDE,
     });
-  });
+  }, { timeout: 25000, maxWait: 10000 });
 
   res.json(ApiResponse.success(normalizeMenuItem(item), 'Menu item updated'));
 });
@@ -333,39 +375,109 @@ export const deleteMenuItem = asyncHandler(async (req: Request, res: Response) =
 
 /** GET /api/menu/modifiers */
 export const getModifiers = asyncHandler(async (_req: Request, res: Response) => {
-  const modifiers = await prisma.modifier.findMany({ orderBy: { name: 'asc' } });
-  res.json(ApiResponse.success(modifiers));
+  const modifiers = await prisma.modifier.findMany({
+    orderBy: { name: 'asc' },
+    include: {
+      ingredient: {
+        select: { id: true, name: true, purchasePrice: true, unit: { select: { id: true, name: true, symbol: true } } },
+      },
+    },
+  });
+  res.json(ApiResponse.success(modifiers.map((m: any) => ({
+    ...m,
+    price: Number(m.price),
+    ingredientCost: m.ingredient?.purchasePrice != null ? Number(m.ingredient.purchasePrice) : null,
+    ingredientUnit: m.ingredient?.unit?.name ?? null,
+    ingredientUnitSymbol: m.ingredient?.unit?.symbol ?? null,
+  }))));
 });
 
 /** POST /api/menu/modifiers */
 export const createModifier = asyncHandler(async (req: Request, res: Response) => {
-  const { name, price, type, status } = req.body;
-  if (!name?.trim()) throw ApiError.badRequest('Modifier name is required');
+  const { name, price, type, status, ingredientId } = req.body;
+
+  let finalName = name?.trim();
+
+  // If ingredient-backed, auto-set name from ingredient
+  if (ingredientId) {
+    const ing = await prisma.ingredient.findUnique({
+      where: { id: ingredientId },
+      select: { name: true },
+    });
+    if (!ing) throw ApiError.badRequest('Ingredient not found');
+    finalName = finalName || ing.name;
+  }
+
+  if (!finalName) throw ApiError.badRequest('Modifier name is required');
+
+  // Check for duplicate ingredient-backed modifier
+  if (ingredientId) {
+    const dup = await prisma.modifier.findFirst({ where: { ingredientId } });
+    if (dup) throw ApiError.conflict(`A modifier for ingredient "${finalName}" already exists`);
+  }
 
   const modifier = await prisma.modifier.create({
-    data: { name: name.trim(), price: price ?? 0, type: type || 'addon', status: status ?? 'active' },
+    data: {
+      name: finalName,
+      price: price ?? 0,
+      type: type || 'addon',
+      status: status ?? 'active',
+      ingredientId: ingredientId || null,
+    },
+    include: {
+      ingredient: { select: { id: true, name: true, purchasePrice: true, unit: { select: { id: true, name: true, symbol: true } } } },
+    },
   });
-  res.status(201).json(ApiResponse.created(modifier, 'Modifier created'));
+  res.status(201).json(ApiResponse.created({
+    ...modifier,
+    price: Number(modifier.price),
+    ingredientCost: modifier.ingredient?.purchasePrice != null ? Number(modifier.ingredient.purchasePrice) : null,
+    ingredientUnit: modifier.ingredient?.unit?.name ?? null,
+    ingredientUnitSymbol: modifier.ingredient?.unit?.symbol ?? null,
+  }, 'Modifier created'));
 });
 
 /** PUT /api/menu/modifiers/:id */
 export const updateModifier = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { name, price, type, status } = req.body;
+  const { name, price, type, status, ingredientId } = req.body;
 
   const existing = await prisma.modifier.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Modifier not found');
 
+  let finalName = name?.trim();
+  let finalIngredientId = ingredientId !== undefined ? (ingredientId || null) : existing.ingredientId;
+
+  // If switching to a different ingredient, auto-set name
+  if (ingredientId && ingredientId !== existing.ingredientId) {
+    const ing = await prisma.ingredient.findUnique({ where: { id: ingredientId }, select: { name: true } });
+    if (!ing) throw ApiError.badRequest('Ingredient not found');
+    // Check for duplicate
+    const dup = await prisma.modifier.findFirst({ where: { ingredientId, NOT: { id } } });
+    if (dup) throw ApiError.conflict(`A modifier for this ingredient already exists`);
+    if (!finalName) finalName = ing.name;
+  }
+
   const modifier = await prisma.modifier.update({
     where: { id },
     data: {
-      ...(name && { name: name.trim() }),
+      ...(finalName && { name: finalName }),
       ...(price !== undefined && { price }),
       ...(type && { type }),
       ...(status && { status }),
+      ingredientId: finalIngredientId,
+    },
+    include: {
+      ingredient: { select: { id: true, name: true, purchasePrice: true, unit: { select: { id: true, name: true, symbol: true } } } },
     },
   });
-  res.json(ApiResponse.success(modifier, 'Modifier updated'));
+  res.json(ApiResponse.success({
+    ...modifier,
+    price: Number(modifier.price),
+    ingredientCost: modifier.ingredient?.purchasePrice != null ? Number(modifier.ingredient.purchasePrice) : null,
+    ingredientUnit: modifier.ingredient?.unit?.name ?? null,
+    ingredientUnitSymbol: modifier.ingredient?.unit?.symbol ?? null,
+  }, 'Modifier updated'));
 });
 
 /** DELETE /api/menu/modifiers/:id */
@@ -426,7 +538,7 @@ export const updateRecipe = asyncHandler(async (req: Request, res: Response) => 
         })),
       });
     }
-  });
+  }, { timeout: 25000, maxWait: 10000 });
 
   const recipes = await prisma.foodRecipe.findMany({
     where: { menuItemId: id },
