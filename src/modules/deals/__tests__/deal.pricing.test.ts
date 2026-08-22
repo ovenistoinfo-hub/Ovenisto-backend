@@ -8,6 +8,8 @@ import {
   mapDealOut,
   mapDealOutPublic,
   type DealForPricing,
+  matchesPinnedVariant,
+  capFreeUnitPrice,
 } from '../deal.pricing.js';
 
 function baseDeal(overrides: Partial<DealForPricing> = {}): DealForPricing {
@@ -318,5 +320,42 @@ describe('mapDealOut with new deal types', () => {
     const mapped = mapDealOut({ id: 'd6', type: 'PERCENTAGE', price: null, discountPercent: 15 });
     expect(mapped.price).toBeNull();
     expect(mapped.discountPercent).toBe(15);
+  });
+});
+
+describe('matchesPinnedVariant', () => {
+  it('requires an exact match when the deal pins a variant', () => {
+    expect(matchesPinnedVariant('small-id', 'small-id')).toBe(true);
+    expect(matchesPinnedVariant('small-id', 'large-id')).toBe(false);
+  });
+
+  it('rejects a line that sends no variant at all against a pinned deal', () => {
+    expect(matchesPinnedVariant('small-id', null)).toBe(false);
+    expect(matchesPinnedVariant('small-id', undefined)).toBe(false);
+  });
+
+  it('accepts any variant for a legacy deal that pins none', () => {
+    expect(matchesPinnedVariant(null, 'large-id')).toBe(true);
+    expect(matchesPinnedVariant(undefined, null)).toBe(true);
+  });
+});
+
+describe('capFreeUnitPrice', () => {
+  it('gives away the whole line when the deal pins the variant', () => {
+    expect(capFreeUnitPrice('large-id', 1199, 749)).toBe(1199);
+  });
+
+  it('caps an unpinned legacy giveaway at the cheapest variant', () => {
+    // "Get 1 Pizza free" with no size pinned: taking a Large (1199) may only
+    // discount what a Small (749) is worth — the customer pays the rest.
+    expect(capFreeUnitPrice(null, 1199, 749)).toBe(749);
+  });
+
+  it('leaves an unpinned line alone when the customer took the cheapest anyway', () => {
+    expect(capFreeUnitPrice(null, 749, 749)).toBe(749);
+  });
+
+  it('never inflates a discount above the line price', () => {
+    expect(capFreeUnitPrice(null, 500, 749)).toBe(500);
   });
 });

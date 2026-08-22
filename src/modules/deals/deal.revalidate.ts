@@ -15,6 +15,8 @@ import {
   allocateDealDiscount,
   validateDealSelection,
   isItemEligibleForDiscount,
+  matchesPinnedVariant,
+  capFreeUnitPrice,
   type DealForPricing,
 } from './deal.pricing.js';
 
@@ -66,8 +68,10 @@ function toDealForPricing(deal: any): DealForPricing {
     applicableItems: deal.applicableItems ?? [],
     applicableCategories: deal.applicableCategories ?? [],
     buyItemId: deal.buyItemId ?? null,
+    buyVariantId: deal.buyVariantId ?? null,
     buyQty: deal.buyQty ?? null,
     getItemId: deal.getItemId ?? null,
+    getVariantId: deal.getVariantId ?? null,
     getQty: deal.getQty ?? null,
   };
 }
@@ -89,6 +93,15 @@ function resolveLinePrice(menuItem: any, variantId: string | null | undefined, o
     return resolveChannelPrice(menuItemChannelRecord(variant), orderType);
   }
   return resolveChannelPrice(menuItemChannelRecord(menuItem), orderType);
+}
+
+/** The lowest price any variant of this item sells for on this channel — the
+ *  ceiling on what an unpinned legacy Buy X Get Y deal may give away. Items
+ *  with no variants have exactly one price, which is that ceiling. */
+function cheapestUnitPrice(menuItem: any, orderType: string | undefined): number {
+  const variants = menuItem.variants ?? [];
+  if (variants.length === 0) return resolveChannelPrice(menuItemChannelRecord(menuItem), orderType);
+  return Math.min(...variants.map((v: any) => resolveChannelPrice(menuItemChannelRecord(v), orderType)));
 }
 
 /**
@@ -232,7 +245,14 @@ function revalidatePercentageLine(
 
 /** BUY_X_GET_Y: exactly two submitted items per dealLineId, disambiguated by
  *  dealRole — the "buy" line (must be >= buyQty of buyItemId) and the "get"
- *  line (must be <= getQty of getItemId, priced free). */
+ *  line (must be <= getQty of getItemId, priced free).
+ *
+ *  Both sides are matched on variant as well as item. Matching only the item
+ *  let a customer qualify with the cheapest size and claim the priciest one
+ *  free — "Buy 1 Pizza, Get 1 Pizza Free" bought as a Small and taken as a
+ *  Large. Deals written since the *VariantId columns existed pin each side to
+ *  one variant and are matched exactly; legacy rows that pin nothing still
+ *  accept any variant, but their giveaway is capped at the cheapest one. */
 function revalidateBuyXGetYLine(
   deal: any, dealForPricing: DealForPricing, lineItems: IncomingOrderItem[], lineId: string,
   menuItemById: Map<string, any>, orderType: string | undefined,
@@ -246,6 +266,9 @@ function revalidateBuyXGetYLine(
   if (buyItem.menuItemId !== dealForPricing.buyItemId) {
     throw ApiError.badRequest(`"${deal.name}"'s "buy" item does not match`);
   }
+  if (!matchesPinnedVariant(dealForPricing.buyVariantId, buyItem.variantId ?? null)) {
+    throw ApiError.badRequest(`"${deal.name}" only applies to one size of the "buy" item`);
+  }
   const buyQtyNeeded = dealForPricing.buyQty ?? 1;
   const buyQty = Math.max(1, Math.trunc(buyItem.qty));
   if (buyQty < buyQtyNeeded) {
@@ -254,6 +277,9 @@ function revalidateBuyXGetYLine(
 
   if (getItem.menuItemId !== dealForPricing.getItemId) {
     throw ApiError.badRequest(`"${deal.name}"'s "get" item does not match`);
+  }
+  if (!matchesPinnedVariant(dealForPricing.getVariantId, getItem.variantId ?? null)) {
+    throw ApiError.badRequest(`"${deal.name}" only gives one size of the "get" item free`);
   }
   const getQtyAllowed = dealForPricing.getQty ?? 1;
   const getQty = Math.max(1, Math.trunc(getItem.qty));
@@ -270,6 +296,13 @@ function revalidateBuyXGetYLine(
 
   const getUnitPrice = resolveLinePrice(getMenuItem, getItem.variantId, orderType);
   const getVariant = getItem.variantId ? getMenuItem.variants.find((v: any) => v.id === getItem.variantId) : undefined;
+  // Legacy deals pin no variant, so cap what they give away at the cheapest
+  // size the offer could have meant; anything above that the customer pays.
+  const freeUnitPrice = capFreeUnitPrice(
+    dealForPricing.getVariantId,
+    getUnitPrice,
+    cheapestUnitPrice(getMenuItem, orderType),
+  );
 
   return [
     {
@@ -287,10 +320,14 @@ function revalidateBuyXGetYLine(
     {
       menuItemId: getMenuItem.id,
       variantId: getItem.variantId ?? null,
-      name: `${deal.name}: ${getMenuItem.name}${getVariant ? ` (${getVariant.name})` : ''} (Free)`,
+      // Only call it free when the deal actually covers the whole line — a
+      // capped legacy giveaway leaves the customer paying the difference.
+      name: `${deal.name}: ${getMenuItem.name}${getVariant ? ` (${getVariant.name})` : ''}${
+        freeUnitPrice >= getUnitPrice ? ' (Free)' : ' (Discounted)'
+      }`,
       price: getUnitPrice,
       qty: getQty,
-      discount: getUnitPrice * getQty,
+      discount: freeUnitPrice * getQty,
       modifiers: [],
       dealId: deal.id,
       dealName: deal.name,

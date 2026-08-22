@@ -109,8 +109,12 @@ export interface DealForPricing extends ChannelPriced {
   applicableCategories?: string[];
   // BUY_X_GET_Y
   buyItemId?: string | null;
+  /** Pins the "buy" side to one variant. Null = any variant qualifies (legacy rows). */
+  buyVariantId?: string | null;
   buyQty?: number | null;
   getItemId?: string | null;
+  /** Pins the free side to one variant. Null = any variant, capped at the cheapest one's price. */
+  getVariantId?: string | null;
   getQty?: number | null;
 }
 
@@ -252,6 +256,36 @@ export interface CategorizedItem {
  *  is in applicableCategories. Both lists empty never matches — an admin must
  *  explicitly scope the discount (enforced at the Zod layer too), so a
  *  misconfigured deal can't silently discount the entire menu. */
+/** Does a submitted Buy X Get Y line satisfy the variant the deal pins it to?
+ *
+ *  A deal written since the *VariantId columns existed always pins both sides,
+ *  so the submitted variant must match exactly. A legacy row pins nothing and
+ *  means "any variant" — those pass here and are contained by capFreeUnitPrice
+ *  on the giveaway side instead. */
+export function matchesPinnedVariant(
+  pinnedVariantId: string | null | undefined,
+  submittedVariantId: string | null | undefined,
+): boolean {
+  if (!pinnedVariantId) return true;
+  return submittedVariantId === pinnedVariantId;
+}
+
+/** How much of the free line the deal actually pays for.
+ *
+ *  A pinned deal gives away exactly the variant it names, so the whole line is
+ *  free. An unpinned legacy deal could have meant any size, so it gives away no
+ *  more than the cheapest one — a customer who takes a Large under an unpinned
+ *  "get a pizza free" pays the difference over a Small rather than walking off
+ *  with the priciest size at the restaurant's expense. */
+export function capFreeUnitPrice(
+  pinnedVariantId: string | null | undefined,
+  submittedUnitPrice: number,
+  cheapestVariantPrice: number,
+): number {
+  if (pinnedVariantId) return submittedUnitPrice;
+  return Math.min(submittedUnitPrice, cheapestVariantPrice);
+}
+
 export function isItemEligibleForDiscount(deal: DealForPricing, item: CategorizedItem): boolean {
   const items = deal.applicableItems ?? [];
   const categories = deal.applicableCategories ?? [];

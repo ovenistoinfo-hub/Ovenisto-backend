@@ -1443,10 +1443,18 @@ model Deal {
   applicableCategories String[] // categoryIds this discount applies to (either list qualifies an item)
 
   // BUY_X_GET_Y
-  buyItemId String?
-  buyQty    Int?
-  getItemId String?
-  getQty    Int?
+  // The *VariantId columns pin the offer to one specific size/variant of the
+  // item. They are required for any item that has variants (enforced on write
+  // in deal.controller.ts) — without them the offer means "any variant", and a
+  // customer can qualify with the cheapest size while claiming the priciest one
+  // free. Null on rows written before these columns existed; deal.revalidate.ts
+  // caps those at the cheapest variant's price rather than rejecting the order.
+  buyItemId    String?
+  buyVariantId String?
+  buyQty       Int?
+  getItemId    String?
+  getVariantId String?
+  getQty       Int?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

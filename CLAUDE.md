@@ -120,6 +120,14 @@ plus a body explaining _why_ the change was made when that is not obvious.
   persisting). Outside of that, `order.controller.ts`'s `createOrder`/`updateOrder` persist
   client-sent `subtotal`/`discount`/`total`/per-item `price` as-is — a known, not-yet-closed gap;
   don't assume it's covered just because deals are.
+- **BUY_X_GET_Y deals pin a variant on each side** (`Deal.buyVariantId`/`getVariantId`, added
+  2026-08-22). `deal.revalidate.ts`'s `revalidateBuyXGetYLine` used to match on `menuItemId` alone,
+  so "Buy 1 Pizza, Get 1 Pizza Free" could be bought as a Small and claimed as a Large at full
+  discount. Both sides now go through `matchesPinnedVariant`; `deal.controller.ts`'s
+  `assertBuyXGetYVariants` requires a variant on write whenever the item has any. Rows written
+  before these columns existed have null and still accept any variant — `capFreeUnitPrice` caps
+  their giveaway at the item's cheapest variant instead of rejecting the order, and the free line
+  is labelled "(Discounted)" rather than "(Free)" when that cap bites.
 - **`Deal` is chain-wide, not outlet-scoped via the standard contract above** — it uses
   `outletIds: String[]` as an allow-list (empty = every outlet) instead of `resolveOutletScope`'s
   `where.outletId` shape, because it overlays the equally chain-wide `FoodMenuItem`/`FoodCategory`

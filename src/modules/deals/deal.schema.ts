@@ -64,8 +64,10 @@ export const dealSchema = z
     applicableCategories: z.array(z.string().uuid()).optional().default([]),
     // buy_x_get_y
     buyItemId: z.string().uuid().optional().nullable(),
+    buyVariantId: z.string().uuid().optional().nullable(),
     buyQty: z.coerce.number().int().min(1).max(50).optional().nullable(),
     getItemId: z.string().uuid().optional().nullable(),
+    getVariantId: z.string().uuid().optional().nullable(),
     getQty: z.coerce.number().int().min(1).max(50).optional().nullable(),
   })
   .superRefine((data, ctx) => {
@@ -102,6 +104,9 @@ export const dealSchema = z
       if (!data.buyQty) ctx.addIssue({ code: z.ZodIssueCode.custom, message: '"Buy" quantity is required', path: ['buyQty'] });
       if (!data.getItemId) ctx.addIssue({ code: z.ZodIssueCode.custom, message: '"Get" item is required', path: ['getItemId'] });
       if (!data.getQty) ctx.addIssue({ code: z.ZodIssueCode.custom, message: '"Get" quantity is required', path: ['getQty'] });
+      // Whether a variant is *required* depends on whether the chosen item has
+      // any — that needs the menu records, so it is checked in the controller's
+      // assertBuyXGetYVariants, not here.
     }
   });
 

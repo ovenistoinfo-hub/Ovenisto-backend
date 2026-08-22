@@ -128,10 +128,55 @@ function buildFlatFields(body: DealInput) {
     applicableItems: body.applicableItems ?? [],
     applicableCategories: body.applicableCategories ?? [],
     buyItemId: body.buyItemId ?? null,
+    buyVariantId: body.buyVariantId ?? null,
     buyQty: body.buyQty ?? null,
     getItemId: body.getItemId ?? null,
+    getVariantId: body.getVariantId ?? null,
     getQty: body.getQty ?? null,
   };
+}
+
+/** Buy X Get Y pins each side of the offer to one specific variant. This
+ *  check needs the live menu records, so it cannot live in the Zod schema:
+ *
+ *   - a variant, when given, must actually belong to the item it is paired with
+ *     (otherwise the deal would reference a size of some other dish);
+ *   - a variant is REQUIRED whenever the item has any. Without it the offer
+ *     means "any variant", and revalidateBuyXGetYLine would let a customer
+ *     qualify with the cheapest size while claiming the priciest one free.
+ */
+async function assertBuyXGetYVariants(body: DealInput) {
+  if (body.type !== 'buy_x_get_y') return;
+
+  const itemIds = [body.buyItemId, body.getItemId].filter(Boolean) as string[];
+  if (itemIds.length === 0) return;
+
+  const menuItems = await prisma.foodMenuItem.findMany({
+    where: { id: { in: itemIds } },
+    include: { variants: true },
+  });
+  const byId = new Map(menuItems.map((m) => [m.id, m]));
+
+  const sides = [
+    { label: 'Buy', itemId: body.buyItemId, variantId: body.buyVariantId },
+    { label: 'Get', itemId: body.getItemId, variantId: body.getVariantId },
+  ];
+
+  for (const side of sides) {
+    if (!side.itemId) continue;
+    const menuItem = byId.get(side.itemId);
+    if (!menuItem) throw ApiError.badRequest(`The "${side.label}" item no longer exists`);
+
+    if (side.variantId) {
+      if (!menuItem.variants.some((v) => v.id === side.variantId)) {
+        throw ApiError.badRequest(`The "${side.label}" size does not belong to ${menuItem.name}`);
+      }
+    } else if (menuItem.variants.length > 0) {
+      throw ApiError.badRequest(
+        `${menuItem.name} comes in ${menuItem.variants.length} sizes — pick which one the "${side.label}" side applies to`
+      );
+    }
+  }
 }
 
 /** Sanity check for Fixed Bundles only: the deal price shouldn't exceed the
@@ -164,6 +209,7 @@ async function assertPriceBelowRegularValue(body: DealInput) {
 export const createDeal = asyncHandler(async (req: Request, res: Response) => {
   const body = req.body as DealInput;
   await assertPriceBelowRegularValue(body);
+  await assertBuyXGetYVariants(body);
   const outletIds = resolveWritableOutletIds(req, body.outletIds);
 
   try {
@@ -214,6 +260,7 @@ export const updateDeal = asyncHandler(async (req: Request, res: Response) => {
 
   const body = req.body as DealInput;
   await assertPriceBelowRegularValue(body);
+  await assertBuyXGetYVariants(body);
   const outletIds = resolveWritableOutletIds(req, body.outletIds);
 
   try {
