@@ -20,6 +20,7 @@ export function normalizeMenuItem(item: any): any {
     takeAwayPrice:  item.takeAwayPrice  != null ? Number(item.takeAwayPrice)  : null,
     deliveryPrice:  item.deliveryPrice  != null ? Number(item.deliveryPrice)  : null,
     foodpandaPrice: item.foodpandaPrice != null ? Number(item.foodpandaPrice) : null,
+    costPrice:      Number(item.costPrice ?? 0),
     mealTypeIds: item.mealTypeIds ?? [],
     variants: (item.variants ?? []).map((v: any) => ({
       ...v,
@@ -28,6 +29,7 @@ export function normalizeMenuItem(item: any): any {
       takeAwayPrice:  v.takeAwayPrice  != null ? Number(v.takeAwayPrice)  : null,
       deliveryPrice:  v.deliveryPrice  != null ? Number(v.deliveryPrice)  : null,
       foodpandaPrice: v.foodpandaPrice != null ? Number(v.foodpandaPrice) : null,
+      costPrice:      Number(v.costPrice ?? 0),
     })),
     modifiers: (item.modifiers ?? []).map((m: any) => ({
       id:           m.modifier?.id     ?? m.id,
@@ -249,7 +251,7 @@ function parseModData(modifiersInput: any[] | undefined, modifierIds: string[] |
 /** POST /api/menu/items */
 export const createMenuItem = asyncHandler(async (req: Request, res: Response) => {
   const {
-    name, code, categoryId, price, dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice,
+    name, code, categoryId, price, dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice, costPrice,
     available, image, tags, cookingTime, mealTypeIds, variants, modifierIds, modifiers: modifiersInput,
   } = req.body;
 
@@ -278,6 +280,7 @@ export const createMenuItem = asyncHandler(async (req: Request, res: Response) =
       takeAwayPrice:  takeAwayPrice  ?? null,
       deliveryPrice:  deliveryPrice  ?? null,
       foodpandaPrice: foodpandaPrice ?? null,
+      costPrice: costPrice ?? 0,
       available: available ?? true,
       image: image || null,
       tags: tags ?? [],
@@ -288,6 +291,7 @@ export const createMenuItem = asyncHandler(async (req: Request, res: Response) =
             name: v.name, price: v.price, displayOrder: i,
             dineInPrice: v.dineInPrice ?? null, takeAwayPrice: v.takeAwayPrice ?? null,
             deliveryPrice: v.deliveryPrice ?? null, foodpandaPrice: v.foodpandaPrice ?? null,
+            costPrice: v.costPrice ?? 0,
           })) }
         : undefined,
       modifiers: modData.length
@@ -303,7 +307,7 @@ export const createMenuItem = asyncHandler(async (req: Request, res: Response) =
 export const updateMenuItem = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   const {
-    name, code, categoryId, price, dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice,
+    name, code, categoryId, price, dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice, costPrice,
     available, image, tags, cookingTime, mealTypeIds, variants, modifierIds, modifiers: modifiersInput,
   } = req.body;
 
@@ -338,6 +342,7 @@ export const updateMenuItem = asyncHandler(async (req: Request, res: Response) =
         ...(takeAwayPrice !== undefined && { takeAwayPrice: takeAwayPrice ?? null }),
         ...(deliveryPrice !== undefined && { deliveryPrice: deliveryPrice ?? null }),
         ...(foodpandaPrice !== undefined && { foodpandaPrice: foodpandaPrice ?? null }),
+        ...(costPrice !== undefined && { costPrice: costPrice ?? 0 }),
         ...(available !== undefined && { available }),
         ...(image !== undefined && { image: image || null }),
         ...(tags !== undefined && { tags }),
@@ -348,6 +353,7 @@ export const updateMenuItem = asyncHandler(async (req: Request, res: Response) =
             name: v.name, price: v.price, displayOrder: i,
             dineInPrice: v.dineInPrice ?? null, takeAwayPrice: v.takeAwayPrice ?? null,
             deliveryPrice: v.deliveryPrice ?? null, foodpandaPrice: v.foodpandaPrice ?? null,
+            costPrice: v.costPrice ?? 0,
           })) },
         }),
         ...(hasModInput && modData.length > 0 && {

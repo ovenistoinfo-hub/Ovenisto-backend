@@ -94,60 +94,61 @@ async function main() {
   type IngDef = {
     name: string; brand?: string; catName: string;
     unitSymbol: string; lowStockLevel: number; currentStock?: number;
+    purchasePrice: number; // PKR per unit (unitSymbol), drives recipe cost-calc
   };
 
   const ingDefs: IngDef[] = [
     // Dairy
-    { name: 'Mozzarella Cheese',  brand: "Olper's",     catName: 'Dairy',      unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 20  },
-    { name: 'Cheddar Cheese',     brand: "Kraft",        catName: 'Dairy',      unitSymbol: 'kg',   lowStockLevel: 3,   currentStock: 10  },
-    { name: 'Cream Cheese',       brand: "Philadelphia", catName: 'Dairy',      unitSymbol: 'kg',   lowStockLevel: 2,   currentStock: 8   },
-    { name: 'Butter',             brand: 'Nurpur',       catName: 'Dairy',      unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 15  },
-    { name: 'Fresh Cream',        brand: "Olper's",      catName: 'Dairy',      unitSymbol: 'L',    lowStockLevel: 3,   currentStock: 10  },
+    { name: 'Mozzarella Cheese',  brand: "Olper's",     catName: 'Dairy',      unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 20,   purchasePrice: 1400 },
+    { name: 'Cheddar Cheese',     brand: "Kraft",        catName: 'Dairy',      unitSymbol: 'kg',   lowStockLevel: 3,   currentStock: 10,   purchasePrice: 1600 },
+    { name: 'Cream Cheese',       brand: "Philadelphia", catName: 'Dairy',      unitSymbol: 'kg',   lowStockLevel: 2,   currentStock: 8,    purchasePrice: 2200 },
+    { name: 'Butter',             brand: 'Nurpur',       catName: 'Dairy',      unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 15,   purchasePrice: 900  },
+    { name: 'Fresh Cream',        brand: "Olper's",      catName: 'Dairy',      unitSymbol: 'L',    lowStockLevel: 3,   currentStock: 10,   purchasePrice: 600  },
     // Meat
-    { name: 'Chicken Breast',     brand: "K&N's",        catName: 'Meat',       unitSymbol: 'kg',   lowStockLevel: 10,  currentStock: 40  },
-    { name: 'Beef Mince',         brand: 'Local',        catName: 'Meat',       unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 20  },
-    { name: 'Beef Strips',        brand: 'Local',        catName: 'Meat',       unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 15  },
-    { name: 'Chicken Tikka',      brand: "K&N's",        catName: 'Meat',       unitSymbol: 'kg',   lowStockLevel: 8,   currentStock: 30  },
-    { name: 'Seekh Kebab',        brand: 'Local',        catName: 'Meat',       unitSymbol: 'pcs',  lowStockLevel: 50,  currentStock: 200 },
-    { name: 'Beef Patty',         brand: "K&N's",        catName: 'Meat',       unitSymbol: 'pcs',  lowStockLevel: 50,  currentStock: 200 },
-    { name: 'Chicken Fillet',     brand: "K&N's",        catName: 'Meat',       unitSymbol: 'pcs',  lowStockLevel: 30,  currentStock: 120 },
+    { name: 'Chicken Breast',     brand: "K&N's",        catName: 'Meat',       unitSymbol: 'kg',   lowStockLevel: 10,  currentStock: 40,   purchasePrice: 650  },
+    { name: 'Beef Mince',         brand: 'Local',        catName: 'Meat',       unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 20,   purchasePrice: 1100 },
+    { name: 'Beef Strips',        brand: 'Local',        catName: 'Meat',       unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 15,   purchasePrice: 1400 },
+    { name: 'Chicken Tikka',      brand: "K&N's",        catName: 'Meat',       unitSymbol: 'kg',   lowStockLevel: 8,   currentStock: 30,   purchasePrice: 750  },
+    { name: 'Seekh Kebab',        brand: 'Local',        catName: 'Meat',       unitSymbol: 'pcs',  lowStockLevel: 50,  currentStock: 200,  purchasePrice: 40   },
+    { name: 'Beef Patty',         brand: "K&N's",        catName: 'Meat',       unitSymbol: 'pcs',  lowStockLevel: 50,  currentStock: 200,  purchasePrice: 60   },
+    { name: 'Chicken Fillet',     brand: "K&N's",        catName: 'Meat',       unitSymbol: 'pcs',  lowStockLevel: 30,  currentStock: 120,  purchasePrice: 80   },
     // Vegetables
-    { name: 'Tomato',             brand: 'Local',        catName: 'Vegetables', unitSymbol: 'kg',   lowStockLevel: 10,  currentStock: 30  },
-    { name: 'Capsicum',           brand: 'Local',        catName: 'Vegetables', unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 15  },
-    { name: 'Mushroom',           brand: 'Local',        catName: 'Vegetables', unitSymbol: 'kg',   lowStockLevel: 3,   currentStock: 10  },
-    { name: 'Onion',              brand: 'Local',        catName: 'Vegetables', unitSymbol: 'kg',   lowStockLevel: 10,  currentStock: 40  },
-    { name: 'Olives',             brand: 'Mister Olive', catName: 'Vegetables', unitSymbol: 'g',    lowStockLevel: 500, currentStock: 2000},
-    { name: 'Jalapeño',           brand: 'Local',        catName: 'Vegetables', unitSymbol: 'g',    lowStockLevel: 300, currentStock: 1000},
-    { name: 'Iceberg Lettuce',    brand: 'Local',        catName: 'Vegetables', unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 20  },
-    { name: 'Cabbage',            brand: 'Local',        catName: 'Vegetables', unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 15  },
-    { name: 'Garlic',             brand: 'Local',        catName: 'Vegetables', unitSymbol: 'kg',   lowStockLevel: 2,   currentStock: 8   },
+    { name: 'Tomato',             brand: 'Local',        catName: 'Vegetables', unitSymbol: 'kg',   lowStockLevel: 10,  currentStock: 30,   purchasePrice: 120  },
+    { name: 'Capsicum',           brand: 'Local',        catName: 'Vegetables', unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 15,   purchasePrice: 180  },
+    { name: 'Mushroom',           brand: 'Local',        catName: 'Vegetables', unitSymbol: 'kg',   lowStockLevel: 3,   currentStock: 10,   purchasePrice: 500  },
+    { name: 'Onion',              brand: 'Local',        catName: 'Vegetables', unitSymbol: 'kg',   lowStockLevel: 10,  currentStock: 40,   purchasePrice: 90   },
+    { name: 'Olives',             brand: 'Mister Olive', catName: 'Vegetables', unitSymbol: 'g',    lowStockLevel: 500, currentStock: 2000, purchasePrice: 3    },
+    { name: 'Jalapeño',           brand: 'Local',        catName: 'Vegetables', unitSymbol: 'g',    lowStockLevel: 300, currentStock: 1000, purchasePrice: 2    },
+    { name: 'Iceberg Lettuce',    brand: 'Local',        catName: 'Vegetables', unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 20,   purchasePrice: 150  },
+    { name: 'Cabbage',            brand: 'Local',        catName: 'Vegetables', unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 15,   purchasePrice: 80   },
+    { name: 'Garlic',             brand: 'Local',        catName: 'Vegetables', unitSymbol: 'kg',   lowStockLevel: 2,   currentStock: 8,    purchasePrice: 400  },
     // Grains
-    { name: 'Pizza Flour',        brand: 'Bake Parlor',  catName: 'Grains',     unitSymbol: 'kg',   lowStockLevel: 20,  currentStock: 80  },
-    { name: 'Pasta Penne',        brand: 'Bake Parlor',  catName: 'Grains',     unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 20  },
-    { name: 'Pasta Spaghetti',    brand: 'Bake Parlor',  catName: 'Grains',     unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 20  },
+    { name: 'Pizza Flour',        brand: 'Bake Parlor',  catName: 'Grains',     unitSymbol: 'kg',   lowStockLevel: 20,  currentStock: 80,   purchasePrice: 180  },
+    { name: 'Pasta Penne',        brand: 'Bake Parlor',  catName: 'Grains',     unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 20,   purchasePrice: 350  },
+    { name: 'Pasta Spaghetti',    brand: 'Bake Parlor',  catName: 'Grains',     unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 20,   purchasePrice: 350  },
     // Sauces
-    { name: 'Pizza Sauce',        brand: 'Mutti',        catName: 'Sauces',     unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 20  },
-    { name: 'BBQ Sauce',          brand: 'Knorr',        catName: 'Sauces',     unitSymbol: 'kg',   lowStockLevel: 3,   currentStock: 10  },
-    { name: 'Mayonnaise',         brand: 'Best Foods',   catName: 'Sauces',     unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 15  },
-    { name: 'Ketchup',            brand: "Heinz",        catName: 'Sauces',     unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 20  },
-    { name: 'Garlic Sauce',       brand: 'Local',        catName: 'Sauces',     unitSymbol: 'kg',   lowStockLevel: 3,   currentStock: 10  },
-    { name: 'Chilli Sauce',       brand: 'National',     catName: 'Sauces',     unitSymbol: 'kg',   lowStockLevel: 3,   currentStock: 10  },
-    { name: 'Alfredo Sauce',      brand: 'Knorr',        catName: 'Sauces',     unitSymbol: 'kg',   lowStockLevel: 2,   currentStock: 8   },
-    { name: 'Arabiata Sauce',     brand: 'Mutti',        catName: 'Sauces',     unitSymbol: 'kg',   lowStockLevel: 2,   currentStock: 8   },
+    { name: 'Pizza Sauce',        brand: 'Mutti',        catName: 'Sauces',     unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 20,   purchasePrice: 400  },
+    { name: 'BBQ Sauce',          brand: 'Knorr',        catName: 'Sauces',     unitSymbol: 'kg',   lowStockLevel: 3,   currentStock: 10,   purchasePrice: 600  },
+    { name: 'Mayonnaise',         brand: 'Best Foods',   catName: 'Sauces',     unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 15,   purchasePrice: 500  },
+    { name: 'Ketchup',            brand: "Heinz",        catName: 'Sauces',     unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 20,   purchasePrice: 350  },
+    { name: 'Garlic Sauce',       brand: 'Local',        catName: 'Sauces',     unitSymbol: 'kg',   lowStockLevel: 3,   currentStock: 10,   purchasePrice: 550  },
+    { name: 'Chilli Sauce',       brand: 'National',     catName: 'Sauces',     unitSymbol: 'kg',   lowStockLevel: 3,   currentStock: 10,   purchasePrice: 450  },
+    { name: 'Alfredo Sauce',      brand: 'Knorr',        catName: 'Sauces',     unitSymbol: 'kg',   lowStockLevel: 2,   currentStock: 8,    purchasePrice: 900  },
+    { name: 'Arabiata Sauce',     brand: 'Mutti',        catName: 'Sauces',     unitSymbol: 'kg',   lowStockLevel: 2,   currentStock: 8,    purchasePrice: 850  },
     // Spices
-    { name: 'Salt',               brand: 'National',     catName: 'Spices',     unitSymbol: 'g',    lowStockLevel: 500, currentStock: 3000},
-    { name: 'Black Pepper',       brand: 'National',     catName: 'Spices',     unitSymbol: 'g',    lowStockLevel: 200, currentStock: 1000},
-    { name: 'Oregano',            brand: 'National',     catName: 'Spices',     unitSymbol: 'g',    lowStockLevel: 100, currentStock: 500 },
-    { name: 'Red Chilli Flakes',  brand: 'National',     catName: 'Spices',     unitSymbol: 'g',    lowStockLevel: 200, currentStock: 800 },
-    { name: 'Shawarma Spice Mix', brand: 'National',     catName: 'Spices',     unitSymbol: 'g',    lowStockLevel: 300, currentStock: 1200},
+    { name: 'Salt',               brand: 'National',     catName: 'Spices',     unitSymbol: 'g',    lowStockLevel: 500, currentStock: 3000, purchasePrice: 0.1  },
+    { name: 'Black Pepper',       brand: 'National',     catName: 'Spices',     unitSymbol: 'g',    lowStockLevel: 200, currentStock: 1000, purchasePrice: 3    },
+    { name: 'Oregano',            brand: 'National',     catName: 'Spices',     unitSymbol: 'g',    lowStockLevel: 100, currentStock: 500,  purchasePrice: 4    },
+    { name: 'Red Chilli Flakes',  brand: 'National',     catName: 'Spices',     unitSymbol: 'g',    lowStockLevel: 200, currentStock: 800,  purchasePrice: 2.5  },
+    { name: 'Shawarma Spice Mix', brand: 'National',     catName: 'Spices',     unitSymbol: 'g',    lowStockLevel: 300, currentStock: 1200, purchasePrice: 2    },
     // Bakery / Bread
-    { name: 'Burger Bun',         brand: 'Bake Parlor',  catName: 'Bakery',     unitSymbol: 'pcs',  lowStockLevel: 50,  currentStock: 200 },
-    { name: 'Shawarma Wrap',      brand: 'Bake Parlor',  catName: 'Bakery',     unitSymbol: 'pcs',  lowStockLevel: 50,  currentStock: 200 },
+    { name: 'Burger Bun',         brand: 'Bake Parlor',  catName: 'Bakery',     unitSymbol: 'pcs',  lowStockLevel: 50,  currentStock: 200,  purchasePrice: 35   },
+    { name: 'Shawarma Wrap',      brand: 'Bake Parlor',  catName: 'Bakery',     unitSymbol: 'pcs',  lowStockLevel: 50,  currentStock: 200,  purchasePrice: 30   },
     // Beverages
-    { name: 'Pepsi',              brand: 'PepsiCo',      catName: 'Beverages',  unitSymbol: 'ml',   lowStockLevel: 5000, currentStock: 24000 },
-    { name: '7Up',                brand: 'PepsiCo',      catName: 'Beverages',  unitSymbol: 'ml',   lowStockLevel: 5000, currentStock: 24000 },
-    { name: 'Mango Pulp',         brand: 'National',     catName: 'Beverages',  unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 20  },
-    { name: 'Milk',               brand: "Olper's",      catName: 'Dairy',      unitSymbol: 'L',    lowStockLevel: 10,  currentStock: 40  },
+    { name: 'Pepsi',              brand: 'PepsiCo',      catName: 'Beverages',  unitSymbol: 'ml',   lowStockLevel: 5000, currentStock: 24000, purchasePrice: 0.15 },
+    { name: '7Up',                brand: 'PepsiCo',      catName: 'Beverages',  unitSymbol: 'ml',   lowStockLevel: 5000, currentStock: 24000, purchasePrice: 0.15 },
+    { name: 'Mango Pulp',         brand: 'National',     catName: 'Beverages',  unitSymbol: 'kg',   lowStockLevel: 5,   currentStock: 20,   purchasePrice: 450  },
+    { name: 'Milk',               brand: "Olper's",      catName: 'Dairy',      unitSymbol: 'L',    lowStockLevel: 10,  currentStock: 40,   purchasePrice: 220  },
   ];
 
   const ingMap = new Map<string, string>(); // name → id
@@ -159,15 +160,50 @@ async function main() {
         brand:         ing.brand ?? null,
         categoryId:    ingCatMap.get(ing.catName) ?? null,
         unitId:        unitMap.get(ing.unitSymbol) ?? null,
+        purchasePrice: dec(ing.purchasePrice),
         lowStockLevel: dec(ing.lowStockLevel),
         currentStock:  dec(ing.currentStock ?? 0),
         supplierId:    null,
         outletId:      null, // global catalog
       },
     });
+    // Backfill purchasePrice on pre-existing rows from an earlier run (before this field was seeded)
+    if (existing && existing.purchasePrice == null) {
+      await prisma.ingredient.update({ where: { id: existing.id }, data: { purchasePrice: dec(ing.purchasePrice) } });
+    }
     ingMap.set(ing.name, created.id);
   }
   console.log(`  ✅ ${ingDefs.length} ingredients ready\n`);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 4b. Kitchen Stock (WarehouseStock in KITCHEN-type warehouses)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  let kitchenWarehouses = await prisma.warehouse.findMany({ where: { type: 'KITCHEN', isActive: true } });
+  if (kitchenWarehouses.length === 0) {
+    const outlet = await prisma.outlet.findFirst({ where: { isActive: true } });
+    if (outlet) {
+      const kw = await prisma.warehouse.create({
+        data: { name: `${outlet.name} Kitchen`, code: `KI-SEED-${outlet.code}`, type: 'KITCHEN', outletId: outlet.id },
+      });
+      kitchenWarehouses = [kw];
+      console.log(`  ✅ Created kitchen warehouse: ${kw.name}`);
+    }
+  }
+
+  for (const wh of kitchenWarehouses) {
+    for (const ing of ingDefs) {
+      const ingId = ingMap.get(ing.name);
+      if (!ingId) continue;
+      const kitchenQty = Math.round((ing.currentStock ?? 0) * 0.5);
+      await prisma.warehouseStock.upsert({
+        where: { warehouseId_ingredientId: { warehouseId: wh.id, ingredientId: ingId } },
+        update: {},
+        create: { warehouseId: wh.id, ingredientId: ingId, currentStock: dec(kitchenQty), lowStockLevel: dec(ing.lowStockLevel) },
+      });
+    }
+  }
+  console.log(`  ✅ Kitchen stock seeded across ${kitchenWarehouses.length} kitchen warehouse(s)\n`);
 
   // ══════════════════════════════════════════════════════════════════════════
   // 5. Modifiers
