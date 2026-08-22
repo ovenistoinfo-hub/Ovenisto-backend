@@ -135,7 +135,7 @@ export async function revalidateDealLines(
     const validity = isDealCurrentlyValid(dealForPricing);
     if (!validity.valid) throw ApiError.badRequest(validity.reason ? `"${deal.name}": ${validity.reason}` : `"${deal.name}" is not currently available`);
 
-    if (dealForPricing.type === 'PERCENTAGE' || dealForPricing.type === 'TIME_BASED') {
+    if (dealForPricing.type === 'PERCENTAGE') {
       revalidated.push(...revalidatePercentageLine(deal, dealForPricing, lineItems, lineId, menuItemById, orderType));
     } else if (dealForPricing.type === 'BUY_X_GET_Y') {
       revalidated.push(...revalidateBuyXGetYLine(deal, dealForPricing, lineItems, lineId, menuItemById, orderType));
@@ -192,7 +192,7 @@ function revalidateComboLine(
   });
 }
 
-/** PERCENTAGE / TIME_BASED: one submitted item per dealLineId — the real menu
+/** PERCENTAGE: one submitted item per dealLineId — the real menu
  *  item the customer wants the discount applied to. Never trusts the
  *  client's claim that the item qualifies; re-checks against the deal's live
  *  applicableItems/applicableCategories. */

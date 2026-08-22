@@ -90,7 +90,7 @@ export interface DealOptionGroupForPricing {
   options: DealOptionItemForPricing[];
 }
 
-export type DealTypeMember = 'COMBO' | 'OPTION_COMBO' | 'PERCENTAGE' | 'BUY_X_GET_Y' | 'TIME_BASED';
+export type DealTypeMember = 'COMBO' | 'OPTION_COMBO' | 'PERCENTAGE' | 'BUY_X_GET_Y';
 
 export interface DealForPricing extends ChannelPriced {
   id: string;
@@ -103,7 +103,7 @@ export interface DealForPricing extends ChannelPriced {
   endTime?: string | null;
   components?: DealComponentForPricing[];
   optionGroups?: DealOptionGroupForPricing[];
-  // PERCENTAGE / TIME_BASED
+  // PERCENTAGE
   discountPercent?: number | null;
   applicableItems?: string[];
   applicableCategories?: string[];
@@ -247,7 +247,7 @@ export interface CategorizedItem {
   categoryId: string | null;
 }
 
-/** Does this menu item/category qualify for a PERCENTAGE or TIME_BASED deal's
+/** Does this menu item/category qualify for a PERCENTAGE deal's
  *  discount? Matches if the item's id is in applicableItems, OR its category
  *  is in applicableCategories. Both lists empty never matches — an admin must
  *  explicitly scope the discount (enforced at the Zod layer too), so a
@@ -266,7 +266,6 @@ const DEAL_TYPE_TO_WIRE: Record<string, string> = {
   OPTION_COMBO: 'option_combo',
   PERCENTAGE: 'percentage',
   BUY_X_GET_Y: 'buy_x_get_y',
-  TIME_BASED: 'time_based',
 };
 
 /** Decimal → Number + enum-member → wire-string mapping for a Deal record

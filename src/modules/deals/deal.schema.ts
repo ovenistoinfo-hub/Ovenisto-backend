@@ -43,7 +43,7 @@ export const dealSchema = z
     code: z.string().trim().min(1).max(20).optional().nullable(),
     description: z.string().max(1000).optional().nullable(),
     image: z.string().max(2000).optional().nullable(),
-    type: z.enum(['combo', 'option_combo', 'percentage', 'buy_x_get_y', 'time_based']),
+    type: z.enum(['combo', 'option_combo', 'percentage', 'buy_x_get_y']),
     // Flat bundle price — only required for combo/option_combo.
     price: z.coerce.number().positive('Deal price must be greater than 0').optional().nullable(),
     dineInPrice: z.coerce.number().min(0).optional().nullable(),
@@ -58,7 +58,7 @@ export const dealSchema = z
     endTime: timeStr.optional().nullable(),
     components: z.array(componentSchema).optional().default([]),
     optionGroups: z.array(optionGroupSchema).optional().default([]),
-    // percentage / time_based
+    // percentage
     discountPercent: z.coerce.number().positive('Discount must be greater than 0').max(100, 'Discount cannot exceed 100%').optional().nullable(),
     applicableItems: z.array(z.string().uuid()).optional().default([]),
     applicableCategories: z.array(z.string().uuid()).optional().default([]),
@@ -88,15 +88,12 @@ export const dealSchema = z
       }
     }
 
-    if (data.type === 'percentage' || data.type === 'time_based') {
+    if (data.type === 'percentage') {
       if (data.discountPercent == null) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Discount percentage is required', path: ['discountPercent'] });
       }
       if (data.applicableItems.length === 0 && data.applicableCategories.length === 0) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Select at least one item or category this discount applies to', path: ['applicableItems'] });
-      }
-      if (data.type === 'time_based' && (!data.startTime || !data.endTime)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'A Time-Based deal needs a start and end time', path: ['endTime'] });
       }
     }
 

@@ -309,10 +309,9 @@ describe('isItemEligibleForDiscount', () => {
 });
 
 describe('mapDealOut with new deal types', () => {
-  it('maps PERCENTAGE to percentage, BUY_X_GET_Y to buy_x_get_y, TIME_BASED to time_based', () => {
+  it('maps PERCENTAGE to percentage, BUY_X_GET_Y to buy_x_get_y', () => {
     expect(mapDealOut({ id: 'd3', type: 'PERCENTAGE', price: null }).type).toBe('percentage');
     expect(mapDealOut({ id: 'd4', type: 'BUY_X_GET_Y', price: null }).type).toBe('buy_x_get_y');
-    expect(mapDealOut({ id: 'd5', type: 'TIME_BASED', price: null }).type).toBe('time_based');
   });
 
   it('keeps price as null rather than coercing to 0 for a discount-type deal', () => {

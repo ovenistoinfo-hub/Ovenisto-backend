@@ -78,7 +78,6 @@ const TYPE_TO_PRISMA: Record<DealInput['type'], string> = {
   option_combo: 'OPTION_COMBO',
   percentage: 'PERCENTAGE',
   buy_x_get_y: 'BUY_X_GET_Y',
-  time_based: 'TIME_BASED',
 };
 
 function buildNestedWrite(body: DealInput) {
@@ -114,12 +113,12 @@ function buildNestedWrite(body: DealInput) {
       },
     };
   }
-  // percentage / buy_x_get_y / time_based have no nested components/optionGroups —
+  // percentage / buy_x_get_y have no nested components/optionGroups —
   // their contents live entirely in the flat fields below.
   return {};
 }
 
-/** Flat fields shared by percentage/buy_x_get_y/time_based — nulled out for
+/** Flat fields shared by percentage/buy_x_get_y — nulled out for
  *  combo/option_combo so switching a deal's type on edit cleanly drops the
  *  previous type's fields instead of leaving stale data behind. */
 function buildFlatFields(body: DealInput) {
