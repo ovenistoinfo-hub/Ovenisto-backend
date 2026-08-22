@@ -907,6 +907,9 @@ model OrderItem {
   cookingTime Int?
   notes       String?
   status      String   @default("active") @db.VarChar(20) // active | cancelled
+  dealId      String? // set when this line was generated from a Deal
+  dealName    String?  @db.VarChar(100)
+  dealLineId  String? // groups the multiple OrderItem rows that came from one deal selection
 
   // Relations
   order    Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -914,6 +917,7 @@ model OrderItem {
 
   @@index([orderId])
   @@index([menuItemId])
+  @@index([dealId])
   @@map("order_items")
 }
 
@@ -1399,31 +1403,84 @@ model Shift {
 // PHASE 10: Advanced
 // =============================================
 
+enum DealType {
+  COMBO        @map("combo")
+  OPTION_COMBO @map("option_combo")
+}
+
 model Deal {
-  id                   String    @id @default(uuid())
-  name                 String    @db.VarChar(100)
-  description          String?
-  type                 String    @db.VarChar(30) // percentage, combo, buyXgetY, timeBased, optionCombo
-  discountPercent      Decimal?  @db.Decimal(5, 2)
-  applicableItems      String[]
-  applicableCategories String[]
-  comboItems           Json? // [{itemId, qty}]
-  comboPrice           Decimal?  @db.Decimal(10, 2)
-  buyQty               Int?
-  getQty               Int?
-  buyItemId            String?
-  getItemId            String?
-  startTime            String?   @db.VarChar(10)
-  endTime              String?   @db.VarChar(10)
-  timeDiscountPercent  Decimal?  @db.Decimal(5, 2)
-  optionGroups         Json? // [{id, label, allowedItems[], maxSelections}]
-  dealPrice            Decimal?  @db.Decimal(10, 2)
-  validFrom            DateTime? @db.Date
-  validTo              String?   @db.VarChar(20) // 'always' or date string
-  isActive             Boolean   @default(true)
-  createdAt            DateTime  @default(now())
+  id             String    @id @default(uuid())
+  name           String    @db.VarChar(100)
+  code           String?   @unique @db.VarChar(20)
+  description    String?
+  image          String?
+  type           DealType
+  price          Decimal   @db.Decimal(10, 2)
+  dineInPrice    Decimal?  @db.Decimal(10, 2)
+  takeAwayPrice  Decimal?  @db.Decimal(10, 2)
+  deliveryPrice  Decimal?  @db.Decimal(10, 2)
+  foodpandaPrice Decimal?  @db.Decimal(10, 2)
+  isActive       Boolean   @default(true)
+  status         String    @default("active") @db.VarChar(20) // active | archived
+  outletIds      String[] // empty = chain-wide
+  validFrom      DateTime  @db.Date
+  validTo        DateTime? @db.Date
+  startTime      String?   @db.VarChar(10)
+  endTime        String?   @db.VarChar(10)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  // Relations
+  components   DealComponent[]
+  optionGroups DealOptionGroup[]
 
   @@map("deals")
+}
+
+model DealComponent {
+  id           String  @id @default(uuid())
+  dealId       String
+  menuItemId   String
+  variantId    String?
+  qty          Int
+  displayOrder Int     @default(0)
+
+  // Relations
+  deal Deal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  @@index([dealId])
+  @@map("deal_components")
+}
+
+model DealOptionGroup {
+  id            String @id @default(uuid())
+  dealId        String
+  label         String @db.VarChar(100)
+  minSelections Int
+  maxSelections Int
+  displayOrder  Int    @default(0)
+
+  // Relations
+  deal    Deal             @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  options DealOptionItem[]
+
+  @@index([dealId])
+  @@map("deal_option_groups")
+}
+
+model DealOptionItem {
+  id           String  @id @default(uuid())
+  groupId      String
+  menuItemId   String
+  variantId    String?
+  extraPrice   Decimal @default(0) @db.Decimal(10, 2)
+  displayOrder Int     @default(0)
+
+  // Relations
+  group DealOptionGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([groupId])
+  @@map("deal_option_items")
 }
 
 model Coupon {

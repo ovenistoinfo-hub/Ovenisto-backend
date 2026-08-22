@@ -7,6 +7,7 @@ import { authorize } from '../../middleware/authorize.js';
 import {
   getTableForSelfOrder, getSelfOrderMenu, createSelfOrder, getSelfOrderStatus,
   lookupCustomerByPhone, notifySelfOrderSessionEnded, getActiveOrdersForTable,
+  getSelfOrderDeals,
 } from './self-order.controller.js';
 
 export const selfOrderRouter = Router();
@@ -41,6 +42,7 @@ const customerLookupLimiter = rateLimit({
 // nothing here trusts client-sent scope.
 selfOrderRouter.get('/table/:tableId', getTableForSelfOrder);
 selfOrderRouter.get('/menu', getSelfOrderMenu);
+selfOrderRouter.get('/deals', getSelfOrderDeals);
 selfOrderRouter.get('/customer-lookup', customerLookupLimiter, lookupCustomerByPhone);
 selfOrderRouter.post('/orders', createOrderLimiter, validateRequest({ body: createSelfOrderSchema }), createSelfOrder);
 selfOrderRouter.get('/orders/:id/status', getSelfOrderStatus);

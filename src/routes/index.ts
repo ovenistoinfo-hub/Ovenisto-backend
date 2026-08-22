@@ -39,6 +39,7 @@ import { cancellationRequestsRouter } from '../modules/cancellation-requests/can
 import { penaltiesRouter } from '../modules/penalties/penalty.routes.js';
 import { selfOrderRouter } from '../modules/self-order/self-order.routes.js';
 import { cashSettlementRouter } from '../modules/cash-settlement/cash-settlement.routes.js';
+import { dealRouter } from '../modules/deals/deal.routes.js';
 
 const router = Router();
 
@@ -168,8 +169,9 @@ router.use('/cancellation-requests', cancellationRequestsRouter);
 router.use('/penalties', penaltiesRouter);
 // router.use('/scheduling', schedulingRoutes);
 
+router.use('/deals', dealRouter);
+
 // Phase 10: Advanced
-// router.use('/deals', dealRoutes);
 // router.use('/coupons', couponRoutes);
 router.use('/reservations', reservationsRouter);
 router.use('/tables', tableRoutes);

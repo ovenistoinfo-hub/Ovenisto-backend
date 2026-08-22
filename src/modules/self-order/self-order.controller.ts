@@ -16,6 +16,8 @@ import { emitOrderEvent } from '../../socket.js';
 import { generateOrderNumber, mapOrderOut } from '../order/order.controller.js';
 import { emitSelfOrderTableEvent, clearSelfOrderTableState } from './self-order.socket.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
+import { revalidateDealLines } from '../deals/deal.revalidate.js';
+import { isDealCurrentlyValid, mapDealOutPublic } from '../deals/deal.pricing.js';
 
 /** GET /api/self-order/table/:tableId */
 export const getTableForSelfOrder = asyncHandler(async (req: Request, res: Response) => {
@@ -104,6 +106,41 @@ export const getSelfOrderMenu = asyncHandler(async (_req: Request, res: Response
   res.json(ApiResponse.success({ categories, items: publicItems }));
 });
 
+/** GET /api/self-order/deals?tableId=<id> — public, unauthenticated deal
+ *  browsing for the QR menu. Outlet scope is derived from the table (never
+ *  a client-declared outletId, per this module's own rule) — pass ?tableId=
+ *  to see that table's outlet-restricted deals in addition to chain-wide
+ *  ones; omit it to see only chain-wide (outletIds empty) deals. Only
+ *  currently-valid deals are returned — a self-order customer should never
+ *  see a deal that isn't actually sellable right now. */
+export const getSelfOrderDeals = asyncHandler(async (req: Request, res: Response) => {
+  const tableId = typeof req.query.tableId === 'string' ? req.query.tableId : undefined;
+  let outletId: string | null = null;
+  if (tableId) {
+    const table = await prisma.restaurantTable.findUnique({ where: { id: tableId } });
+    outletId = table?.outletId ?? null;
+  }
+
+  const deals = await prisma.deal.findMany({
+    where: {
+      status: { not: 'archived' },
+      isActive: true,
+      OR: [{ outletIds: { isEmpty: true } }, ...(outletId ? [{ outletIds: { has: outletId } }] : [])],
+    },
+    include: {
+      components: { orderBy: { displayOrder: 'asc' as const } },
+      optionGroups: {
+        orderBy: { displayOrder: 'asc' as const },
+        include: { options: { orderBy: { displayOrder: 'asc' as const } } },
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  const liveDeals = deals.filter((d) => isDealCurrentlyValid(d as any).valid);
+  res.json(ApiResponse.success(liveDeals.map(mapDealOutPublic)));
+});
+
 /** POST /api/self-order/orders */
 export const createSelfOrder = asyncHandler(async (req: Request, res: Response) => {
   const {
@@ -121,10 +158,16 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
   if (!table) throw ApiError.notFound('Table not found');
   if (!table.outletId) throw ApiError.badRequest('This table is not assigned to an outlet');
 
-  // Validate every item against the live, available menu — never trust client-sent
+  // Deal-tagged items (dealId + dealLineId set) are never priced from the
+  // client-sent item — they're re-derived below via revalidateDealLines from
+  // the live Deal + menu records, same as order.controller.ts's createOrder.
+  const plainItems = items.filter((i: any) => !(i.dealId && i.dealLineId));
+  const dealItems = items.filter((i: any) => i.dealId && i.dealLineId);
+
+  // Validate every plain item against the live, available menu — never trust client-sent
   // item existence, price, or modifier selection. Fetch full records so price can
   // be recomputed server-side.
-  const menuItemIds: string[] = items.map((i: any) => i.menuItemId).filter(Boolean);
+  const menuItemIds: string[] = plainItems.map((i: any) => i.menuItemId).filter(Boolean);
   const availableMenuItems = menuItemIds.length
     ? await prisma.foodMenuItem.findMany({
         where: { id: { in: menuItemIds }, available: true },
@@ -138,7 +181,7 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
   const taxRatePercent = settings ? Number(settings.taxRate) : 16;
 
   let computedSubtotal = 0;
-  const itemsData = items.map((item: any, idx: number) => {
+  const itemsData = plainItems.map((item: any) => {
     const menuItem = item.menuItemId ? menuItemById.get(item.menuItemId) : undefined;
     if (item.menuItemId && !menuItem) {
       throw ApiError.badRequest(`Item "${item.name || 'unknown'}" is no longer available`);
@@ -166,9 +209,6 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
     const qty = Math.max(1, Math.trunc(Number(item.qty) || 1));
     computedSubtotal += unitPrice * qty;
 
-    // Order has no order-level notes field; the cart's single special-instructions
-    // textarea is carried on the first line item only (existing schema only supports
-    // per-item notes — see OrderItem.notes usage in order.controller.ts).
     return {
       menuItemId: item.menuItemId || null,
       variantId,
@@ -177,9 +217,44 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
       qty,
       discount: 0,
       modifiers: modifierNames,
-      notes: idx === 0 && specialInstructions ? specialInstructions : (item.notes || null),
+      notes: item.notes || null,
+      dealId: null as string | null,
+      dealName: null as string | null,
+      dealLineId: null as string | null,
     };
   });
+
+  if (dealItems.length > 0) {
+    // Self-order is dine-in only (a customer scanning a table's QR), so deal
+    // channel pricing always resolves against dineInPrice.
+    const revalidatedDealItems = await revalidateDealLines(prisma, 'Dine In', dealItems);
+    for (const item of revalidatedDealItems) {
+      const qty = Math.max(1, Math.trunc(Number(item.qty) || 1));
+      const discount = Number(item.discount ?? 0);
+      computedSubtotal += Number(item.price) * qty - discount;
+      itemsData.push({
+        menuItemId: item.menuItemId ?? null,
+        variantId: item.variantId ?? null,
+        name: item.name ?? '',
+        price: Number(item.price),
+        qty,
+        discount,
+        modifiers: [],
+        notes: null,
+        dealId: item.dealId ?? null,
+        dealName: item.dealName ?? null,
+        dealLineId: item.dealLineId ?? null,
+      });
+    }
+  }
+
+  // Order has no order-level notes field; the cart's single special-instructions
+  // textarea is carried on the first line item only (existing schema only supports
+  // per-item notes — see OrderItem.notes usage in order.controller.ts).
+  if (itemsData.length > 0 && specialInstructions && !itemsData[0].notes) {
+    itemsData[0].notes = specialInstructions;
+  }
+
   const computedTax = Math.round(computedSubtotal * (taxRatePercent / 100));
   const computedTotal = computedSubtotal + computedTax;
 

@@ -1,0 +1,279 @@
+/**
+ * Deal Pricing & Eligibility Kernel
+ *
+ * Pure, dependency-free helpers — no Prisma, no Express. This is the single
+ * source of truth for "is this deal live right now" / "what does it cost on
+ * this channel" / "does this selection match the deal's real contents", reused
+ * by deal.controller.ts (admin sanity checks) and deal.revalidate.ts (the
+ * server-authoritative re-pricing that runs on every order). The frontend's
+ * `src/lib/deals.ts` mirrors this logic for display purposes only — the server
+ * copy here is what actually gets charged.
+ */
+
+import { ApiError } from '../../utils/ApiError.js';
+
+const PKT_OFFSET_MS = 5 * 60 * 60 * 1000;
+
+function pktNow(nowMs: number): Date {
+  return new Date(nowMs + PKT_OFFSET_MS);
+}
+
+/** "YYYY-MM-DD" for the given instant, in Pakistan time (server runs UTC). */
+function pktDateStr(nowMs: number): string {
+  return pktNow(nowMs).toISOString().split('T')[0];
+}
+
+/** Minutes since PKT midnight for the given instant. */
+function pktMinutesOfDay(nowMs: number): number {
+  const d = pktNow(nowMs);
+  return d.getUTCHours() * 60 + d.getUTCMinutes();
+}
+
+function toDateStr(d: Date | string): string {
+  return typeof d === 'string' ? d.slice(0, 10) : d.toISOString().split('T')[0];
+}
+
+function toMinutes(hhmm: string): number {
+  const [h, m] = hhmm.split(':').map(Number);
+  return h * 60 + m;
+}
+
+function round2(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
+// ── Shared shapes ──
+
+export interface ChannelPriced {
+  price: number;
+  dineInPrice?: number | null;
+  takeAwayPrice?: number | null;
+  deliveryPrice?: number | null;
+  foodpandaPrice?: number | null;
+}
+
+const ORDER_TYPE_TO_FIELD: Record<string, keyof ChannelPriced> = {
+  'Dine In': 'dineInPrice',
+  'Take Away': 'takeAwayPrice',
+  'Delivery': 'deliveryPrice',
+  'Foodpanda': 'foodpandaPrice',
+};
+
+/** dineIn/takeAway/delivery/foodpanda channel price, falling back to the base
+ *  `price` — mirrors POS.tsx's resolvePrice. Uses `??` (not `||`) so a real
+ *  channel price of 0 is honored, not treated as "unset". */
+export function resolveChannelPrice(record: ChannelPriced, orderType: string | undefined): number {
+  const field = orderType ? ORDER_TYPE_TO_FIELD[orderType] : undefined;
+  const channelPrice = field ? record[field] : undefined;
+  return channelPrice ?? record.price;
+}
+
+export interface DealComponentForPricing {
+  id: string;
+  menuItemId: string;
+  variantId: string | null;
+  qty: number;
+}
+
+export interface DealOptionItemForPricing {
+  id: string;
+  menuItemId: string;
+  variantId: string | null;
+  extraPrice: number;
+}
+
+export interface DealOptionGroupForPricing {
+  id: string;
+  label: string;
+  minSelections: number;
+  maxSelections: number;
+  options: DealOptionItemForPricing[];
+}
+
+export interface DealForPricing extends ChannelPriced {
+  id: string;
+  type: 'COMBO' | 'OPTION_COMBO';
+  isActive: boolean;
+  status: string;
+  validFrom: Date | string;
+  validTo?: Date | string | null;
+  startTime?: string | null;
+  endTime?: string | null;
+  components?: DealComponentForPricing[];
+  optionGroups?: DealOptionGroupForPricing[];
+}
+
+export interface DealValidity {
+  valid: boolean;
+  reason?: string;
+}
+
+/** Is this deal sellable right now — active, not archived, inside its
+ *  validFrom/validTo window and (if set) its startTime/endTime window.
+ *  All date/time comparisons use Pakistan time, and the time window supports
+ *  crossing midnight (e.g. 22:00–02:00). */
+export function isDealCurrentlyValid(deal: DealForPricing, nowMs: number = Date.now()): DealValidity {
+  if (deal.status === 'archived') return { valid: false, reason: 'This deal has been archived' };
+  if (!deal.isActive) return { valid: false, reason: 'This deal is not currently active' };
+
+  const today = pktDateStr(nowMs);
+  const validFromStr = toDateStr(deal.validFrom);
+  if (validFromStr > today) return { valid: false, reason: `This deal starts on ${validFromStr}` };
+
+  if (deal.validTo) {
+    const validToStr = toDateStr(deal.validTo);
+    if (validToStr < today) return { valid: false, reason: 'This deal has expired' };
+  }
+
+  if (deal.startTime && deal.endTime) {
+    const nowMinutes = pktMinutesOfDay(nowMs);
+    const startMinutes = toMinutes(deal.startTime);
+    const endMinutes = toMinutes(deal.endTime);
+    const inWindow = startMinutes <= endMinutes
+      ? nowMinutes >= startMinutes && nowMinutes < endMinutes
+      : nowMinutes >= startMinutes || nowMinutes < endMinutes; // crosses midnight
+    if (!inWindow) {
+      return { valid: false, reason: `This deal is only available ${deal.startTime}–${deal.endTime}` };
+    }
+  }
+
+  return { valid: true };
+}
+
+/** Splits `totalSavings` across `lineGrossAmounts` proportionally to each
+ *  line's gross value, rounded to paisas, with the rounding remainder pushed
+ *  onto the largest-weight line so the sum is always exactly `totalSavings`
+ *  (clamped to >= 0). All-zero weights split evenly. */
+export function allocateDealDiscount(totalSavings: number, lineGrossAmounts: number[]): number[] {
+  if (lineGrossAmounts.length === 0) return [];
+  const savings = Math.max(0, totalSavings);
+  const weights = lineGrossAmounts.map((a) => Math.max(0, a));
+  const totalWeight = weights.reduce((s, w) => s + w, 0);
+
+  const shares = totalWeight > 0
+    ? weights.map((w) => (savings * w) / totalWeight)
+    : weights.map(() => savings / weights.length);
+
+  const rounded = shares.map(round2);
+  const remainder = round2(savings - rounded.reduce((s, v) => s + v, 0));
+
+  let pivotIdx = 0;
+  for (let i = 1; i < weights.length; i++) {
+    if (weights[i] > weights[pivotIdx]) pivotIdx = i;
+  }
+  rounded[pivotIdx] = round2(rounded[pivotIdx] + remainder);
+  return rounded;
+}
+
+export interface SubmittedDealPick {
+  groupId?: string;
+  menuItemId: string;
+  variantId?: string | null;
+  qty?: number;
+}
+
+export interface DealSelectionLine {
+  menuItemId: string;
+  variantId: string | null;
+  qty: number;
+  extraPrice: number;
+}
+
+/** Validates a client-submitted deal selection against the deal's REAL
+ *  components/option groups and returns the normalized, trustworthy line
+ *  list. Throws ApiError.badRequest on any tamper: an extra/missing/
+ *  quantity-altered fixed-bundle component, an option pick outside its
+ *  group's allow-list, or a group selection count outside min/maxSelections. */
+export function validateDealSelection(deal: DealForPricing, submitted: SubmittedDealPick[]): DealSelectionLine[] {
+  if (deal.type === 'COMBO') {
+    const components = deal.components ?? [];
+    if (submitted.length !== components.length) {
+      throw ApiError.badRequest('Deal selection does not match this deal\'s fixed components');
+    }
+    return components.map((c) => {
+      const match = submitted.find(
+        (s) => s.menuItemId === c.menuItemId && (s.variantId ?? null) === (c.variantId ?? null)
+      );
+      if (!match) throw ApiError.badRequest('Deal selection does not match this deal\'s fixed components');
+      const qty = match.qty ?? c.qty;
+      if (qty !== c.qty) throw ApiError.badRequest('Deal component quantity cannot be changed');
+      return { menuItemId: c.menuItemId, variantId: c.variantId ?? null, qty: c.qty, extraPrice: 0 };
+    });
+  }
+
+  // OPTION_COMBO
+  const groups = deal.optionGroups ?? [];
+  const knownGroupIds = new Set(groups.map((g) => g.id));
+  for (const s of submitted) {
+    if (s.groupId && !knownGroupIds.has(s.groupId)) {
+      throw ApiError.badRequest('Deal selection references an unknown option group');
+    }
+  }
+
+  const lines: DealSelectionLine[] = [];
+  for (const group of groups) {
+    const picks = submitted.filter((s) => s.groupId === group.id);
+    if (picks.length < group.minSelections || picks.length > group.maxSelections) {
+      const need = group.minSelections === group.maxSelections
+        ? `${group.minSelections}`
+        : `${group.minSelections}-${group.maxSelections}`;
+      throw ApiError.badRequest(`"${group.label}" requires ${need} selection(s)`);
+    }
+    for (const pick of picks) {
+      const option = group.options.find(
+        (o) => o.menuItemId === pick.menuItemId && (o.variantId ?? null) === (pick.variantId ?? null)
+      );
+      if (!option) throw ApiError.badRequest(`Selected item is not a valid choice for "${group.label}"`);
+      const qty = Math.max(1, Math.trunc(pick.qty ?? 1));
+      lines.push({ menuItemId: option.menuItemId, variantId: option.variantId ?? null, qty, extraPrice: option.extraPrice });
+    }
+  }
+  return lines;
+}
+
+const DEAL_TYPE_TO_WIRE: Record<string, string> = {
+  COMBO: 'combo',
+  OPTION_COMBO: 'option_combo',
+};
+
+/** Decimal → Number + enum-member → wire-string mapping for a Deal record
+ *  (with or without nested components/optionGroups included). Prisma enums
+ *  return the MEMBER name ("COMBO"), not the @map'd DB string — this is the
+ *  same gotcha order.controller.ts's TYPE_TO_DISPLAY exists to fix. */
+export function mapDealOut(deal: any): any {
+  if (!deal) return deal;
+  return {
+    ...deal,
+    type: DEAL_TYPE_TO_WIRE[deal.type] ?? deal.type,
+    price: deal.price != null ? Number(deal.price) : 0,
+    dineInPrice: deal.dineInPrice != null ? Number(deal.dineInPrice) : null,
+    takeAwayPrice: deal.takeAwayPrice != null ? Number(deal.takeAwayPrice) : null,
+    deliveryPrice: deal.deliveryPrice != null ? Number(deal.deliveryPrice) : null,
+    foodpandaPrice: deal.foodpandaPrice != null ? Number(deal.foodpandaPrice) : null,
+    components: Array.isArray(deal.components)
+      ? deal.components.map((c: any) => ({ ...c }))
+      : undefined,
+    optionGroups: Array.isArray(deal.optionGroups)
+      ? deal.optionGroups.map((g: any) => ({
+          ...g,
+          options: Array.isArray(g.options)
+            ? g.options.map((o: any) => ({ ...o, extraPrice: o.extraPrice != null ? Number(o.extraPrice) : 0 }))
+            : [],
+        }))
+      : undefined,
+  };
+}
+
+/** Public/self-order-safe mapping — strips internal channel prices
+ *  (takeAway/delivery/foodpanda) and outletIds, and folds price down to a
+ *  single customer-facing figure (dineIn, since self-order is always
+ *  dine-in). Never expose mapDealOut()'s full shape on an unauthenticated
+ *  route — mirrors self-order.controller.ts's getSelfOrderMenu warning. */
+export function mapDealOutPublic(deal: any): any {
+  const mapped = mapDealOut(deal);
+  const { dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice, outletIds, status, ...rest } = mapped;
+  return {
+    ...rest,
+    price: dineInPrice ?? mapped.price,
+  };
+}

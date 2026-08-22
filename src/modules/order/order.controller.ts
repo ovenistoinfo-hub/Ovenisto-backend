@@ -14,6 +14,7 @@ import { fifoDrawdown } from '../stock/dough.helpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
 import { emitSelfOrderEventForOrder } from '../self-order/self-order.socket.js';
+import { revalidateDealLines } from '../deals/deal.revalidate.js';
 
 // ── Enum conversion helpers ──
 
@@ -324,6 +325,7 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
     : (orderSource === 'waiter' ? false : true);
 
   await validateOrderStock(prisma, scope, items);
+  const revalidatedItems = await revalidateDealLines(prisma, type, items);
 
   const order = await prisma.order.create({
     data: {
@@ -356,7 +358,7 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
       orderSource: orderSource || 'pos',
       ...(cashApproved !== undefined ? { cashApproved: Boolean(cashApproved) } : { cashApproved: effectiveCashApproved }),
       items: {
-        create: items.map((item: any) => ({
+        create: revalidatedItems.map((item: any) => ({
           menuItemId: item.menuItemId || null,
           variantId: item.variantId || null,
           name: item.name,
@@ -367,6 +369,9 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
           modifierIds: Array.isArray(item.modifierIds) ? item.modifierIds : [],
           cookingTime: item.cookingTime ?? null,
           notes: item.notes || null,
+          dealId: item.dealId ?? null,
+          dealName: item.dealName ?? null,
+          dealLineId: item.dealLineId ?? null,
         })),
       },
     },
@@ -478,8 +483,9 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
 
     if (Array.isArray(items) && items.length > 0) {
       await tx.orderItem.deleteMany({ where: { orderId: id } });
+      const revalidatedItems = await revalidateDealLines(tx, type ?? existing.type, items);
       dataToUpdate.items = {
-        create: items.map((item: any) => ({
+        create: revalidatedItems.map((item: any) => ({
           menuItemId: item.menuItemId || null,
           variantId: item.variantId || null,
           name: item.name,
@@ -490,6 +496,9 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
           modifierIds: Array.isArray(item.modifierIds) ? item.modifierIds : [],
           cookingTime: item.cookingTime != null ? Number(item.cookingTime) : null,
           notes: item.notes || null,
+          dealId: item.dealId ?? null,
+          dealName: item.dealName ?? null,
+          dealLineId: item.dealLineId ?? null,
         })),
       };
     }

@@ -17,6 +17,9 @@ export const createSelfOrderSchema = z.object({
     qty: z.coerce.number().int().min(1).max(50),
     modifierIds: z.array(z.string().uuid()).optional(),
     notes: z.string().max(500).optional().nullable(),
+    dealId: z.string().uuid().optional().nullable(),
+    dealLineId: z.string().optional().nullable(),
+    dealGroupId: z.string().uuid().optional().nullable(),
   })).min(1, 'Order must have at least one item'),
 });
 
