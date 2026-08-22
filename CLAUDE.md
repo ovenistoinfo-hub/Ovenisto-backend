@@ -7,6 +7,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 > alongside this file in backend sessions — read it first. Below are only the gotchas
 > specific to editing this backend that are easy to trip on.
 
+## Commands
+
+- Install: `npm install` (a fresh clone has no `node_modules/`)
+- Dev server: `npm run dev` (`tsx watch src/index.ts`)
+- Build: `npm run build` (`prisma generate && tsc`)
+- Typecheck only: `npm run typecheck`
+- Lint: `npm run lint`
+- Test all: `npm test` (`vitest run`); a single file: `npx vitest run src/modules/<module>/__tests__/<name>.test.ts`
+- Regenerate the Prisma client after a schema change, no DB connection needed: `npm run db:generate`
+- Push a schema change to the Neon DB: `npm run db:push` (retries through Neon cold-starts); a
+  change that needs it (e.g. a new unique constraint) requires `npx prisma db push --accept-data-loss` directly
+- `src/config/env.ts` Zod-validates `DATABASE_URL`, `DIRECT_URL`, and `JWT_SECRET` (min 32 chars)
+  eagerly on import — `typecheck`/`test`/`db:generate` all need these set in the environment even
+  though most don't touch the database, or they fail before running anything
+
 ## Git conventions
 
 **Never mention Claude, Anthropic, or any AI tool in a commit — anywhere.** This
@@ -97,6 +112,19 @@ plus a body explaining _why_ the change was made when that is not obvious.
   an arbitrary customer (fixed 2026-07-31). See root guide's "Self-Order (QR Ordering) System".
 - **`Order.tableNumber` is a plain copied `Int?`, not a foreign key** to `RestaurantTable.id` — match
   "orders for this table" queries on `outletId + tableNumber`, never a `tableId` column.
+- **Client-sent price/discount is trusted almost everywhere**, except where a module explicitly
+  re-derives it server-side. `self-order.controller.ts`'s `createSelfOrder` never trusts a client
+  item price — it recomputes every line from live `FoodMenuItem`/`FoodMenuVariant` records.
+  `deals/deal.revalidate.ts`'s `revalidateDealLines` does the same for any order item tagged with
+  a `dealId` (wired into both `order.controller.ts` and `self-order.controller.ts` before
+  persisting). Outside of that, `order.controller.ts`'s `createOrder`/`updateOrder` persist
+  client-sent `subtotal`/`discount`/`total`/per-item `price` as-is — a known, not-yet-closed gap;
+  don't assume it's covered just because deals are.
+- **`Deal` is chain-wide, not outlet-scoped via the standard contract above** — it uses
+  `outletIds: String[]` as an allow-list (empty = every outlet) instead of `resolveOutletScope`'s
+  `where.outletId` shape, because it overlays the equally chain-wide `FoodMenuItem`/`FoodCategory`
+  catalog. See `deal.controller.ts`'s top comment. Don't flag its missing `where.outletId` as a
+  scoping leak when auditing against the outlet-scoping contract — it's a deliberate exception.
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph
