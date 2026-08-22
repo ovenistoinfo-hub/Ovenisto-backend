@@ -20,6 +20,14 @@ const optionItemSchema = z.object({
   displayOrder: z.coerce.number().int().optional(),
 });
 
+/** One item on one side of a Buy X Get Y offer. Both sides accept several. */
+const bogoItemSchema = z.object({
+  menuItemId: z.string().uuid(),
+  variantId: z.string().uuid().optional().nullable(),
+  qty: z.coerce.number().int().min(1).max(50),
+  displayOrder: z.coerce.number().int().optional(),
+});
+
 const optionGroupSchema = z
   .object({
     label: z.string().trim().min(1, 'Step label is required').max(100),
@@ -62,7 +70,11 @@ export const dealSchema = z
     discountPercent: z.coerce.number().positive('Discount must be greater than 0').max(100, 'Discount cannot exceed 100%').optional().nullable(),
     applicableItems: z.array(z.string().uuid()).optional().default([]),
     applicableCategories: z.array(z.string().uuid()).optional().default([]),
-    // buy_x_get_y
+    // buy_x_get_y — buyItems/getItems are the real shape; the flat buy*/get*
+    // fields below are the legacy single-item form, still accepted so an older
+    // client keeps working.
+    buyItems: z.array(bogoItemSchema).max(20).optional().default([]),
+    getItems: z.array(bogoItemSchema).max(20).optional().default([]),
     buyItemId: z.string().uuid().optional().nullable(),
     buyVariantId: z.string().uuid().optional().nullable(),
     buyQty: z.coerce.number().int().min(1).max(50).optional().nullable(),
@@ -100,10 +112,13 @@ export const dealSchema = z
     }
 
     if (data.type === 'buy_x_get_y') {
-      if (!data.buyItemId) ctx.addIssue({ code: z.ZodIssueCode.custom, message: '"Buy" item is required', path: ['buyItemId'] });
-      if (!data.buyQty) ctx.addIssue({ code: z.ZodIssueCode.custom, message: '"Buy" quantity is required', path: ['buyQty'] });
-      if (!data.getItemId) ctx.addIssue({ code: z.ZodIssueCode.custom, message: '"Get" item is required', path: ['getItemId'] });
-      if (!data.getQty) ctx.addIssue({ code: z.ZodIssueCode.custom, message: '"Get" quantity is required', path: ['getQty'] });
+      // Either shape satisfies each side: the list, or the legacy single item.
+      if (data.buyItems.length === 0 && !data.buyItemId) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Add at least one item the customer has to buy', path: ['buyItems'] });
+      }
+      if (data.getItems.length === 0 && !data.getItemId) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Add at least one item the customer gets free', path: ['getItems'] });
+      }
       // Whether a variant is *required* depends on whether the chosen item has
       // any — that needs the menu records, so it is checked in the controller's
       // assertBuyXGetYVariants, not here.

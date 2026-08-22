@@ -23,6 +23,7 @@ import type { DealInput } from './deal.schema.js';
 
 const dealInclude = {
   components: { orderBy: { displayOrder: 'asc' as const } },
+  bogoItems: { orderBy: { displayOrder: 'asc' as const } },
   optionGroups: {
     orderBy: { displayOrder: 'asc' as const },
     include: { options: { orderBy: { displayOrder: 'asc' as const } } },
@@ -113,9 +114,45 @@ function buildNestedWrite(body: DealInput) {
       },
     };
   }
-  // percentage / buy_x_get_y have no nested components/optionGroups —
-  // their contents live entirely in the flat fields below.
+  if (body.type === 'buy_x_get_y') {
+    const { buy, get } = normalizeBogoSides(body);
+    return {
+      bogoItems: {
+        create: [
+          ...buy.map((r, idx) => ({ ...r, role: 'BUY' as const, displayOrder: idx })),
+          ...get.map((r, idx) => ({ ...r, role: 'GET' as const, displayOrder: idx })),
+        ],
+      },
+    };
+  }
+  // percentage has no nested rows — its contents live entirely in the flat
+  // fields below.
   return {};
+}
+
+/** The two sides of a Buy X Get Y offer, from whichever shape the client sent.
+ *  buyItems/getItems are the real shape; a client that still posts the flat
+ *  single-item fields is read into a one-row side so it keeps working. */
+function normalizeBogoSides(body: DealInput) {
+  const toRow = (r: { menuItemId: string; variantId?: string | null; qty: number }) => ({
+    menuItemId: r.menuItemId,
+    variantId: r.variantId ?? null,
+    qty: Math.max(1, Math.trunc(r.qty || 1)),
+  });
+
+  const buy = body.buyItems.length > 0
+    ? body.buyItems.map(toRow)
+    : body.buyItemId
+      ? [toRow({ menuItemId: body.buyItemId, variantId: body.buyVariantId, qty: body.buyQty ?? 1 })]
+      : [];
+
+  const get = body.getItems.length > 0
+    ? body.getItems.map(toRow)
+    : body.getItemId
+      ? [toRow({ menuItemId: body.getItemId, variantId: body.getVariantId, qty: body.getQty ?? 1 })]
+      : [];
+
+  return { buy, get };
 }
 
 /** Flat fields shared by percentage/buy_x_get_y — nulled out for
@@ -127,28 +164,51 @@ function buildFlatFields(body: DealInput) {
     discountPercent: body.discountPercent ?? null,
     applicableItems: body.applicableItems ?? [],
     applicableCategories: body.applicableCategories ?? [],
-    buyItemId: body.buyItemId ?? null,
-    buyVariantId: body.buyVariantId ?? null,
-    buyQty: body.buyQty ?? null,
-    getItemId: body.getItemId ?? null,
-    getVariantId: body.getVariantId ?? null,
-    getQty: body.getQty ?? null,
+    ...bogoFlatMirror(body),
   };
 }
 
-/** Buy X Get Y pins each side of the offer to one specific variant. This
- *  check needs the live menu records, so it cannot live in the Zod schema:
+/** Keeps the legacy flat columns pointing at the FIRST item of each side, so a
+ *  client reading the old fields still shows something sane. The DealBogoItem
+ *  relation is the source of truth — these are a mirror, never read back by
+ *  anything that has the relation available. */
+function bogoFlatMirror(body: DealInput) {
+  if (body.type !== 'buy_x_get_y') {
+    return { buyItemId: null, buyVariantId: null, buyQty: null, getItemId: null, getVariantId: null, getQty: null };
+  }
+  const { buy, get } = normalizeBogoSides(body);
+  return {
+    buyItemId: buy[0]?.menuItemId ?? null,
+    buyVariantId: buy[0]?.variantId ?? null,
+    buyQty: buy[0]?.qty ?? null,
+    getItemId: get[0]?.menuItemId ?? null,
+    getVariantId: get[0]?.variantId ?? null,
+    getQty: get[0]?.qty ?? null,
+  };
+}
+
+/** Buy X Get Y pins every row of the offer to one specific variant. This check
+ *  needs the live menu records, so it cannot live in the Zod schema:
  *
  *   - a variant, when given, must actually belong to the item it is paired with
  *     (otherwise the deal would reference a size of some other dish);
- *   - a variant is REQUIRED whenever the item has any. Without it the offer
- *     means "any variant", and revalidateBuyXGetYLine would let a customer
- *     qualify with the cheapest size while claiming the priciest one free.
+ *   - a variant is REQUIRED whenever the item has any. Without it the row means
+ *     "any variant", and revalidateBuyXGetYLine would let a customer qualify
+ *     with the cheapest size while claiming the priciest one free.
+ *
+ *  Both sides are also checked for the same item appearing twice, which would
+ *  make matching a submitted line to a row ambiguous at order time.
  */
 async function assertBuyXGetYVariants(body: DealInput) {
   if (body.type !== 'buy_x_get_y') return;
 
-  const itemIds = [body.buyItemId, body.getItemId].filter(Boolean) as string[];
+  const { buy, get } = normalizeBogoSides(body);
+  const sides = [
+    { label: 'Buy', rows: buy },
+    { label: 'Get', rows: get },
+  ];
+
+  const itemIds = [...buy, ...get].map((r) => r.menuItemId);
   if (itemIds.length === 0) return;
 
   const menuItems = await prisma.foodMenuItem.findMany({
@@ -157,24 +217,30 @@ async function assertBuyXGetYVariants(body: DealInput) {
   });
   const byId = new Map(menuItems.map((m) => [m.id, m]));
 
-  const sides = [
-    { label: 'Buy', itemId: body.buyItemId, variantId: body.buyVariantId },
-    { label: 'Get', itemId: body.getItemId, variantId: body.getVariantId },
-  ];
-
   for (const side of sides) {
-    if (!side.itemId) continue;
-    const menuItem = byId.get(side.itemId);
-    if (!menuItem) throw ApiError.badRequest(`The "${side.label}" item no longer exists`);
+    const seen = new Set<string>();
 
-    if (side.variantId) {
-      if (!menuItem.variants.some((v) => v.id === side.variantId)) {
-        throw ApiError.badRequest(`The "${side.label}" size does not belong to ${menuItem.name}`);
+    for (const row of side.rows) {
+      const menuItem = byId.get(row.menuItemId);
+      if (!menuItem) throw ApiError.badRequest(`A "${side.label}" item no longer exists`);
+
+      if (row.variantId) {
+        if (!menuItem.variants.some((v) => v.id === row.variantId)) {
+          throw ApiError.badRequest(`A "${side.label}" size does not belong to ${menuItem.name}`);
+        }
+      } else if (menuItem.variants.length > 0) {
+        throw ApiError.badRequest(
+          `${menuItem.name} comes in ${menuItem.variants.length} sizes — pick which one the "${side.label}" side applies to`
+        );
       }
-    } else if (menuItem.variants.length > 0) {
-      throw ApiError.badRequest(
-        `${menuItem.name} comes in ${menuItem.variants.length} sizes — pick which one the "${side.label}" side applies to`
-      );
+
+      // Same item+size twice on one side has no meaning the customer could act
+      // on, and would make order-time row matching ambiguous.
+      const key = `${row.menuItemId}:${row.variantId ?? ''}`;
+      if (seen.has(key)) {
+        throw ApiError.badRequest(`${menuItem.name} is listed twice on the "${side.label}" side — raise its quantity instead`);
+      }
+      seen.add(key);
     }
   }
 }
@@ -267,6 +333,7 @@ export const updateDeal = asyncHandler(async (req: Request, res: Response) => {
     const deal = await prisma.$transaction(async (tx) => {
       await tx.dealComponent.deleteMany({ where: { dealId: id } });
       await tx.dealOptionGroup.deleteMany({ where: { dealId: id } }); // cascades to DealOptionItem
+      await tx.dealBogoItem.deleteMany({ where: { dealId: id } });
 
       return tx.deal.update({
         where: { id },

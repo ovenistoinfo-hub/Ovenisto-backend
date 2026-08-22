@@ -1442,13 +1442,18 @@ model Deal {
   applicableItems      String[] // menuItemIds this discount applies to
   applicableCategories String[] // categoryIds this discount applies to (either list qualifies an item)
 
-  // BUY_X_GET_Y
-  // The *VariantId columns pin the offer to one specific size/variant of the
-  // item. They are required for any item that has variants (enforced on write
-  // in deal.controller.ts) — without them the offer means "any variant", and a
-  // customer can qualify with the cheapest size while claiming the priciest one
-  // free. Null on rows written before these columns existed; deal.revalidate.ts
-  // caps those at the cheapest variant's price rather than rejecting the order.
+  // BUY_X_GET_Y — legacy single-item shape.
+  //
+  // A Buy X Get Y offer now holds any number of items on each side, in the
+  // DealBogoItem relation below. These flat columns are kept in sync with the
+  // FIRST item of each side so an older client still renders something sane,
+  // and they remain the whole offer for rows written before the relation
+  // existed (deal.pricing.ts's resolveBogoSides falls back to them).
+  //
+  // The *VariantId columns pin a side to one specific size/variant. Null means
+  // "any variant", which lets a customer qualify with the cheapest size while
+  // claiming the priciest one free — deal.revalidate.ts caps those giveaways at
+  // the cheapest variant's price rather than rejecting the order.
   buyItemId    String?
   buyVariantId String?
   buyQty       Int?
@@ -1462,6 +1467,7 @@ model Deal {
   // Relations
   components   DealComponent[]
   optionGroups DealOptionGroup[]
+  bogoItems    DealBogoItem[]
 
   @@map("deals")
 }
@@ -1479,6 +1485,34 @@ model DealComponent {
 
   @@index([dealId])
   @@map("deal_components")
+}
+
+/// One item on one side of a BUY_X_GET_Y offer. A deal may carry several of
+/// each, so "Buy 1 Pizza + 1 Pasta, get 1 Drink + 1 Fries free" is one deal
+/// rather than four. Every row on the BUY side must be bought for the offer to
+/// apply; every row on the GET side is then given away.
+model DealBogoItem {
+  id           String   @id @default(uuid())
+  dealId       String
+  role         BogoRole
+  menuItemId   String
+  /// Pins this row to one size. Null = any size qualifies, and the giveaway is
+  /// capped at the item's cheapest variant. Required on write when the item has
+  /// variants (deal.controller.ts's assertBuyXGetYVariants).
+  variantId    String?
+  qty          Int      @default(1)
+  displayOrder Int      @default(0)
+
+  // Relations
+  deal Deal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  @@index([dealId])
+  @@map("deal_bogo_items")
+}
+
+enum BogoRole {
+  BUY @map("buy")
+  GET @map("get")
 }
 
 model DealOptionGroup {

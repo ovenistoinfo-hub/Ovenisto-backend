@@ -120,14 +120,23 @@ plus a body explaining _why_ the change was made when that is not obvious.
   persisting). Outside of that, `order.controller.ts`'s `createOrder`/`updateOrder` persist
   client-sent `subtotal`/`discount`/`total`/per-item `price` as-is — a known, not-yet-closed gap;
   don't assume it's covered just because deals are.
-- **BUY_X_GET_Y deals pin a variant on each side** (`Deal.buyVariantId`/`getVariantId`, added
-  2026-08-22). `deal.revalidate.ts`'s `revalidateBuyXGetYLine` used to match on `menuItemId` alone,
-  so "Buy 1 Pizza, Get 1 Pizza Free" could be bought as a Small and claimed as a Large at full
-  discount. Both sides now go through `matchesPinnedVariant`; `deal.controller.ts`'s
-  `assertBuyXGetYVariants` requires a variant on write whenever the item has any. Rows written
-  before these columns existed have null and still accept any variant — `capFreeUnitPrice` caps
-  their giveaway at the item's cheapest variant instead of rejecting the order, and the free line
-  is labelled "(Discounted)" rather than "(Free)" when that cap bites.
+- **BUY_X_GET_Y holds several items per side, in the `DealBogoItem` relation** (`role: BUY|GET`,
+  added 2026-08-22) — "Buy 1 Pizza + 1 Pasta, get 1 Drink + 1 Fries free" is one deal. The flat
+  `Deal.buyItemId`/`getItemId`/`buyQty`/`getQty` columns are now only a **mirror of the first row
+  of each side**, kept in sync by `bogoFlatMirror` so an older client still renders something; they
+  are also the whole offer on rows written before the relation existed. Never read them when the
+  relation is available — go through `deal.pricing.ts`'s `resolveBogoSides`, which returns the two
+  sides from whichever shape the row uses. `revalidateBuyXGetYLine` requires every BUY row to be
+  bought and matches each submitted line to one configured row (consuming it, so two lines can't
+  claim the same row).
+- **Each BUY_X_GET_Y row pins a variant** (`DealBogoItem.variantId`). `revalidateBuyXGetYLine` used
+  to match on `menuItemId` alone, so "Buy 1 Pizza, Get 1 Pizza Free" could be bought as a Small and
+  claimed as a Large at full discount. Rows now go through `matchesPinnedVariant`;
+  `deal.controller.ts`'s `assertBuyXGetYVariants` requires a variant on write whenever the item has
+  any, and rejects the same item+size twice on one side (that would make order-time matching
+  ambiguous). Legacy rows with a null variant still accept any size — `capFreeUnitPrice` caps their
+  giveaway at the item's cheapest variant instead of rejecting the order, and the free line is
+  labelled "(Discounted)" rather than "(Free)" when that cap bites.
 - **`Deal` is chain-wide, not outlet-scoped via the standard contract above** — it uses
   `outletIds: String[]` as an allow-list (empty = every outlet) instead of `resolveOutletScope`'s
   `where.outletId` shape, because it overlays the equally chain-wide `FoodMenuItem`/`FoodCategory`

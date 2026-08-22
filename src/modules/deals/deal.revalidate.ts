@@ -17,7 +17,9 @@ import {
   isItemEligibleForDiscount,
   matchesPinnedVariant,
   capFreeUnitPrice,
+  resolveBogoSides,
   type DealForPricing,
+  type BogoSideItem,
 } from './deal.pricing.js';
 
 export interface IncomingOrderItem {
@@ -67,6 +69,9 @@ function toDealForPricing(deal: any): DealForPricing {
     discountPercent: deal.discountPercent != null ? Number(deal.discountPercent) : null,
     applicableItems: deal.applicableItems ?? [],
     applicableCategories: deal.applicableCategories ?? [],
+    bogoItems: (deal.bogoItems ?? []).map((b: any) => ({
+      role: b.role, menuItemId: b.menuItemId, variantId: b.variantId, qty: b.qty, displayOrder: b.displayOrder,
+    })),
     buyItemId: deal.buyItemId ?? null,
     buyVariantId: deal.buyVariantId ?? null,
     buyQty: deal.buyQty ?? null,
@@ -125,7 +130,7 @@ export async function revalidateDealLines(
   const dealIds = Array.from(new Set(dealLines.map((i) => i.dealId as string)));
   const deals = await (tx as any).deal.findMany({
     where: { id: { in: dealIds } },
-    include: { components: true, optionGroups: { include: { options: true } } },
+    include: { components: true, optionGroups: { include: { options: true } }, bogoItems: true },
   });
   const dealById = new Map(deals.map((d: any) => [d.id, d]));
 
@@ -243,95 +248,128 @@ function revalidatePercentageLine(
   }];
 }
 
-/** BUY_X_GET_Y: exactly two submitted items per dealLineId, disambiguated by
- *  dealRole — the "buy" line (must be >= buyQty of buyItemId) and the "get"
- *  line (must be <= getQty of getItemId, priced free).
+/** BUY_X_GET_Y: the submitted lines for one dealLineId, split by dealRole into
+ *  the things the customer bought and the things they are getting free.
  *
- *  Both sides are matched on variant as well as item. Matching only the item
- *  let a customer qualify with the cheapest size and claim the priciest one
- *  free — "Buy 1 Pizza, Get 1 Pizza Free" bought as a Small and taken as a
- *  Large. Deals written since the *VariantId columns existed pin each side to
- *  one variant and are matched exactly; legacy rows that pin nothing still
- *  accept any variant, but their giveaway is capped at the cheapest one. */
+ *  Both sides can hold several items — "Buy 1 Pizza + 1 Pasta, get 1 Drink +
+ *  1 Fries free" is one deal, not four. Every configured BUY row must be
+ *  present in at least the quantity the deal asks for, and every submitted GET
+ *  line must correspond to a configured GET row and stay within its quantity.
+ *
+ *  Each row is matched on variant as well as item. Matching only the item let a
+ *  customer qualify with the cheapest size and claim the priciest one free —
+ *  "Buy 1 Pizza, Get 1 Pizza Free" bought as a Small and taken as a Large.
+ *  Rows that pin no variant (legacy deals) still accept any size, but their
+ *  giveaway is capped at the cheapest one. */
 function revalidateBuyXGetYLine(
   deal: any, dealForPricing: DealForPricing, lineItems: IncomingOrderItem[], lineId: string,
   menuItemById: Map<string, any>, orderType: string | undefined,
 ): IncomingOrderItem[] {
-  const buyItem = lineItems.find((i) => i.dealRole === 'buy');
-  const getItem = lineItems.find((i) => i.dealRole === 'get');
-  if (lineItems.length !== 2 || !buyItem || !getItem) {
+  const { buy: buyRows, get: getRows } = resolveBogoSides(dealForPricing);
+  if (buyRows.length === 0 || getRows.length === 0) {
+    throw ApiError.badRequest(`"${deal.name}" is not configured correctly`);
+  }
+
+  const submittedBuy = lineItems.filter((i) => i.dealRole === 'buy');
+  const submittedGet = lineItems.filter((i) => i.dealRole === 'get');
+  if (submittedBuy.length === 0 || submittedGet.length === 0) {
     throw ApiError.badRequest(`"${deal.name}" needs both a "buy" and a "get" line`);
   }
-
-  if (buyItem.menuItemId !== dealForPricing.buyItemId) {
-    throw ApiError.badRequest(`"${deal.name}"'s "buy" item does not match`);
-  }
-  if (!matchesPinnedVariant(dealForPricing.buyVariantId, buyItem.variantId ?? null)) {
-    throw ApiError.badRequest(`"${deal.name}" only applies to one size of the "buy" item`);
-  }
-  const buyQtyNeeded = dealForPricing.buyQty ?? 1;
-  const buyQty = Math.max(1, Math.trunc(buyItem.qty));
-  if (buyQty < buyQtyNeeded) {
-    throw ApiError.badRequest(`"${deal.name}" requires buying at least ${buyQtyNeeded}`);
+  if (submittedBuy.length + submittedGet.length !== lineItems.length) {
+    throw ApiError.badRequest(`"${deal.name}" has a line that is neither bought nor free`);
   }
 
-  if (getItem.menuItemId !== dealForPricing.getItemId) {
-    throw ApiError.badRequest(`"${deal.name}"'s "get" item does not match`);
-  }
-  if (!matchesPinnedVariant(dealForPricing.getVariantId, getItem.variantId ?? null)) {
-    throw ApiError.badRequest(`"${deal.name}" only gives one size of the "get" item free`);
-  }
-  const getQtyAllowed = dealForPricing.getQty ?? 1;
-  const getQty = Math.max(1, Math.trunc(getItem.qty));
-  if (getQty > getQtyAllowed) {
-    throw ApiError.badRequest(`"${deal.name}" gives at most ${getQtyAllowed} free`);
-  }
+  /** Finds the configured row a submitted line is claiming against, consuming it
+   *  so two submitted lines can never both satisfy the same row. */
+  const takeMatchingRow = (rows: BogoSideItem[], used: boolean[], item: IncomingOrderItem) => {
+    const idx = rows.findIndex(
+      (row, i) =>
+        !used[i] &&
+        row.menuItemId === item.menuItemId &&
+        matchesPinnedVariant(row.variantId, item.variantId ?? null),
+    );
+    if (idx === -1) return null;
+    used[idx] = true;
+    return rows[idx];
+  };
 
-  const buyMenuItem: any = menuItemById.get(buyItem.menuItemId as string);
-  const getMenuItem: any = menuItemById.get(getItem.menuItemId as string);
-  if (!buyMenuItem || !getMenuItem) throw ApiError.badRequest(`A menu item in "${deal.name}" is no longer available`);
+  const out: IncomingOrderItem[] = [];
 
-  const buyUnitPrice = resolveLinePrice(buyMenuItem, buyItem.variantId, orderType);
-  const buyVariant = buyItem.variantId ? buyMenuItem.variants.find((v: any) => v.id === buyItem.variantId) : undefined;
+  // --- the things they have to buy ---
+  const buyUsed = buyRows.map(() => false);
+  for (const item of submittedBuy) {
+    const row = takeMatchingRow(buyRows, buyUsed, item);
+    if (!row) throw ApiError.badRequest(`"${deal.name}"'s "buy" items do not match the offer`);
 
-  const getUnitPrice = resolveLinePrice(getMenuItem, getItem.variantId, orderType);
-  const getVariant = getItem.variantId ? getMenuItem.variants.find((v: any) => v.id === getItem.variantId) : undefined;
-  // Legacy deals pin no variant, so cap what they give away at the cheapest
-  // size the offer could have meant; anything above that the customer pays.
-  const freeUnitPrice = capFreeUnitPrice(
-    dealForPricing.getVariantId,
-    getUnitPrice,
-    cheapestUnitPrice(getMenuItem, orderType),
-  );
+    const qty = Math.max(1, Math.trunc(item.qty));
+    if (qty < row.qty) {
+      throw ApiError.badRequest(`"${deal.name}" requires buying at least ${row.qty} of each listed item`);
+    }
 
-  return [
-    {
-      menuItemId: buyMenuItem.id,
-      variantId: buyItem.variantId ?? null,
-      name: `${buyMenuItem.name}${buyVariant ? ` (${buyVariant.name})` : ''}`,
-      price: buyUnitPrice,
-      qty: buyQty,
+    const menuItem: any = menuItemById.get(row.menuItemId);
+    if (!menuItem) throw ApiError.badRequest(`A menu item in "${deal.name}" is no longer available`);
+
+    const unitPrice = resolveLinePrice(menuItem, item.variantId, orderType);
+    const variant = item.variantId ? menuItem.variants.find((v: any) => v.id === item.variantId) : undefined;
+
+    out.push({
+      menuItemId: menuItem.id,
+      variantId: item.variantId ?? null,
+      name: `${menuItem.name}${variant ? ` (${variant.name})` : ''}`,
+      price: unitPrice,
+      qty,
       discount: 0,
       modifiers: [],
       dealId: deal.id,
       dealName: deal.name,
       dealLineId: lineId,
-    },
-    {
-      menuItemId: getMenuItem.id,
-      variantId: getItem.variantId ?? null,
-      // Only call it free when the deal actually covers the whole line — a
-      // capped legacy giveaway leaves the customer paying the difference.
-      name: `${deal.name}: ${getMenuItem.name}${getVariant ? ` (${getVariant.name})` : ''}${
-        freeUnitPrice >= getUnitPrice ? ' (Free)' : ' (Discounted)'
+    });
+  }
+  if (buyUsed.some((u) => !u)) {
+    throw ApiError.badRequest(`"${deal.name}" requires buying every item the offer lists`);
+  }
+
+  // --- the things they get free ---
+  const getUsed = getRows.map(() => false);
+  for (const item of submittedGet) {
+    const row = takeMatchingRow(getRows, getUsed, item);
+    if (!row) throw ApiError.badRequest(`"${deal.name}"'s free items do not match the offer`);
+
+    const qty = Math.max(1, Math.trunc(item.qty));
+    if (qty > row.qty) {
+      throw ApiError.badRequest(`"${deal.name}" gives at most ${row.qty} of that item free`);
+    }
+
+    const menuItem: any = menuItemById.get(row.menuItemId);
+    if (!menuItem) throw ApiError.badRequest(`A menu item in "${deal.name}" is no longer available`);
+
+    const unitPrice = resolveLinePrice(menuItem, item.variantId, orderType);
+    const variant = item.variantId ? menuItem.variants.find((v: any) => v.id === item.variantId) : undefined;
+    // A row that pins no variant could have meant any size, so cap what it
+    // gives away at the cheapest; anything above that the customer pays.
+    const freeUnitPrice = capFreeUnitPrice(
+      row.variantId,
+      unitPrice,
+      cheapestUnitPrice(menuItem, orderType),
+    );
+
+    out.push({
+      menuItemId: menuItem.id,
+      variantId: item.variantId ?? null,
+      // Only call it free when the deal covers the whole line — a capped legacy
+      // giveaway leaves the customer paying the difference.
+      name: `${deal.name}: ${menuItem.name}${variant ? ` (${variant.name})` : ''}${
+        freeUnitPrice >= unitPrice ? ' (Free)' : ' (Discounted)'
       }`,
-      price: getUnitPrice,
-      qty: getQty,
-      discount: freeUnitPrice * getQty,
+      price: unitPrice,
+      qty,
+      discount: freeUnitPrice * qty,
       modifiers: [],
       dealId: deal.id,
       dealName: deal.name,
       dealLineId: lineId,
-    },
-  ];
+    });
+  }
+
+  return out;
 }

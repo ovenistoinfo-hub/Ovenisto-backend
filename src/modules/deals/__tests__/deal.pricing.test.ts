@@ -10,6 +10,7 @@ import {
   type DealForPricing,
   matchesPinnedVariant,
   capFreeUnitPrice,
+  resolveBogoSides,
 } from '../deal.pricing.js';
 
 function baseDeal(overrides: Partial<DealForPricing> = {}): DealForPricing {
@@ -357,5 +358,50 @@ describe('capFreeUnitPrice', () => {
 
   it('never inflates a discount above the line price', () => {
     expect(capFreeUnitPrice(null, 500, 749)).toBe(500);
+  });
+});
+
+describe('resolveBogoSides', () => {
+  const bogo = (extra: Partial<DealForPricing>): DealForPricing =>
+    baseDeal({ type: 'BUY_X_GET_Y', ...extra });
+
+  it('reads a multi-item offer from the relation, ordered by displayOrder', () => {
+    const sides = resolveBogoSides(bogo({
+      bogoItems: [
+        { role: 'GET', menuItemId: 'fries', variantId: null, qty: 1, displayOrder: 1 },
+        { role: 'BUY', menuItemId: 'pizza', variantId: 'large', qty: 1, displayOrder: 0 },
+        { role: 'GET', menuItemId: 'drink', variantId: null, qty: 2, displayOrder: 0 },
+        { role: 'BUY', menuItemId: 'pasta', variantId: null, qty: 1, displayOrder: 1 },
+      ],
+    }));
+    expect(sides.buy.map((r) => r.menuItemId)).toEqual(['pizza', 'pasta']);
+    expect(sides.get.map((r) => r.menuItemId)).toEqual(['drink', 'fries']);
+    expect(sides.get[0].qty).toBe(2);
+  });
+
+  it('falls back to the flat columns for a legacy single-item deal', () => {
+    const sides = resolveBogoSides(bogo({
+      bogoItems: [],
+      buyItemId: 'pizza', buyVariantId: 'small', buyQty: 2,
+      getItemId: 'pizza', getVariantId: null, getQty: 1,
+    }));
+    expect(sides.buy).toEqual([{ menuItemId: 'pizza', variantId: 'small', qty: 2 }]);
+    expect(sides.get).toEqual([{ menuItemId: 'pizza', variantId: null, qty: 1 }]);
+  });
+
+  it('prefers the relation over the flat mirror when both are present', () => {
+    const sides = resolveBogoSides(bogo({
+      bogoItems: [
+        { role: 'BUY', menuItemId: 'pizza', variantId: 'large', qty: 1, displayOrder: 0 },
+        { role: 'BUY', menuItemId: 'pasta', variantId: null, qty: 1, displayOrder: 1 },
+        { role: 'GET', menuItemId: 'drink', variantId: null, qty: 1, displayOrder: 0 },
+      ],
+      buyItemId: 'pizza', buyVariantId: 'large', buyQty: 1,
+    }));
+    expect(sides.buy).toHaveLength(2);
+  });
+
+  it('returns empty sides for a deal that configures neither shape', () => {
+    expect(resolveBogoSides(bogo({ bogoItems: [] }))).toEqual({ buy: [], get: [] });
   });
 });

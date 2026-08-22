@@ -90,6 +90,21 @@ export interface DealOptionGroupForPricing {
   options: DealOptionItemForPricing[];
 }
 
+export interface BogoItemForPricing {
+  role: 'BUY' | 'GET';
+  menuItemId: string;
+  variantId?: string | null;
+  qty: number;
+  displayOrder?: number;
+}
+
+/** One item the customer must buy, or one they get free. */
+export interface BogoSideItem {
+  menuItemId: string;
+  variantId: string | null;
+  qty: number;
+}
+
 export type DealTypeMember = 'COMBO' | 'OPTION_COMBO' | 'PERCENTAGE' | 'BUY_X_GET_Y';
 
 export interface DealForPricing extends ChannelPriced {
@@ -108,6 +123,9 @@ export interface DealForPricing extends ChannelPriced {
   applicableItems?: string[];
   applicableCategories?: string[];
   // BUY_X_GET_Y
+  /** Every item on both sides of the offer. Empty on legacy rows, which carry
+   *  their single item in the flat buy/get fields below instead. */
+  bogoItems?: BogoItemForPricing[];
   buyItemId?: string | null;
   /** Pins the "buy" side to one variant. Null = any variant qualifies (legacy rows). */
   buyVariantId?: string | null;
@@ -256,6 +274,48 @@ export interface CategorizedItem {
  *  is in applicableCategories. Both lists empty never matches — an admin must
  *  explicitly scope the discount (enforced at the Zod layer too), so a
  *  misconfigured deal can't silently discount the entire menu. */
+/** Flattens a Buy X Get Y deal into the two lists the rest of the code works
+ *  with, regardless of which shape it was stored in.
+ *
+ *  A deal saved since the DealBogoItem relation existed carries every item
+ *  there and may have several per side. A row written before it has exactly one
+ *  item per side, held in the flat buyItemId/getItemId columns — those are read
+ *  here so old deals keep working untouched. The relation wins whenever it has
+ *  anything in it; the flat columns are only a mirror of its first row. */
+export function resolveBogoSides(deal: DealForPricing): { buy: BogoSideItem[]; get: BogoSideItem[] } {
+  const rows = deal.bogoItems ?? [];
+
+  if (rows.length > 0) {
+    const bySide = (role: 'BUY' | 'GET') =>
+      rows
+        .filter((r) => r.role === role)
+        .slice()
+        .sort((a, b) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0))
+        .map((r) => ({
+          menuItemId: r.menuItemId,
+          variantId: r.variantId ?? null,
+          qty: Math.max(1, Math.trunc(r.qty || 1)),
+        }));
+    return { buy: bySide('BUY'), get: bySide('GET') };
+  }
+
+  const buy: BogoSideItem[] = deal.buyItemId
+    ? [{
+        menuItemId: deal.buyItemId,
+        variantId: deal.buyVariantId ?? null,
+        qty: Math.max(1, Math.trunc(deal.buyQty ?? 1)),
+      }]
+    : [];
+  const get: BogoSideItem[] = deal.getItemId
+    ? [{
+        menuItemId: deal.getItemId,
+        variantId: deal.getVariantId ?? null,
+        qty: Math.max(1, Math.trunc(deal.getQty ?? 1)),
+      }]
+    : [];
+  return { buy, get };
+}
+
 /** Does a submitted Buy X Get Y line satisfy the variant the deal pins it to?
  *
  *  A deal written since the *VariantId columns existed always pins both sides,
