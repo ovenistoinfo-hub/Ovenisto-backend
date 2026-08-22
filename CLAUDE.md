@@ -125,6 +125,11 @@ plus a body explaining _why_ the change was made when that is not obvious.
   `where.outletId` shape, because it overlays the equally chain-wide `FoodMenuItem`/`FoodCategory`
   catalog. See `deal.controller.ts`'s top comment. Don't flag its missing `where.outletId` as a
   scoping leak when auditing against the outlet-scoping contract — it's a deliberate exception.
+- **`FoodMenuItem.costPrice` / `FoodMenuVariant.costPrice`** (added 2026-08-22) are plain persisted
+  columns, not server-computed — `menu.controller.ts`'s `createMenuItem`/`updateMenuItem` just store
+  whatever the client sends (`costPrice ?? 0` on the item, `v.costPrice ?? 0` per variant) with no
+  backend recipe-cost recalculation. A trustworthy snapshot depends entirely on the frontend having
+  computed and sent it correctly (`FoodMenuForm.tsx`) — don't assume it's server-verified.
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph
