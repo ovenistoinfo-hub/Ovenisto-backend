@@ -7,6 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 > alongside this file in backend sessions — read it first. Below are only the gotchas
 > specific to editing this backend that are easy to trip on.
 
+## Git Commit Convention
+
+- **Never mention "Claude" or any AI/model identifier in git commits, PR titles, or PR bodies** —
+  no `Co-Authored-By: Claude ...` trailer, no session links. Write plain, descriptive commit
+  messages only, as if written by the human developer.
+
 ## Backend Dev Quick-Reference
 
 - **ESM import paths use `.js` even for `.ts` files** (`from '../../utils/ApiError.js'`). The build is
