@@ -2,10 +2,88 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> The repo-root `../CLAUDE.md` holds the full project guide (architecture, module map,
-> roles, env vars, deployment gotchas, the Outlet Scoping access-control model). It loads
-> alongside this file in backend sessions — read it first. Below are only the gotchas
-> specific to editing this backend that are easy to trip on.
+This is the backend half of the Ovenisto POS system. The frontend lives in a sibling
+repo, `Ovenisto_Frontend_Software`, and is its only real client.
+
+A workspace-level `../CLAUDE.md` used to hold the shared project guide. It sits outside
+both git repos, so a fresh clone never gets it — everything needed to work here is now
+in this file.
+
+## Architecture
+
+Express 5 + TypeScript (ESM) + Prisma over PostgreSQL (Neon), with Socket.IO for push.
+`src/index.ts` boots the HTTP server, wires Socket.IO, and starts a 60-second
+`autoProcessExpiredBatches` interval; `src/app.ts` is the Express app alone (CORS,
+compression, morgan, 10mb JSON limit, `/health`, `/health/db`, `/api`, error handler).
+
+**Every request takes the same path**, and each layer is a separate file per module:
+
+    routes → authenticate → authorize → validateRequest(zod) → controller → prisma
+
+`src/routes/index.ts` mounts one router per module under `/api`. A module is always
+`<name>.controller.ts` + `<name>.routes.ts`, colocated in `src/modules/<name>/`, plus
+whatever pure helpers it needs (`*.pricing.ts`, `*.revalidate.ts`, `*.helpers.ts`).
+Responses are wrapped by `ApiResponse.success(data)`; errors are thrown as `ApiError`
+and rendered by `src/middleware/errorHandler.ts`.
+
+### Outlet scoping — the access-control model
+
+The chain has many outlets (branches). Most rows carry an `outletId`, and who may see
+them is decided in one place: `src/middleware/outletScope.ts`.
+
+- `resolveOutletScope(req)` returns `null` (no filter) or an outlet id.
+- **Super Admin** picks the outlet with an `X-Outlet-Id` header (or `?outletId=`);
+  `all`/absent means chain-wide, so the function returns `null`.
+- **Every other role is pinned to `req.user.outletId`** — a client-sent header is
+  ignored outright, which is what stops one branch reading another's data.
+- `resolveCreateOutlet(req, warehouseOutletId?)` decides what to stamp on a new row,
+  and throws if a Super Admin on "All Outlets" has not chosen one.
+
+The frontend feeds this: `src/services/outletStore.ts` there holds the selected outlet
+and `api.ts` attaches the `X-Outlet-Id` header to every call.
+
+This only works if the route actually authenticates. A scoped controller behind a route
+with no `authenticate`/`optionalAuth` gets `req.user === undefined`, `resolveOutletScope`
+silently returns `null`, and the endpoint leaks every outlet — audit the route, not just
+the controller.
+
+### Roles
+
+`UserRole` in `prisma/schema.prisma` maps enum members to human-readable strings
+(`SUPER_ADMIN @map("Super Admin")`), and **`req.user.role` is the mapped string** —
+compare against `'Super Admin'`, never `'SUPER_ADMIN'`. Thirteen roles exist, from
+`Super Admin` down to `Rider` and `Customer Screen`. `src/middleware/authorize.ts` holds
+the permission table; `'Super Admin': ['*']`.
+
+### Real-time
+
+`src/socket.ts` is a registry, not a handler: `registerIO(io)` stores the instance so any
+controller can emit without a circular import. Outlet-scoped events go through
+`emitToOutlets`, which resolves `outlet:<id>` rooms plus a `SUPER_ADMIN_ROOM` so
+chain-wide viewers see everything without a second broadcast. `src/middleware/socketAuth.ts`
+authenticates each handshake and joins the socket to its outlet room. `self-order/` gets
+its own Socket.IO namespace.
+
+### Data layer
+
+One Prisma schema, `prisma/schema.prisma`, with `directUrl` for migrations. The generated
+client is imported through `src/config/database.ts`. There are no SQL migrations in the
+normal flow — see `db:push` under Commands.
+
+### Environment
+
+`src/config/env.ts` Zod-validates and **exits the process on failure**, at import time:
+`DATABASE_URL` (url), `JWT_SECRET` (min 32 chars), plus defaulted `PORT` (3001),
+`NODE_ENV`, `JWT_EXPIRES_IN` (7d), `CORS_ORIGIN` (comma-separated list) and optional
+`CLOUDINARY_*`. `DIRECT_URL` is **not** in that schema — it is read by
+`prisma/schema.prisma`'s `directUrl` and only matters to Prisma commands that reach the
+database.
+
+### Deployment
+
+`npm start` runs `scripts/db-push.mjs` **before** `dist/index.js`, so a deploy pushes the
+schema automatically. Socket.IO CORS additionally allows any `*.vercel.app` origin and
+localhost, which is how frontend preview deploys connect.
 
 ## Commands
 
@@ -18,9 +96,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Regenerate the Prisma client after a schema change, no DB connection needed: `npm run db:generate`
 - Push a schema change to the Neon DB: `npm run db:push` (retries through Neon cold-starts); a
   change that needs it (e.g. a new unique constraint) requires `npx prisma db push --accept-data-loss` directly
-- `src/config/env.ts` Zod-validates `DATABASE_URL`, `DIRECT_URL`, and `JWT_SECRET` (min 32 chars)
-  eagerly on import — `typecheck`/`test`/`db:generate` all need these set in the environment even
-  though most don't touch the database, or they fail before running anything
+- **Only `npm test` needs environment variables** — `DATABASE_URL` and `JWT_SECRET` (min 32
+  chars), any syntactically valid values. Vitest imports modules that import
+  `src/config/env.ts`, which validates and `process.exit`s at import time, so the run dies
+  before a single test executes. `typecheck` and `db:generate` need nothing, and neither
+  needs `DIRECT_URL`. For a throwaway run:
+  `DATABASE_URL=postgresql://u:p@localhost:5432/db JWT_SECRET=$(printf '0%.0s' {1..32}) npm test`
 
 ## Git conventions
 
