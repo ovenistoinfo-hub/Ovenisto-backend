@@ -73,6 +73,14 @@ function resolveWritableOutletIds(req: Request, requested: string[]): string[] {
   return [own];
 }
 
+const TYPE_TO_PRISMA: Record<DealInput['type'], string> = {
+  combo: 'COMBO',
+  option_combo: 'OPTION_COMBO',
+  percentage: 'PERCENTAGE',
+  buy_x_get_y: 'BUY_X_GET_Y',
+  time_based: 'TIME_BASED',
+};
+
 function buildNestedWrite(body: DealInput) {
   if (body.type === 'combo') {
     return {
@@ -86,23 +94,44 @@ function buildNestedWrite(body: DealInput) {
       },
     };
   }
+  if (body.type === 'option_combo') {
+    return {
+      optionGroups: {
+        create: body.optionGroups.map((g, idx) => ({
+          label: g.label,
+          minSelections: g.minSelections,
+          maxSelections: g.maxSelections,
+          displayOrder: g.displayOrder ?? idx,
+          options: {
+            create: g.options.map((o, oIdx) => ({
+              menuItemId: o.menuItemId,
+              variantId: o.variantId ?? null,
+              extraPrice: o.extraPrice ?? 0,
+              displayOrder: o.displayOrder ?? oIdx,
+            })),
+          },
+        })),
+      },
+    };
+  }
+  // percentage / buy_x_get_y / time_based have no nested components/optionGroups —
+  // their contents live entirely in the flat fields below.
+  return {};
+}
+
+/** Flat fields shared by percentage/buy_x_get_y/time_based — nulled out for
+ *  combo/option_combo so switching a deal's type on edit cleanly drops the
+ *  previous type's fields instead of leaving stale data behind. */
+function buildFlatFields(body: DealInput) {
   return {
-    optionGroups: {
-      create: body.optionGroups.map((g, idx) => ({
-        label: g.label,
-        minSelections: g.minSelections,
-        maxSelections: g.maxSelections,
-        displayOrder: g.displayOrder ?? idx,
-        options: {
-          create: g.options.map((o, oIdx) => ({
-            menuItemId: o.menuItemId,
-            variantId: o.variantId ?? null,
-            extraPrice: o.extraPrice ?? 0,
-            displayOrder: o.displayOrder ?? oIdx,
-          })),
-        },
-      })),
-    },
+    price: body.price ?? null,
+    discountPercent: body.discountPercent ?? null,
+    applicableItems: body.applicableItems ?? [],
+    applicableCategories: body.applicableCategories ?? [],
+    buyItemId: body.buyItemId ?? null,
+    buyQty: body.buyQty ?? null,
+    getItemId: body.getItemId ?? null,
+    getQty: body.getQty ?? null,
   };
 }
 
@@ -125,7 +154,7 @@ async function assertPriceBelowRegularValue(body: DealInput) {
     const unitPrice = Number(variant?.price ?? menuItem.price);
     regularTotal += unitPrice * c.qty;
   }
-  if (regularTotal > 0 && body.price > regularTotal) {
+  if (regularTotal > 0 && body.price != null && body.price > regularTotal) {
     throw ApiError.badRequest(
       `Deal price (${body.price}) cannot exceed the regular value of its included items (${regularTotal})`
     );
@@ -145,8 +174,8 @@ export const createDeal = asyncHandler(async (req: Request, res: Response) => {
         code: body.code || null,
         description: body.description || null,
         image: body.image || null,
-        type: body.type === 'combo' ? 'COMBO' : 'OPTION_COMBO',
-        price: body.price,
+        type: TYPE_TO_PRISMA[body.type] as any,
+        ...buildFlatFields(body),
         dineInPrice: body.dineInPrice ?? null,
         takeAwayPrice: body.takeAwayPrice ?? null,
         deliveryPrice: body.deliveryPrice ?? null,
@@ -200,8 +229,8 @@ export const updateDeal = asyncHandler(async (req: Request, res: Response) => {
           code: body.code || null,
           description: body.description || null,
           image: body.image || null,
-          type: body.type === 'combo' ? 'COMBO' : 'OPTION_COMBO',
-          price: body.price,
+          type: TYPE_TO_PRISMA[body.type] as any,
+          ...buildFlatFields(body),
           dineInPrice: body.dineInPrice ?? null,
           takeAwayPrice: body.takeAwayPrice ?? null,
           deliveryPrice: body.deliveryPrice ?? null,

@@ -20,6 +20,7 @@ export const createSelfOrderSchema = z.object({
     dealId: z.string().uuid().optional().nullable(),
     dealLineId: z.string().optional().nullable(),
     dealGroupId: z.string().uuid().optional().nullable(),
+    dealRole: z.enum(['buy', 'get']).optional().nullable(),
   })).min(1, 'Order must have at least one item'),
 });
 

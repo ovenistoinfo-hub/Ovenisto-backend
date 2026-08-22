@@ -4,6 +4,7 @@ import {
   resolveChannelPrice,
   allocateDealDiscount,
   validateDealSelection,
+  isItemEligibleForDiscount,
   mapDealOut,
   mapDealOutPublic,
   type DealForPricing,
@@ -272,5 +273,51 @@ describe('mapDealOutPublic', () => {
   it('falls back to base price when dineInPrice is unset', () => {
     const mapped = mapDealOutPublic({ id: 'd1', type: 'COMBO', price: 1000 });
     expect(mapped.price).toBe(1000);
+  });
+});
+
+describe('isItemEligibleForDiscount', () => {
+  const percentDeal = baseDeal({
+    type: 'PERCENTAGE',
+    price: null,
+    discountPercent: 20,
+    applicableItems: ['burger'],
+    applicableCategories: ['drinks-cat'],
+  });
+
+  it('matches an item explicitly listed in applicableItems', () => {
+    expect(isItemEligibleForDiscount(percentDeal, { menuItemId: 'burger', categoryId: 'other-cat' })).toBe(true);
+  });
+
+  it('matches an item whose category is in applicableCategories', () => {
+    expect(isItemEligibleForDiscount(percentDeal, { menuItemId: 'coke', categoryId: 'drinks-cat' })).toBe(true);
+  });
+
+  it('rejects an item matching neither list', () => {
+    expect(isItemEligibleForDiscount(percentDeal, { menuItemId: 'fries', categoryId: 'sides-cat' })).toBe(false);
+  });
+
+  it('rejects an item with no category when only categories are scoped', () => {
+    const categoryOnlyDeal = baseDeal({ type: 'PERCENTAGE', applicableItems: [], applicableCategories: ['drinks-cat'] });
+    expect(isItemEligibleForDiscount(categoryOnlyDeal, { menuItemId: 'mystery-item', categoryId: null })).toBe(false);
+  });
+
+  it('never matches anything when both lists are empty (no silent chain-wide discount)', () => {
+    const unscopedDeal = baseDeal({ type: 'PERCENTAGE', applicableItems: [], applicableCategories: [] });
+    expect(isItemEligibleForDiscount(unscopedDeal, { menuItemId: 'anything', categoryId: 'any-cat' })).toBe(false);
+  });
+});
+
+describe('mapDealOut with new deal types', () => {
+  it('maps PERCENTAGE to percentage, BUY_X_GET_Y to buy_x_get_y, TIME_BASED to time_based', () => {
+    expect(mapDealOut({ id: 'd3', type: 'PERCENTAGE', price: null }).type).toBe('percentage');
+    expect(mapDealOut({ id: 'd4', type: 'BUY_X_GET_Y', price: null }).type).toBe('buy_x_get_y');
+    expect(mapDealOut({ id: 'd5', type: 'TIME_BASED', price: null }).type).toBe('time_based');
+  });
+
+  it('keeps price as null rather than coercing to 0 for a discount-type deal', () => {
+    const mapped = mapDealOut({ id: 'd6', type: 'PERCENTAGE', price: null, discountPercent: 15 });
+    expect(mapped.price).toBeNull();
+    expect(mapped.discountPercent).toBe(15);
   });
 });

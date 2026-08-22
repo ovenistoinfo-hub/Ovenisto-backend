@@ -43,8 +43,9 @@ export const dealSchema = z
     code: z.string().trim().min(1).max(20).optional().nullable(),
     description: z.string().max(1000).optional().nullable(),
     image: z.string().max(2000).optional().nullable(),
-    type: z.enum(['combo', 'option_combo']),
-    price: z.coerce.number().positive('Deal price must be greater than 0'),
+    type: z.enum(['combo', 'option_combo', 'percentage', 'buy_x_get_y', 'time_based']),
+    // Flat bundle price — only required for combo/option_combo.
+    price: z.coerce.number().positive('Deal price must be greater than 0').optional().nullable(),
     dineInPrice: z.coerce.number().min(0).optional().nullable(),
     takeAwayPrice: z.coerce.number().min(0).optional().nullable(),
     deliveryPrice: z.coerce.number().min(0).optional().nullable(),
@@ -57,6 +58,15 @@ export const dealSchema = z
     endTime: timeStr.optional().nullable(),
     components: z.array(componentSchema).optional().default([]),
     optionGroups: z.array(optionGroupSchema).optional().default([]),
+    // percentage / time_based
+    discountPercent: z.coerce.number().positive('Discount must be greater than 0').max(100, 'Discount cannot exceed 100%').optional().nullable(),
+    applicableItems: z.array(z.string().uuid()).optional().default([]),
+    applicableCategories: z.array(z.string().uuid()).optional().default([]),
+    // buy_x_get_y
+    buyItemId: z.string().uuid().optional().nullable(),
+    buyQty: z.coerce.number().int().min(1).max(50).optional().nullable(),
+    getItemId: z.string().uuid().optional().nullable(),
+    getQty: z.coerce.number().int().min(1).max(50).optional().nullable(),
   })
   .superRefine((data, ctx) => {
     if (data.validTo && data.validTo < data.validFrom) {
@@ -65,11 +75,36 @@ export const dealSchema = z
     if ((data.startTime == null) !== (data.endTime == null)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Set both a start and end time, or neither', path: ['endTime'] });
     }
-    if (data.type === 'combo' && data.components.length === 0) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'A Fixed Bundle needs at least one component item', path: ['components'] });
+
+    if (data.type === 'combo' || data.type === 'option_combo') {
+      if (data.price == null) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Deal price is required', path: ['price'] });
+      }
+      if (data.type === 'combo' && data.components.length === 0) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'A Fixed Bundle needs at least one component item', path: ['components'] });
+      }
+      if (data.type === 'option_combo' && data.optionGroups.length === 0) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'A Customizable Combo needs at least one step group', path: ['optionGroups'] });
+      }
     }
-    if (data.type === 'option_combo' && data.optionGroups.length === 0) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'A Customizable Combo needs at least one step group', path: ['optionGroups'] });
+
+    if (data.type === 'percentage' || data.type === 'time_based') {
+      if (data.discountPercent == null) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Discount percentage is required', path: ['discountPercent'] });
+      }
+      if (data.applicableItems.length === 0 && data.applicableCategories.length === 0) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Select at least one item or category this discount applies to', path: ['applicableItems'] });
+      }
+      if (data.type === 'time_based' && (!data.startTime || !data.endTime)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'A Time-Based deal needs a start and end time', path: ['endTime'] });
+      }
+    }
+
+    if (data.type === 'buy_x_get_y') {
+      if (!data.buyItemId) ctx.addIssue({ code: z.ZodIssueCode.custom, message: '"Buy" item is required', path: ['buyItemId'] });
+      if (!data.buyQty) ctx.addIssue({ code: z.ZodIssueCode.custom, message: '"Buy" quantity is required', path: ['buyQty'] });
+      if (!data.getItemId) ctx.addIssue({ code: z.ZodIssueCode.custom, message: '"Get" item is required', path: ['getItemId'] });
+      if (!data.getQty) ctx.addIssue({ code: z.ZodIssueCode.custom, message: '"Get" quantity is required', path: ['getQty'] });
     }
   });
 

@@ -45,7 +45,7 @@ function round2(n: number): number {
 // ── Shared shapes ──
 
 export interface ChannelPriced {
-  price: number;
+  price: number | null | undefined;
   dineInPrice?: number | null;
   takeAwayPrice?: number | null;
   deliveryPrice?: number | null;
@@ -65,7 +65,7 @@ const ORDER_TYPE_TO_FIELD: Record<string, keyof ChannelPriced> = {
 export function resolveChannelPrice(record: ChannelPriced, orderType: string | undefined): number {
   const field = orderType ? ORDER_TYPE_TO_FIELD[orderType] : undefined;
   const channelPrice = field ? record[field] : undefined;
-  return channelPrice ?? record.price;
+  return channelPrice ?? record.price ?? 0;
 }
 
 export interface DealComponentForPricing {
@@ -90,9 +90,11 @@ export interface DealOptionGroupForPricing {
   options: DealOptionItemForPricing[];
 }
 
+export type DealTypeMember = 'COMBO' | 'OPTION_COMBO' | 'PERCENTAGE' | 'BUY_X_GET_Y' | 'TIME_BASED';
+
 export interface DealForPricing extends ChannelPriced {
   id: string;
-  type: 'COMBO' | 'OPTION_COMBO';
+  type: DealTypeMember;
   isActive: boolean;
   status: string;
   validFrom: Date | string;
@@ -101,6 +103,15 @@ export interface DealForPricing extends ChannelPriced {
   endTime?: string | null;
   components?: DealComponentForPricing[];
   optionGroups?: DealOptionGroupForPricing[];
+  // PERCENTAGE / TIME_BASED
+  discountPercent?: number | null;
+  applicableItems?: string[];
+  applicableCategories?: string[];
+  // BUY_X_GET_Y
+  buyItemId?: string | null;
+  buyQty?: number | null;
+  getItemId?: string | null;
+  getQty?: number | null;
 }
 
 export interface DealValidity {
@@ -231,9 +242,31 @@ export function validateDealSelection(deal: DealForPricing, submitted: Submitted
   return lines;
 }
 
+export interface CategorizedItem {
+  menuItemId: string;
+  categoryId: string | null;
+}
+
+/** Does this menu item/category qualify for a PERCENTAGE or TIME_BASED deal's
+ *  discount? Matches if the item's id is in applicableItems, OR its category
+ *  is in applicableCategories. Both lists empty never matches — an admin must
+ *  explicitly scope the discount (enforced at the Zod layer too), so a
+ *  misconfigured deal can't silently discount the entire menu. */
+export function isItemEligibleForDiscount(deal: DealForPricing, item: CategorizedItem): boolean {
+  const items = deal.applicableItems ?? [];
+  const categories = deal.applicableCategories ?? [];
+  if (items.length === 0 && categories.length === 0) return false;
+  if (items.includes(item.menuItemId)) return true;
+  if (item.categoryId && categories.includes(item.categoryId)) return true;
+  return false;
+}
+
 const DEAL_TYPE_TO_WIRE: Record<string, string> = {
   COMBO: 'combo',
   OPTION_COMBO: 'option_combo',
+  PERCENTAGE: 'percentage',
+  BUY_X_GET_Y: 'buy_x_get_y',
+  TIME_BASED: 'time_based',
 };
 
 /** Decimal → Number + enum-member → wire-string mapping for a Deal record
@@ -245,11 +278,12 @@ export function mapDealOut(deal: any): any {
   return {
     ...deal,
     type: DEAL_TYPE_TO_WIRE[deal.type] ?? deal.type,
-    price: deal.price != null ? Number(deal.price) : 0,
+    price: deal.price != null ? Number(deal.price) : null,
     dineInPrice: deal.dineInPrice != null ? Number(deal.dineInPrice) : null,
     takeAwayPrice: deal.takeAwayPrice != null ? Number(deal.takeAwayPrice) : null,
     deliveryPrice: deal.deliveryPrice != null ? Number(deal.deliveryPrice) : null,
     foodpandaPrice: deal.foodpandaPrice != null ? Number(deal.foodpandaPrice) : null,
+    discountPercent: deal.discountPercent != null ? Number(deal.discountPercent) : null,
     components: Array.isArray(deal.components)
       ? deal.components.map((c: any) => ({ ...c }))
       : undefined,

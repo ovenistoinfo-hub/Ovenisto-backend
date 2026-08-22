@@ -1406,6 +1406,9 @@ model Shift {
 enum DealType {
   COMBO        @map("combo")
   OPTION_COMBO @map("option_combo")
+  PERCENTAGE   @map("percentage")
+  BUY_X_GET_Y  @map("buy_x_get_y")
+  TIME_BASED   @map("time_based")
 }
 
 model Deal {
@@ -1415,7 +1418,9 @@ model Deal {
   description    String?
   image          String?
   type           DealType
-  price          Decimal   @db.Decimal(10, 2)
+  // Fixed price for COMBO/OPTION_COMBO. Null for PERCENTAGE/BUY_X_GET_Y/TIME_BASED —
+  // those discount existing item prices rather than sell at a flat bundle price.
+  price          Decimal?  @db.Decimal(10, 2)
   dineInPrice    Decimal?  @db.Decimal(10, 2)
   takeAwayPrice  Decimal?  @db.Decimal(10, 2)
   deliveryPrice  Decimal?  @db.Decimal(10, 2)
@@ -1425,10 +1430,24 @@ model Deal {
   outletIds      String[] // empty = chain-wide
   validFrom      DateTime  @db.Date
   validTo        DateTime? @db.Date
+  // For COMBO/OPTION_COMBO/BUY_X_GET_Y: gates whether the whole deal is orderable.
+  // For PERCENTAGE/TIME_BASED: gates whether the discount is currently active.
   startTime      String?   @db.VarChar(10)
   endTime        String?   @db.VarChar(10)
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+
+  // PERCENTAGE / TIME_BASED
+  discountPercent      Decimal? @db.Decimal(5, 2)
+  applicableItems      String[] // menuItemIds this discount applies to
+  applicableCategories String[] // categoryIds this discount applies to (either list qualifies an item)
+
+  // BUY_X_GET_Y
+  buyItemId String?
+  buyQty    Int?
+  getItemId String?
+  getQty    Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
   components   DealComponent[]
