@@ -12,6 +12,8 @@ import { ApiError } from '../../utils/ApiError.js';
 import {
   isDealCurrentlyValid,
   resolveChannelPrice,
+  resolveChannelPercent,
+  round2,
   allocateDealDiscount,
   validateDealSelection,
   isItemEligibleForDiscount,
@@ -51,6 +53,10 @@ function toDealForPricing(deal: any): DealForPricing {
     takeAwayPrice: deal.takeAwayPrice != null ? Number(deal.takeAwayPrice) : null,
     deliveryPrice: deal.deliveryPrice != null ? Number(deal.deliveryPrice) : null,
     foodpandaPrice: deal.foodpandaPrice != null ? Number(deal.foodpandaPrice) : null,
+    dineInPercent: deal.dineInPercent != null ? Number(deal.dineInPercent) : null,
+    takeAwayPercent: deal.takeAwayPercent != null ? Number(deal.takeAwayPercent) : null,
+    deliveryPercent: deal.deliveryPercent != null ? Number(deal.deliveryPercent) : null,
+    foodpandaPercent: deal.foodpandaPercent != null ? Number(deal.foodpandaPercent) : null,
     isActive: deal.isActive,
     status: deal.status,
     validFrom: deal.validFrom,
@@ -230,7 +236,8 @@ function revalidatePercentageLine(
 
   const qty = Math.max(1, Math.trunc(item.qty));
   const unitPrice = resolveLinePrice(menuItem, item.variantId, orderType);
-  const percent = dealForPricing.discountPercent ?? 0;
+  // A channel may discount harder (or not at all) than the deal's base rate.
+  const percent = resolveChannelPercent(dealForPricing, orderType, dealForPricing.discountPercent ?? 0);
   const discount = Math.min(unitPrice * qty, unitPrice * qty * (percent / 100));
 
   const variant = item.variantId ? menuItem.variants.find((v: any) => v.id === item.variantId) : undefined;
@@ -347,11 +354,15 @@ function revalidateBuyXGetYLine(
     const variant = item.variantId ? menuItem.variants.find((v: any) => v.id === item.variantId) : undefined;
     // A row that pins no variant could have meant any size, so cap what it
     // gives away at the cheapest; anything above that the customer pays.
-    const freeUnitPrice = capFreeUnitPrice(
+    const cappedUnitPrice = capFreeUnitPrice(
       row.variantId,
       unitPrice,
       cheapestUnitPrice(menuItem, orderType),
     );
+    // The giveaway is fully free by default, but a channel can cover only part
+    // of it (e.g. half price on Foodpanda instead of free).
+    const coveragePercent = resolveChannelPercent(dealForPricing, orderType, 100);
+    const freeUnitPrice = round2(cappedUnitPrice * (coveragePercent / 100));
 
     out.push({
       menuItemId: menuItem.id,
@@ -359,7 +370,7 @@ function revalidateBuyXGetYLine(
       // Only call it free when the deal covers the whole line — a capped legacy
       // giveaway leaves the customer paying the difference.
       name: `${deal.name}: ${menuItem.name}${variant ? ` (${variant.name})` : ''}${
-        freeUnitPrice >= unitPrice ? ' (Free)' : ' (Discounted)'
+        freeUnitPrice <= 0 ? '' : freeUnitPrice >= unitPrice ? ' (Free)' : ' (Discounted)'
       }`,
       price: unitPrice,
       qty,

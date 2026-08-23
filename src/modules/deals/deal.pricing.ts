@@ -38,7 +38,7 @@ function toMinutes(hhmm: string): number {
   return h * 60 + m;
 }
 
-function round2(n: number): number {
+export function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
@@ -66,6 +66,38 @@ export function resolveChannelPrice(record: ChannelPriced, orderType: string | u
   const field = orderType ? ORDER_TYPE_TO_FIELD[orderType] : undefined;
   const channelPrice = field ? record[field] : undefined;
   return channelPrice ?? record.price ?? 0;
+}
+
+/** The percentage half of the same idea, for the two deal formats that discount
+ *  live menu prices instead of selling at a flat bundle price. A PERCENTAGE deal
+ *  varies its discountPercent per channel; a BUY_X_GET_Y deal varies how much of
+ *  the free item it covers (base 100 = genuinely free). */
+export interface ChannelDiscounted {
+  dineInPercent?: number | null;
+  takeAwayPercent?: number | null;
+  deliveryPercent?: number | null;
+  foodpandaPercent?: number | null;
+}
+
+const ORDER_TYPE_TO_PERCENT_FIELD: Record<string, keyof ChannelDiscounted> = {
+  'Dine In': 'dineInPercent',
+  'Take Away': 'takeAwayPercent',
+  'Delivery': 'deliveryPercent',
+  'Foodpanda': 'foodpandaPercent',
+};
+
+/** Channel discount % for this order type, falling back to `base` when the
+ *  channel has no override. `??` again, so an explicit 0 ("no discount on
+ *  Foodpanda") is honored rather than falling through to the base figure.
+ *  Always clamped to 0–100 — a stale row can hold anything. */
+export function resolveChannelPercent(
+  record: ChannelDiscounted,
+  orderType: string | undefined,
+  base: number,
+): number {
+  const field = orderType ? ORDER_TYPE_TO_PERCENT_FIELD[orderType] : undefined;
+  const override = field ? record[field] : undefined;
+  return Math.min(100, Math.max(0, override ?? base));
 }
 
 export interface DealComponentForPricing {
@@ -107,7 +139,7 @@ export interface BogoSideItem {
 
 export type DealTypeMember = 'COMBO' | 'OPTION_COMBO' | 'PERCENTAGE' | 'BUY_X_GET_Y';
 
-export interface DealForPricing extends ChannelPriced {
+export interface DealForPricing extends ChannelPriced, ChannelDiscounted {
   id: string;
   type: DealTypeMember;
   isActive: boolean;
@@ -376,6 +408,10 @@ export function mapDealOut(deal: any): any {
     takeAwayPrice: deal.takeAwayPrice != null ? Number(deal.takeAwayPrice) : null,
     deliveryPrice: deal.deliveryPrice != null ? Number(deal.deliveryPrice) : null,
     foodpandaPrice: deal.foodpandaPrice != null ? Number(deal.foodpandaPrice) : null,
+    dineInPercent: deal.dineInPercent != null ? Number(deal.dineInPercent) : null,
+    takeAwayPercent: deal.takeAwayPercent != null ? Number(deal.takeAwayPercent) : null,
+    deliveryPercent: deal.deliveryPercent != null ? Number(deal.deliveryPercent) : null,
+    foodpandaPercent: deal.foodpandaPercent != null ? Number(deal.foodpandaPercent) : null,
     discountPercent: deal.discountPercent != null ? Number(deal.discountPercent) : null,
     components: Array.isArray(deal.components)
       ? deal.components.map((c: any) => ({ ...c }))
@@ -398,9 +434,19 @@ export function mapDealOut(deal: any): any {
  *  route — mirrors self-order.controller.ts's getSelfOrderMenu warning. */
 export function mapDealOutPublic(deal: any): any {
   const mapped = mapDealOut(deal);
-  const { dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice, outletIds, status, ...rest } = mapped;
+  const {
+    dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice,
+    dineInPercent, takeAwayPercent, deliveryPercent, foodpandaPercent,
+    outletIds, status, ...rest
+  } = mapped;
   return {
     ...rest,
     price: dineInPrice ?? mapped.price,
+    // Self-order is always dine-in, so fold that channel's override down into
+    // the single customer-facing percentage. Only for a PERCENTAGE deal — on a
+    // BUY_X_GET_Y row the same column means "how much of the free item we
+    // cover", which is not a discount on this deal's own price.
+    discountPercent:
+      mapped.type === 'percentage' ? dineInPercent ?? mapped.discountPercent : mapped.discountPercent,
   };
 }

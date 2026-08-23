@@ -58,6 +58,12 @@ export const dealSchema = z
     takeAwayPrice: z.coerce.number().min(0).optional().nullable(),
     deliveryPrice: z.coerce.number().min(0).optional().nullable(),
     foodpandaPrice: z.coerce.number().min(0).optional().nullable(),
+    // Per-channel discount-% overrides — percentage deals vary their discount
+    // per channel, buy_x_get_y deals vary how much of the free item they cover.
+    dineInPercent: z.coerce.number().min(0).max(100).optional().nullable(),
+    takeAwayPercent: z.coerce.number().min(0).max(100).optional().nullable(),
+    deliveryPercent: z.coerce.number().min(0).max(100).optional().nullable(),
+    foodpandaPercent: z.coerce.number().min(0).max(100).optional().nullable(),
     isActive: z.boolean().optional().default(true),
     outletIds: z.array(z.string().uuid()).optional().default([]),
     validFrom: z.coerce.date(),

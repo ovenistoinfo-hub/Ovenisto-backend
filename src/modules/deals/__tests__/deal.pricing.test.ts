@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   isDealCurrentlyValid,
   resolveChannelPrice,
+  resolveChannelPercent,
   allocateDealDiscount,
   validateDealSelection,
   isItemEligibleForDiscount,
@@ -114,6 +115,36 @@ describe('resolveChannelPrice', () => {
   it('falls back to base price for an unknown/undefined order type', () => {
     expect(resolveChannelPrice(record, undefined)).toBe(500);
     expect(resolveChannelPrice(record, 'Something Else')).toBe(500);
+  });
+});
+
+describe('resolveChannelPercent', () => {
+  const record = { dineInPercent: 10, takeAwayPercent: null, deliveryPercent: 0, foodpandaPercent: 150 };
+
+  it('picks the matching channel percentage', () => {
+    expect(resolveChannelPercent(record, 'Dine In', 20)).toBe(10);
+  });
+
+  it('falls back to the base percentage when the channel has no override', () => {
+    expect(resolveChannelPercent(record, 'Take Away', 20)).toBe(20);
+  });
+
+  it('honors an override of exactly 0 — "no discount on this channel"', () => {
+    expect(resolveChannelPercent(record, 'Delivery', 20)).toBe(0);
+  });
+
+  it('clamps a stale out-of-range override to 0-100', () => {
+    expect(resolveChannelPercent(record, 'Foodpanda', 20)).toBe(100);
+    expect(resolveChannelPercent({ dineInPercent: -5 }, 'Dine In', 20)).toBe(0);
+  });
+
+  it('falls back to the base for an unknown/undefined order type', () => {
+    expect(resolveChannelPercent(record, undefined, 20)).toBe(20);
+    expect(resolveChannelPercent(record, 'Something Else', 20)).toBe(20);
+  });
+
+  it("uses the buy-x-get-y base of 100 when nothing is set — the free item stays free", () => {
+    expect(resolveChannelPercent({}, 'Delivery', 100)).toBe(100);
   });
 });
 

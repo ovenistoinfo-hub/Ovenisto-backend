@@ -162,9 +162,27 @@ function buildFlatFields(body: DealInput) {
   return {
     price: body.price ?? null,
     discountPercent: body.discountPercent ?? null,
+    // Channel discount overrides only mean something for the two formats that
+    // discount live menu prices; a flat-price combo varies via *Price instead.
+    ...channelPercentFields(body),
     applicableItems: body.applicableItems ?? [],
     applicableCategories: body.applicableCategories ?? [],
     ...bogoFlatMirror(body),
+  };
+}
+
+/** dineIn/takeAway/delivery/foodpanda discount-% overrides, cleared for the
+ *  formats that sell at a flat bundle price — leaving a stale percentage on a
+ *  combo would be dead data that a later format change could silently apply. */
+function channelPercentFields(body: DealInput) {
+  if (body.type !== 'percentage' && body.type !== 'buy_x_get_y') {
+    return { dineInPercent: null, takeAwayPercent: null, deliveryPercent: null, foodpandaPercent: null };
+  }
+  return {
+    dineInPercent: body.dineInPercent ?? null,
+    takeAwayPercent: body.takeAwayPercent ?? null,
+    deliveryPercent: body.deliveryPercent ?? null,
+    foodpandaPercent: body.foodpandaPercent ?? null,
   };
 }
 

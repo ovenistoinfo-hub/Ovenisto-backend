@@ -1426,6 +1426,15 @@ model Deal {
   takeAwayPrice  Decimal?  @db.Decimal(10, 2)
   deliveryPrice  Decimal?  @db.Decimal(10, 2)
   foodpandaPrice Decimal?  @db.Decimal(10, 2)
+  // Per-channel discount-% overrides. Null on a channel = use the base figure.
+  //   PERCENTAGE  — replaces discountPercent for orders on that channel.
+  //   BUY_X_GET_Y — how much of the free item the deal covers there; the base is
+  //                 100 (genuinely free), so 50 means half price on that channel.
+  // COMBO/OPTION_COMBO ignore these entirely — they vary by the flat *Price columns.
+  dineInPercent    Decimal? @db.Decimal(5, 2)
+  takeAwayPercent  Decimal? @db.Decimal(5, 2)
+  deliveryPercent  Decimal? @db.Decimal(5, 2)
+  foodpandaPercent Decimal? @db.Decimal(5, 2)
   isActive       Boolean   @default(true)
   status         String    @default("active") @db.VarChar(20) // active | archived
   outletIds      String[] // empty = chain-wide
