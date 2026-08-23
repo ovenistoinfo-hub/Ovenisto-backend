@@ -223,6 +223,17 @@ plus a body explaining _why_ the change was made when that is not obvious.
   `where.outletId` shape, because it overlays the equally chain-wide `FoodMenuItem`/`FoodCategory`
   catalog. See `deal.controller.ts`'s top comment. Don't flag its missing `where.outletId` as a
   scoping leak when auditing against the outlet-scoping contract — it's a deliberate exception.
+- **A deal varies by channel in one of two shapes, never both** — `Deal.dineInPrice`…`foodpandaPrice`
+  override the flat bundle price and only apply to COMBO/OPTION_COMBO; `Deal.dineInPercent`…
+  `foodpandaPercent` (added 2026-08-23) override a percentage and only apply to PERCENTAGE and
+  BUY_X_GET_Y, which have no flat price to vary. `resolveChannelPercent(record, orderType, base)`
+  reads them with a per-format base: `discountPercent` for a PERCENTAGE deal, `100` for
+  BUY_X_GET_Y (where it means how much of the free item the deal covers, so a lower figure charges
+  the customer the rest and the line is labelled "(Discounted)" not "(Free)"). `??` not `||`, so an
+  explicit 0 survives — "no discount on Foodpanda" is a real setting, distinct from "no override".
+  `deal.controller.ts`'s `channelPercentFields` nulls the columns on write for the flat-price
+  formats; `mapDealOutPublic` folds the dine-in one into `discountPercent` for a PERCENTAGE deal
+  only, since on a BUY_X_GET_Y row it means something else entirely.
 - **`FoodMenuItem.costPrice` / `FoodMenuVariant.costPrice`** (added 2026-08-22) are plain persisted
   columns, not server-computed — `menu.controller.ts`'s `createMenuItem`/`updateMenuItem` just store
   whatever the client sends (`costPrice ?? 0` on the item, `v.costPrice ?? 0` per variant) with no
