@@ -58,6 +58,41 @@ describe('isDealCurrentlyValid', () => {
     expect(isDealCurrentlyValid(baseDeal({ validTo: null }), noonPktJan15).valid).toBe(true);
   });
 
+  // 2026-01-15 is a Thursday (weekday 4) in Pakistan time.
+  it('runs every day when activeDays is empty', () => {
+    expect(isDealCurrentlyValid(baseDeal({ activeDays: [] }), noonPktJan15).valid).toBe(true);
+  });
+
+  it('accepts a deal scheduled on today\'s weekday', () => {
+    expect(isDealCurrentlyValid(baseDeal({ activeDays: [4] }), noonPktJan15).valid).toBe(true);
+  });
+
+  it('rejects a weekend-only deal on a Thursday', () => {
+    const result = isDealCurrentlyValid(baseDeal({ activeDays: [0, 6] }), noonPktJan15);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toMatch(/only runs on/i);
+  });
+
+  it('treats all seven days the same as every day', () => {
+    expect(isDealCurrentlyValid(baseDeal({ activeDays: [0, 1, 2, 3, 4, 5, 6] }), noonPktJan15).valid).toBe(true);
+  });
+
+  it('keeps a Saturday midnight deal live after midnight on Sunday', () => {
+    // 2026-01-18T01:00 PKT is a Sunday, inside a window that opened Saturday 23:00.
+    const sundayOneAmPkt = Date.parse('2026-01-17T20:00:00.000Z');
+    const saturdayNightDeal = baseDeal({ activeDays: [6], startTime: '23:00', endTime: '03:00' });
+    expect(isDealCurrentlyValid(saturdayNightDeal, sundayOneAmPkt).valid).toBe(true);
+  });
+
+  it('rejects that same deal later on Sunday, outside the window it opened in', () => {
+    // 2026-01-18T23:30 PKT — Sunday's own late night, which the deal never covers.
+    const sundayLatePkt = Date.parse('2026-01-18T18:30:00.000Z');
+    const saturdayNightDeal = baseDeal({ activeDays: [6], startTime: '23:00', endTime: '03:00' });
+    const result = isDealCurrentlyValid(saturdayNightDeal, sundayLatePkt);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toMatch(/only runs on/i);
+  });
+
   it('accepts a deal inside a same-day time window', () => {
     const result = isDealCurrentlyValid(baseDeal({ startTime: '11:00', endTime: '15:00' }), noonPktJan15);
     expect(result.valid).toBe(true);

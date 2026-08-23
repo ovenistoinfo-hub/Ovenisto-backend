@@ -70,6 +70,8 @@ export const dealSchema = z
     validTo: z.coerce.date().optional().nullable(),
     startTime: timeStr.optional().nullable(),
     endTime: timeStr.optional().nullable(),
+    // 0 = Sunday … 6 = Saturday. Empty = runs every day.
+    activeDays: z.array(z.coerce.number().int().min(0).max(6)).max(7).optional().default([]),
     components: z.array(componentSchema).optional().default([]),
     optionGroups: z.array(optionGroupSchema).optional().default([]),
     // percentage
@@ -91,6 +93,9 @@ export const dealSchema = z
   .superRefine((data, ctx) => {
     if (data.validTo && data.validTo < data.validFrom) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'End date cannot be before the start date', path: ['validTo'] });
+    }
+    if (data.activeDays && new Set(data.activeDays).size !== data.activeDays.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'A day cannot be listed twice', path: ['activeDays'] });
     }
     if ((data.startTime == null) !== (data.endTime == null)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Set both a start and end time, or neither', path: ['endTime'] });

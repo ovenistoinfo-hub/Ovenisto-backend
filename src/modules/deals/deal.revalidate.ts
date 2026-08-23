@@ -63,6 +63,7 @@ function toDealForPricing(deal: any): DealForPricing {
     validTo: deal.validTo,
     startTime: deal.startTime,
     endTime: deal.endTime,
+    activeDays: deal.activeDays ?? [],
     components: (deal.components ?? []).map((c: any) => ({
       id: c.id, menuItemId: c.menuItemId, variantId: c.variantId, qty: c.qty,
     })),

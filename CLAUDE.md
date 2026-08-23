@@ -223,6 +223,14 @@ plus a body explaining _why_ the change was made when that is not obvious.
   `where.outletId` shape, because it overlays the equally chain-wide `FoodMenuItem`/`FoodCategory`
   catalog. See `deal.controller.ts`'s top comment. Don't flag its missing `where.outletId` as a
   scoping leak when auditing against the outlet-scoping contract — it's a deliberate exception.
+- **`Deal.activeDays Int[]`** (0 = Sunday … 6 = Saturday, added 2026-08-23) gates which weekdays a
+  deal runs — empty means every day, which is what every row written before it holds, so the column
+  is backwards-compatible by construction. `deal.controller.ts`'s `normalizeActiveDays` sorts,
+  de-dupes and collapses a full seven back to `[]`, so "runs every day" has exactly one
+  representation. `isDealCurrentlyValid` checks it **before** the time window, and a window that
+  crosses midnight is credited to the day it opened on — a Saturday 23:00–03:00 deal is still the
+  Saturday deal at 01:00 on Sunday, not a Sunday deal nobody configured. The frontend's
+  `src/lib/deals.ts` mirrors all of this for display; the two must not drift.
 - **A deal varies by channel in one of two shapes, never both** — `Deal.dineInPrice`…`foodpandaPrice`
   override the flat bundle price and only apply to COMBO/OPTION_COMBO; `Deal.dineInPercent`…
   `foodpandaPercent` (added 2026-08-23) override a percentage and only apply to PERCENTAGE and

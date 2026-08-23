@@ -33,6 +33,22 @@ function toDateStr(d: Date | string): string {
   return typeof d === 'string' ? d.slice(0, 10) : d.toISOString().split('T')[0];
 }
 
+/** 0 = Sunday … 6 = Saturday, in Pakistan time. */
+function pktWeekday(nowMs: number): number {
+  return pktNow(nowMs).getUTCDay();
+}
+
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/** "Saturdays" / "Sat, Sun" / "Mon–Fri" — only used for the rejection message. */
+function formatActiveDays(days: number[]): string {
+  const sorted = [...new Set(days)].filter((d) => d >= 0 && d <= 6).sort((a, b) => a - b);
+  if (sorted.length === 0 || sorted.length === 7) return 'every day';
+  if (sorted.length === 1) return `${DAY_NAMES[sorted[0]]}s`;
+  return sorted.map((d) => DAY_SHORT[d]).join(', ');
+}
+
 function toMinutes(hhmm: string): number {
   const [h, m] = hhmm.split(':').map(Number);
   return h * 60 + m;
@@ -148,6 +164,8 @@ export interface DealForPricing extends ChannelPriced, ChannelDiscounted {
   validTo?: Date | string | null;
   startTime?: string | null;
   endTime?: string | null;
+  /** 0 = Sunday … 6 = Saturday. Empty (or all seven) = every day. */
+  activeDays?: number[];
   components?: DealComponentForPricing[];
   optionGroups?: DealOptionGroupForPricing[];
   // PERCENTAGE
@@ -188,6 +206,22 @@ export function isDealCurrentlyValid(deal: DealForPricing, nowMs: number = Date.
   if (deal.validTo) {
     const validToStr = toDateStr(deal.validTo);
     if (validToStr < today) return { valid: false, reason: 'This deal has expired' };
+  }
+
+  // Which weekday the deal is being asked about. A window that crosses midnight
+  // still belongs to the day it opened on, so a "Saturday 23:00–03:00" deal is
+  // the Saturday deal at 01:00 on Sunday — not a Sunday deal that was never set.
+  const activeDays = deal.activeDays ?? [];
+  if (activeDays.length > 0 && activeDays.length < 7) {
+    const inMidnightTail =
+      !!deal.startTime &&
+      !!deal.endTime &&
+      toMinutes(deal.startTime) > toMinutes(deal.endTime) &&
+      pktMinutesOfDay(nowMs) < toMinutes(deal.endTime);
+    const day = inMidnightTail ? (pktWeekday(nowMs) + 6) % 7 : pktWeekday(nowMs);
+    if (!activeDays.includes(day)) {
+      return { valid: false, reason: `This deal only runs on ${formatActiveDays(activeDays)}` };
+    }
   }
 
   if (deal.startTime && deal.endTime) {

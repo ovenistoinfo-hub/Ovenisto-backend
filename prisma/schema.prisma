@@ -1445,6 +1445,11 @@ model Deal {
   // (e.g. a "happy hour" percentage deal).
   startTime      String?   @db.VarChar(10)
   endTime        String?   @db.VarChar(10)
+  // Days of the week the deal runs, 0 = Sunday … 6 = Saturday. Empty = every
+  // day, so an existing row keeps behaving exactly as it did. A startTime/
+  // endTime window that crosses midnight belongs to the day it STARTED on —
+  // a Saturday 23:00–03:00 deal is still live at 01:00 on Sunday.
+  activeDays     Int[]
 
   // PERCENTAGE
   discountPercent      Decimal? @db.Decimal(5, 2)

@@ -171,6 +171,14 @@ function buildFlatFields(body: DealInput) {
   };
 }
 
+/** Sorted, de-duplicated weekday list. "All seven days" is stored as an empty
+ *  array — the same thing the column already means for every existing row, so
+ *  there is only one representation of "runs every day" to check against. */
+function normalizeActiveDays(days: number[] | undefined): number[] {
+  const unique = [...new Set(days ?? [])].filter((d) => Number.isInteger(d) && d >= 0 && d <= 6).sort((a, b) => a - b);
+  return unique.length === 7 ? [] : unique;
+}
+
 /** dineIn/takeAway/delivery/foodpanda discount-% overrides, cleared for the
  *  formats that sell at a flat bundle price — leaving a stale percentage on a
  *  combo would be dead data that a later format change could silently apply. */
@@ -315,6 +323,7 @@ export const createDeal = asyncHandler(async (req: Request, res: Response) => {
         validTo: body.validTo ?? null,
         startTime: body.startTime ?? null,
         endTime: body.endTime ?? null,
+        activeDays: normalizeActiveDays(body.activeDays),
         ...buildNestedWrite(body),
       },
       include: dealInclude,
@@ -372,6 +381,7 @@ export const updateDeal = asyncHandler(async (req: Request, res: Response) => {
           validTo: body.validTo ?? null,
           startTime: body.startTime ?? null,
           endTime: body.endTime ?? null,
+          activeDays: normalizeActiveDays(body.activeDays),
           ...buildNestedWrite(body),
         },
         include: dealInclude,
