@@ -7,7 +7,7 @@ import { authorize } from '../../middleware/authorize.js';
 import {
   getTableForSelfOrder, getSelfOrderMenu, createSelfOrder, getSelfOrderStatus,
   lookupCustomerByPhone, notifySelfOrderSessionEnded, getActiveOrdersForTable,
-  getSelfOrderDeals,
+  getSelfOrderDeals, validateSelfOrderCoupon,
 } from './self-order.controller.js';
 
 export const selfOrderRouter = Router();
@@ -44,6 +44,10 @@ selfOrderRouter.get('/table/:tableId', getTableForSelfOrder);
 selfOrderRouter.get('/menu', getSelfOrderMenu);
 selfOrderRouter.get('/deals', getSelfOrderDeals);
 selfOrderRouter.get('/customer-lookup', customerLookupLimiter, lookupCustomerByPhone);
+// Reuses the customer-lookup limiter — same threat shape: a public, no-JWT
+// endpoint that could otherwise be brute-forced (guessing codes here, instead
+// of sweeping phone numbers there).
+selfOrderRouter.post('/validate-coupon', customerLookupLimiter, validateSelfOrderCoupon);
 selfOrderRouter.post('/orders', createOrderLimiter, validateRequest({ body: createSelfOrderSchema }), createSelfOrder);
 selfOrderRouter.get('/orders/:id/status', getSelfOrderStatus);
 selfOrderRouter.get('/table/:tableId/active-orders', getActiveOrdersForTable);

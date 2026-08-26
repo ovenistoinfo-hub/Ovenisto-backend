@@ -12,6 +12,7 @@ import {
   matchesPinnedVariant,
   capFreeUnitPrice,
   resolveBogoSides,
+  computeOrderDiscount,
 } from '../deal.pricing.js';
 
 function baseDeal(overrides: Partial<DealForPricing> = {}): DealForPricing {
@@ -469,5 +470,48 @@ describe('resolveBogoSides', () => {
 
   it('returns empty sides for a deal that configures neither shape', () => {
     expect(resolveBogoSides(bogo({ bogoItems: [] }))).toEqual({ buy: [], get: [] });
+  });
+});
+
+describe('computeOrderDiscount', () => {
+  function orderDiscountDeal(overrides: Partial<DealForPricing> = {}): DealForPricing {
+    return baseDeal({ type: 'ORDER_DISCOUNT', price: null, ...overrides });
+  }
+
+  it('applies a flat discount (Promo Code) when the minimum spend is met', () => {
+    const deal = orderDiscountDeal({ flatDiscount: 200, minSpend: 0 });
+    expect(computeOrderDiscount(deal, 'Dine In', 1000)).toEqual({ valid: true, amount: 200 });
+  });
+
+  it('rejects when the subtotal is below minSpend (Minimum Spend deal)', () => {
+    const deal = orderDiscountDeal({ flatDiscount: 500, minSpend: 2500 });
+    const outcome = computeOrderDiscount(deal, 'Dine In', 2000);
+    expect(outcome.valid).toBe(false);
+    expect(outcome.reason).toMatch(/2500/);
+  });
+
+  it('applies once the subtotal clears minSpend', () => {
+    const deal = orderDiscountDeal({ flatDiscount: 500, minSpend: 2500 });
+    expect(computeOrderDiscount(deal, 'Dine In', 2500)).toEqual({ valid: true, amount: 500 });
+  });
+
+  it('supports a percentage discount for a Minimum Spend deal', () => {
+    const deal = orderDiscountDeal({ discountPercent: 10, minSpend: 1000 });
+    expect(computeOrderDiscount(deal, 'Dine In', 2000)).toEqual({ valid: true, amount: 200 });
+  });
+
+  it('honors a per-channel percent override', () => {
+    const deal = orderDiscountDeal({ discountPercent: 10, minSpend: 0, foodpandaPercent: 0 });
+    expect(computeOrderDiscount(deal, 'Foodpanda', 2000)).toEqual({ valid: true, amount: 0 });
+  });
+
+  it('never discounts more than the subtotal itself', () => {
+    const deal = orderDiscountDeal({ flatDiscount: 5000, minSpend: 0 });
+    expect(computeOrderDiscount(deal, 'Dine In', 300)).toEqual({ valid: true, amount: 300 });
+  });
+
+  it('treats a missing minSpend as no floor', () => {
+    const deal = orderDiscountDeal({ flatDiscount: 50 });
+    expect(computeOrderDiscount(deal, 'Dine In', 1).valid).toBe(true);
   });
 });

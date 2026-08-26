@@ -14,7 +14,8 @@ import { fifoDrawdown } from '../stock/dough.helpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
 import { emitSelfOrderEventForOrder } from '../self-order/self-order.socket.js';
-import { revalidateDealLines } from '../deals/deal.revalidate.js';
+import { revalidateDealLines, resolveOrderDiscount } from '../deals/deal.revalidate.js';
+import { round2 } from '../deals/deal.pricing.js';
 
 // ── Enum conversion helpers ──
 
@@ -297,13 +298,30 @@ export const getOrder = asyncHandler(async (req: Request, res: Response) => {
   res.json(ApiResponse.success(mapOrderOut(order)));
 });
 
+/** POST /api/orders/validate-coupon — lets POS preview a Promo Code / Minimum
+ *  Spend discount before the order is actually submitted. Uses the exact same
+ *  resolveOrderDiscount call createOrder makes; never trusts a client-sent
+ *  discount amount, only the subtotal the cart has built up so far. */
+export const validateCoupon = asyncHandler(async (req: Request, res: Response) => {
+  const { code, subtotal, orderType } = req.body;
+  if (subtotal === undefined || isNaN(Number(subtotal))) throw ApiError.badRequest('subtotal is required');
+  const scope = resolveOutletScope(req);
+  const result = await resolveOrderDiscount(prisma, {
+    enteredCode: code,
+    outletId: scope,
+    orderType,
+    subtotal: round2(Number(subtotal)),
+  });
+  res.json(ApiResponse.success(result));
+});
+
 /** POST /api/orders */
 export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   const {
     customerName, phone, customerId, type, subtotal, discount, tax, total,
     paymentMethod, tableNumber, deliveryAddress, riderId, staffName,
     items, isFutureSale, scheduledDate, scheduledTime, futureNotes, advancePayment,
-    isUrgent, customerType, orderSource, cashApproved,
+    isUrgent, customerType, orderSource, cashApproved, dealCode,
   } = req.body;
 
   if (!items?.length) throw ApiError.badRequest('Order must have at least one item');
@@ -327,6 +345,26 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   await validateOrderStock(prisma, scope, items);
   const revalidatedItems = await revalidateDealLines(prisma, type, items);
 
+  // Order-level discount (Promo Code / Minimum Spend) — the one part of this
+  // order's money that IS re-derived server-side (see this file's known gap
+  // note on item price/discount/total otherwise being trusted as sent).
+  // Basis is the item total as this endpoint already has it (client-trusted
+  // for plain lines, server-verified for deal lines above) — the same figure
+  // that becomes order.subtotal, not a fully independent re-price.
+  const itemsGross = revalidatedItems.reduce((s: number, i: any) => s + Number(i.price) * Number(i.qty), 0);
+  const itemsDiscount = revalidatedItems.reduce((s: number, i: any) => s + Number(i.discount ?? 0), 0);
+  const orderDiscount = await resolveOrderDiscount(prisma, {
+    enteredCode: dealCode,
+    outletId: scope,
+    orderType: type,
+    subtotal: round2(itemsGross - itemsDiscount),
+  });
+
+  // Only override the client-sent totals when a coupon/min-spend actually
+  // applied — every other order keeps behaving exactly as it did.
+  const finalDiscount = orderDiscount ? round2(itemsDiscount + orderDiscount.amount) : discount ?? 0;
+  const finalTotal = orderDiscount ? round2(itemsGross - finalDiscount + Number(tax ?? 0)) : total;
+
   const order = await prisma.order.create({
     data: {
       orderNumber,
@@ -335,10 +373,13 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
       customerName: customerName || null,
       phone: phone || null,
       type: prismaType as any,
-      subtotal: subtotal ?? 0,
-      discount: discount ?? 0,
+      subtotal: orderDiscount ? round2(itemsGross) : subtotal ?? 0,
+      discount: finalDiscount,
       tax: tax ?? 0,
-      total,
+      total: finalTotal,
+      appliedDealId: orderDiscount?.dealId ?? null,
+      appliedDealCode: orderDiscount?.code ?? null,
+      appliedDealName: orderDiscount?.dealName ?? null,
       status: prismaStatus as any,
       paymentMethod: paymentMethod || null,
       date: new Date(),
@@ -439,7 +480,7 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
   const {
     customerName, phone, type, status, subtotal, discount, tax, total,
     paymentMethod, tableNumber, deliveryAddress, riderId, staffName,
-    items, isUrgent, customerType, cashApproved,
+    items, isUrgent, customerType, cashApproved, dealCode,
   } = req.body;
 
   const dataToUpdate: any = {};
@@ -484,6 +525,28 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
     if (Array.isArray(items) && items.length > 0) {
       await tx.orderItem.deleteMany({ where: { orderId: id } });
       const revalidatedItems = await revalidateDealLines(tx, type ?? existing.type, items);
+
+      // Only touch the order-level discount when the caller explicitly sent
+      // `dealCode` (a string to apply, or null to clear) alongside the new
+      // items — an items-only edit (e.g. adding a plain item) that says
+      // nothing about the coupon must not silently drop an existing one.
+      if (dealCode !== undefined) {
+        const itemsGross = revalidatedItems.reduce((s: number, i: any) => s + Number(i.price) * Number(i.qty), 0);
+        const itemsDiscount = revalidatedItems.reduce((s: number, i: any) => s + Number(i.discount ?? 0), 0);
+        const orderDiscount = await resolveOrderDiscount(tx, {
+          enteredCode: dealCode,
+          outletId: scope ?? existing.outletId,
+          orderType: type ?? existing.type,
+          subtotal: round2(itemsGross - itemsDiscount),
+        });
+        dataToUpdate.subtotal = round2(itemsGross);
+        dataToUpdate.discount = orderDiscount ? round2(itemsDiscount + orderDiscount.amount) : round2(itemsDiscount);
+        dataToUpdate.total = round2(itemsGross - dataToUpdate.discount + Number(tax ?? existing.tax));
+        dataToUpdate.appliedDealId = orderDiscount?.dealId ?? null;
+        dataToUpdate.appliedDealCode = orderDiscount?.code ?? null;
+        dataToUpdate.appliedDealName = orderDiscount?.dealName ?? null;
+      }
+
       dataToUpdate.items = {
         create: revalidatedItems.map((item: any) => ({
           menuItemId: item.menuItemId || null,

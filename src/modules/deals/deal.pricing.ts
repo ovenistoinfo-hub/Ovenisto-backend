@@ -153,7 +153,7 @@ export interface BogoSideItem {
   qty: number;
 }
 
-export type DealTypeMember = 'COMBO' | 'OPTION_COMBO' | 'PERCENTAGE' | 'BUY_X_GET_Y';
+export type DealTypeMember = 'COMBO' | 'OPTION_COMBO' | 'PERCENTAGE' | 'BUY_X_GET_Y' | 'ORDER_DISCOUNT';
 
 export interface DealForPricing extends ChannelPriced, ChannelDiscounted {
   id: string;
@@ -184,6 +184,13 @@ export interface DealForPricing extends ChannelPriced, ChannelDiscounted {
   /** Pins the free side to one variant. Null = any variant, capped at the cheapest one's price. */
   getVariantId?: string | null;
   getQty?: number | null;
+  // ORDER_DISCOUNT
+  /** Whole-order discount floor — null/0 = no minimum spend required. */
+  minSpend?: number | null;
+  /** Flat Rs. off the order. Null = use discountPercent instead (Minimum
+   *  Spend deals only — a promo code, i.e. `code` set, is always flat). */
+  flatDiscount?: number | null;
+  code?: string | null;
 }
 
 export interface DealValidity {
@@ -412,6 +419,32 @@ export function capFreeUnitPrice(
   return Math.min(submittedUnitPrice, cheapestVariantPrice);
 }
 
+export interface OrderDiscountOutcome {
+  valid: boolean;
+  reason?: string;
+  /** Rounded to paisas, never more than `subtotal`. Present only when valid. */
+  amount?: number;
+}
+
+/** How much an ORDER_DISCOUNT deal takes off a whole order, given the order's
+ *  own (server-derived) subtotal. Callers check isDealCurrentlyValid and any
+ *  code match/outlet-eligibility themselves — same division of labour as
+ *  every other deal type in this file. Never trusts a client-sent amount. */
+export function computeOrderDiscount(
+  deal: DealForPricing,
+  orderType: string | undefined,
+  subtotal: number,
+): OrderDiscountOutcome {
+  const minSpend = deal.minSpend ?? 0;
+  if (subtotal < minSpend) {
+    return { valid: false, reason: `Spend at least Rs. ${minSpend} to use this offer` };
+  }
+  const amount = deal.flatDiscount != null
+    ? deal.flatDiscount
+    : subtotal * (resolveChannelPercent(deal, orderType, deal.discountPercent ?? 0) / 100);
+  return { valid: true, amount: round2(Math.min(Math.max(0, amount), subtotal)) };
+}
+
 export function isItemEligibleForDiscount(deal: DealForPricing, item: CategorizedItem): boolean {
   const items = deal.applicableItems ?? [];
   const categories = deal.applicableCategories ?? [];
@@ -426,6 +459,7 @@ const DEAL_TYPE_TO_WIRE: Record<string, string> = {
   OPTION_COMBO: 'option_combo',
   PERCENTAGE: 'percentage',
   BUY_X_GET_Y: 'buy_x_get_y',
+  ORDER_DISCOUNT: 'order_discount',
 };
 
 /** Decimal → Number + enum-member → wire-string mapping for a Deal record
@@ -447,6 +481,8 @@ export function mapDealOut(deal: any): any {
     deliveryPercent: deal.deliveryPercent != null ? Number(deal.deliveryPercent) : null,
     foodpandaPercent: deal.foodpandaPercent != null ? Number(deal.foodpandaPercent) : null,
     discountPercent: deal.discountPercent != null ? Number(deal.discountPercent) : null,
+    minSpend: deal.minSpend != null ? Number(deal.minSpend) : null,
+    flatDiscount: deal.flatDiscount != null ? Number(deal.flatDiscount) : null,
     components: Array.isArray(deal.components)
       ? deal.components.map((c: any) => ({ ...c }))
       : undefined,

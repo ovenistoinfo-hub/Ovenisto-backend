@@ -861,6 +861,12 @@ model Order {
   acceptedById    String?
   acceptedByName  String?     @db.VarChar(100)
   rejectionReason String?
+  // Order-level discount (ORDER_DISCOUNT deal — promo code or minimum-spend),
+  // never a formal relation: same reasoning as OrderItem.dealId, a deleted
+  // deal must not break historical orders/receipts.
+  appliedDealId   String?
+  appliedDealCode String?     @db.VarChar(20)
+  appliedDealName String?     @db.VarChar(100)
   settlementId           String?
   cashierSettlementId    String?  // tracks cashier's advance portion settlement
   riderSettlementId      String?  // tracks rider's COD portion settlement
@@ -892,6 +898,7 @@ model Order {
   @@index([customerId])
   @@index([riderId])
   @@index([outletId, createdAt])
+  @@index([appliedDealId])
   @@map("orders")
 }
 
@@ -1406,10 +1413,11 @@ model Shift {
 // =============================================
 
 enum DealType {
-  COMBO        @map("combo")
-  OPTION_COMBO @map("option_combo")
-  PERCENTAGE   @map("percentage")
-  BUY_X_GET_Y  @map("buy_x_get_y")
+  COMBO          @map("combo")
+  OPTION_COMBO   @map("option_combo")
+  PERCENTAGE     @map("percentage")
+  BUY_X_GET_Y    @map("buy_x_get_y")
+  ORDER_DISCOUNT @map("order_discount")
 }
 
 model Deal {
@@ -1474,6 +1482,17 @@ model Deal {
   getItemId    String?
   getVariantId String?
   getQty       Int?
+
+  // ORDER_DISCOUNT — a whole-order discount, not tied to specific items.
+  // `code` (the column above) doubles as the mechanism switch: set = a
+  // customer-entered promo code (e.g. OVEN20); null = auto-applies once
+  // `minSpend` is met (a Minimum Spend deal). `minSpend` null/0 = no floor.
+  // Exactly one of flatDiscount/discountPercent is set — flatDiscount is Rs.
+  // off, discountPercent (the column above, shared with PERCENTAGE) is % off.
+  // A promo code (code set) is flat-only by product decision; a Minimum
+  // Spend deal (code null) may use either — see deal.schema.ts.
+  minSpend     Decimal? @db.Decimal(10, 2)
+  flatDiscount Decimal? @db.Decimal(10, 2)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

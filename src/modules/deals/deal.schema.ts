@@ -51,7 +51,7 @@ export const dealSchema = z
     code: z.string().trim().min(1).max(20).optional().nullable(),
     description: z.string().max(1000).optional().nullable(),
     image: z.string().max(2000).optional().nullable(),
-    type: z.enum(['combo', 'option_combo', 'percentage', 'buy_x_get_y']),
+    type: z.enum(['combo', 'option_combo', 'percentage', 'buy_x_get_y', 'order_discount']),
     // Flat bundle price — only required for combo/option_combo.
     price: z.coerce.number().positive('Deal price must be greater than 0').optional().nullable(),
     dineInPrice: z.coerce.number().min(0).optional().nullable(),
@@ -89,6 +89,9 @@ export const dealSchema = z
     getItemId: z.string().uuid().optional().nullable(),
     getVariantId: z.string().uuid().optional().nullable(),
     getQty: z.coerce.number().int().min(1).max(50).optional().nullable(),
+    // order_discount
+    minSpend: z.coerce.number().min(0).optional().nullable(),
+    flatDiscount: z.coerce.number().positive('Discount amount must be greater than 0').optional().nullable(),
   })
   .superRefine((data, ctx) => {
     if (data.validTo && data.validTo < data.validFrom) {
@@ -133,6 +136,25 @@ export const dealSchema = z
       // Whether a variant is *required* depends on whether the chosen item has
       // any — that needs the menu records, so it is checked in the controller's
       // assertBuyXGetYVariants, not here.
+    }
+
+    if (data.type === 'order_discount') {
+      const hasFlat = data.flatDiscount != null;
+      const hasPercent = data.discountPercent != null;
+      if (hasFlat === hasPercent) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Set either a flat Rs. amount or a percentage off — not both', path: ['flatDiscount'] });
+      }
+      if (data.code) {
+        // Promo code: customer enters it, flat amount off only.
+        if (hasPercent) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'A promo code can only be a flat Rs. amount off', path: ['discountPercent'] });
+        }
+      } else {
+        // Minimum Spend: auto-applies, needs a threshold to gate on.
+        if (data.minSpend == null || data.minSpend <= 0) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Set a minimum spend, or add a code to make this a promo code instead', path: ['minSpend'] });
+        }
+      }
     }
   });
 

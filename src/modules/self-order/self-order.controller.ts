@@ -16,8 +16,8 @@ import { emitOrderEvent } from '../../socket.js';
 import { generateOrderNumber, mapOrderOut } from '../order/order.controller.js';
 import { emitSelfOrderTableEvent, clearSelfOrderTableState } from './self-order.socket.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
-import { revalidateDealLines } from '../deals/deal.revalidate.js';
-import { isDealCurrentlyValid, mapDealOutPublic } from '../deals/deal.pricing.js';
+import { revalidateDealLines, resolveOrderDiscount } from '../deals/deal.revalidate.js';
+import { isDealCurrentlyValid, mapDealOutPublic, round2 } from '../deals/deal.pricing.js';
 
 /** GET /api/self-order/table/:tableId */
 export const getTableForSelfOrder = asyncHandler(async (req: Request, res: Response) => {
@@ -142,10 +142,31 @@ export const getSelfOrderDeals = asyncHandler(async (req: Request, res: Response
 });
 
 /** POST /api/self-order/orders */
+/** POST /api/self-order/validate-coupon — lets the cart preview a Promo Code /
+ *  Minimum Spend discount before the order is submitted. Public/unauthenticated
+ *  like the rest of this module; outlet is re-derived from the scanned table,
+ *  never trusted from the client. */
+export const validateSelfOrderCoupon = asyncHandler(async (req: Request, res: Response) => {
+  const { tableId, code, subtotal } = req.body;
+  if (!tableId) throw ApiError.badRequest('tableId is required');
+  if (subtotal === undefined || isNaN(Number(subtotal))) throw ApiError.badRequest('subtotal is required');
+
+  const table = await prisma.restaurantTable.findUnique({ where: { id: tableId } });
+  if (!table) throw ApiError.notFound('Table not found');
+
+  const result = await resolveOrderDiscount(prisma, {
+    enteredCode: code,
+    outletId: table.outletId,
+    orderType: 'Dine In',
+    subtotal: round2(Number(subtotal)),
+  });
+  res.json(ApiResponse.success(result));
+});
+
 export const createSelfOrder = asyncHandler(async (req: Request, res: Response) => {
   const {
     tableId, customerName, customerPhone, guestCount,
-    items, specialInstructions,
+    items, specialInstructions, dealCode,
   } = req.body;
 
   if (!tableId) throw ApiError.badRequest('tableId is required');
@@ -255,8 +276,20 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
     itemsData[0].notes = specialInstructions;
   }
 
-  const computedTax = Math.round(computedSubtotal * (taxRatePercent / 100));
-  const computedTotal = computedSubtotal + computedTax;
+  // Order-level discount (Promo Code / Minimum Spend) — fully server-derived,
+  // same as everything else in this handler: self-order is public/
+  // unauthenticated, so a client-sent discount amount is never trusted.
+  const orderDiscount = await resolveOrderDiscount(prisma, {
+    enteredCode: dealCode,
+    outletId: table.outletId,
+    orderType: 'Dine In', // self-order is always dine-in
+    subtotal: round2(computedSubtotal),
+  });
+  const orderDiscountAmount = orderDiscount?.amount ?? 0;
+  const taxableSubtotal = round2(computedSubtotal - orderDiscountAmount);
+
+  const computedTax = Math.round(taxableSubtotal * (taxRatePercent / 100));
+  const computedTotal = taxableSubtotal + computedTax;
 
   // Find-or-link a Customer record by phone. The entry gate's name-conflict
   // dialog (SelfOrder.tsx) already asks the customer to confirm which name to
@@ -312,9 +345,12 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
       customerId: customer.id,
       type: 'SELF_ORDER',
       subtotal: computedSubtotal,
-      discount: 0,
+      discount: orderDiscountAmount,
       tax: computedTax,
       total: computedTotal,
+      appliedDealId: orderDiscount?.dealId ?? null,
+      appliedDealCode: orderDiscount?.code ?? null,
+      appliedDealName: orderDiscount?.dealName ?? null,
       status: 'PENDING',
       paymentMethod: 'Pending',
       date: new Date(),
