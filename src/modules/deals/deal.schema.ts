@@ -144,12 +144,7 @@ export const dealSchema = z
       if (hasFlat === hasPercent) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Set either a flat Rs. amount or a percentage off — not both', path: ['flatDiscount'] });
       }
-      if (data.code) {
-        // Promo code: customer enters it, flat amount off only.
-        if (hasPercent) {
-          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'A promo code can only be a flat Rs. amount off', path: ['discountPercent'] });
-        }
-      } else {
+      if (!data.code) {
         // Minimum Spend: auto-applies, needs a threshold to gate on.
         if (data.minSpend == null || data.minSpend <= 0) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Set a minimum spend, or add a code to make this a promo code instead', path: ['minSpend'] });

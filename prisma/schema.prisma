@@ -1489,8 +1489,7 @@ model Deal {
   // `minSpend` is met (a Minimum Spend deal). `minSpend` null/0 = no floor.
   // Exactly one of flatDiscount/discountPercent is set — flatDiscount is Rs.
   // off, discountPercent (the column above, shared with PERCENTAGE) is % off.
-  // A promo code (code set) is flat-only by product decision; a Minimum
-  // Spend deal (code null) may use either — see deal.schema.ts.
+  // Both mechanisms (Promo Code and Minimum Spend) may use either.
   minSpend     Decimal? @db.Decimal(10, 2)
   flatDiscount Decimal? @db.Decimal(10, 2)
 
