@@ -361,9 +361,15 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   });
 
   // Only override the client-sent totals when a coupon/min-spend actually
-  // applied — every other order keeps behaving exactly as it did.
-  const finalDiscount = orderDiscount ? round2(itemsDiscount + orderDiscount.amount) : discount ?? 0;
-  const finalTotal = orderDiscount ? round2(itemsGross - finalDiscount + Number(tax ?? 0)) : total;
+  // applied — every other order keeps behaving exactly as it did. When one
+  // does, it STACKS with whatever order-level discount the client already
+  // sent (POS's own manual "extra discount" field) rather than replacing
+  // it — dropping a staff-entered discount because a Minimum Spend deal
+  // also happened to match would silently undercharge or overcharge the
+  // customer relative to what the staff intended.
+  const netItemsSubtotal = round2(itemsGross - itemsDiscount);
+  const finalDiscount = orderDiscount ? round2((discount ?? 0) + orderDiscount.amount) : discount ?? 0;
+  const finalTotal = orderDiscount ? round2(netItemsSubtotal - finalDiscount + Number(tax ?? 0)) : total;
 
   const order = await prisma.order.create({
     data: {
@@ -373,7 +379,7 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
       customerName: customerName || null,
       phone: phone || null,
       type: prismaType as any,
-      subtotal: orderDiscount ? round2(itemsGross) : subtotal ?? 0,
+      subtotal: orderDiscount ? netItemsSubtotal : subtotal ?? 0,
       discount: finalDiscount,
       tax: tax ?? 0,
       total: finalTotal,
@@ -533,15 +539,19 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
       if (dealCode !== undefined) {
         const itemsGross = revalidatedItems.reduce((s: number, i: any) => s + Number(i.price) * Number(i.qty), 0);
         const itemsDiscount = revalidatedItems.reduce((s: number, i: any) => s + Number(i.discount ?? 0), 0);
+        const netItemsSubtotal = round2(itemsGross - itemsDiscount);
         const orderDiscount = await resolveOrderDiscount(tx, {
           enteredCode: dealCode,
           outletId: scope ?? existing.outletId,
           orderType: type ?? existing.type,
-          subtotal: round2(itemsGross - itemsDiscount),
+          subtotal: netItemsSubtotal,
         });
-        dataToUpdate.subtotal = round2(itemsGross);
-        dataToUpdate.discount = orderDiscount ? round2(itemsDiscount + orderDiscount.amount) : round2(itemsDiscount);
-        dataToUpdate.total = round2(itemsGross - dataToUpdate.discount + Number(tax ?? existing.tax));
+        // Stacks with whatever manual order-level discount the client sent
+        // (POS's own "extra discount" field) — never replaces it.
+        const manualDiscount = Number(discount ?? 0);
+        dataToUpdate.subtotal = netItemsSubtotal;
+        dataToUpdate.discount = orderDiscount ? round2(manualDiscount + orderDiscount.amount) : round2(manualDiscount);
+        dataToUpdate.total = round2(netItemsSubtotal - dataToUpdate.discount + Number(tax ?? existing.tax));
         dataToUpdate.appliedDealId = orderDiscount?.dealId ?? null;
         dataToUpdate.appliedDealCode = orderDiscount?.code ?? null;
         dataToUpdate.appliedDealName = orderDiscount?.dealName ?? null;
