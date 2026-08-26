@@ -887,6 +887,7 @@ model Order {
   cancellationRequests OrderCancellationRequest[]
   staffPenalties       StaffPenalty[]
   kitchenProgress      OrderKitchenProgress[]
+  kitchenDealProgress  OrderKitchenDealProgress[]
   settlement           CashSettlement?        @relation(fields: [settlementId], references: [id])
   cashierSettlement    CashSettlement?        @relation("CashierSettledOrders", fields: [cashierSettlementId], references: [id])
   riderSettlement      CashSettlement?        @relation("RiderSettledOrders", fields: [riderSettlementId], references: [id])
@@ -919,6 +920,14 @@ model OrderItem {
   dealId      String? // set when this line was generated from a Deal
   dealName    String?  @db.VarChar(100)
   dealLineId  String? // groups the multiple OrderItem rows that came from one deal selection
+  // Stable per-dish key within one deal redemption (`${dealLineId}#${ordinal}`), server-computed
+  // from submission order — never client-trusted. Lets the kitchen accept/prepare/ready each dish
+  // of a deal independently instead of the whole redemption together. Survives an order edit
+  // (items are deleted + recreated) because it's derived from dealLineId, which the frontend
+  // preserves verbatim when an order is reloaded into the cart — unlike this row's own id.
+  // Null for a plain (non-deal) item, which keeps using the shared per-kitchen OrderKitchenProgress
+  // ticket exactly as before.
+  dealItemKey String?  @db.VarChar(140)
 
   // Relations
   order    Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -942,6 +951,26 @@ model OrderKitchenProgress {
 
   @@unique([orderId, kitchenId])
   @@map("order_kitchen_progress")
+}
+
+// Per-dish kitchen status for a deal redemption's items — a sibling to
+// OrderKitchenProgress (which still tracks every non-deal item as one shared
+// ticket per order+kitchen, unchanged). Keyed by OrderItem.dealItemKey rather
+// than an OrderItem id/FK because updateOrder deletes and recreates every
+// OrderItem row on any items edit; dealItemKey survives that round-trip.
+model OrderKitchenDealProgress {
+  id          String   @id @default(uuid())
+  orderId     String
+  kitchenId   String
+  dealItemKey String   @db.VarChar(140)
+  status      String   @default("pending") @db.VarChar(20) // pending | preparing | ready
+  updatedAt   DateTime @updatedAt
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  kitchen Kitchen @relation(fields: [kitchenId], references: [id])
+
+  @@unique([orderId, kitchenId, dealItemKey])
+  @@map("order_kitchen_deal_progress")
 }
 
 model OrderModificationLog {
@@ -1060,6 +1089,7 @@ model Kitchen {
   status             String   @default("active") @db.VarChar(20)
 
   orderProgress OrderKitchenProgress[]
+  orderDealProgress OrderKitchenDealProgress[]
 
   @@map("kitchens")
 }

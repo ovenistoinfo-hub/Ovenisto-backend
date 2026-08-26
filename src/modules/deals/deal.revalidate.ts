@@ -128,6 +128,26 @@ function cheapestUnitPrice(menuItem: any, orderType: string | undefined): number
  * NOT re-price ordinary items (see order.controller.ts's createOrder for why
  * that's a separate, larger, descoped problem).
  */
+/** Assigns each deal-tagged item a stable per-dish key within its dealLineId
+ *  (`${dealLineId}#${ordinal}`), computed from submission order — never
+ *  client-trusted. This is what lets a kitchen accept/prepare/ready each dish
+ *  of a deal redemption independently instead of the whole redemption
+ *  together (see OrderKitchenDealProgress). It survives an order edit even
+ *  though updateOrder deletes and recreates every OrderItem row, because it's
+ *  derived from dealLineId — which the frontend preserves verbatim when an
+ *  existing order is reloaded into the cart for editing, unlike a row's own
+ *  id. Plain (non-deal) items get a null key and keep using the existing
+ *  shared per-kitchen OrderKitchenProgress ticket, unchanged. */
+export function withDealItemKeys(items: any[]): any[] {
+  const counters = new Map<string, number>();
+  return items.map((item) => {
+    if (!item.dealId || !item.dealLineId) return { ...item, dealItemKey: null };
+    const n = counters.get(item.dealLineId) ?? 0;
+    counters.set(item.dealLineId, n + 1);
+    return { ...item, dealItemKey: `${item.dealLineId}#${n}` };
+  });
+}
+
 export async function revalidateDealLines(
   tx: Prisma.TransactionClient | typeof prisma,
   orderType: string | undefined,
