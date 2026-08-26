@@ -14,7 +14,7 @@ import { fifoDrawdown } from '../stock/dough.helpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
 import { emitSelfOrderEventForOrder } from '../self-order/self-order.socket.js';
-import { revalidateDealLines, resolveOrderDiscount } from '../deals/deal.revalidate.js';
+import { revalidateDealLines, resolveOrderDiscount, withDealItemKeys } from '../deals/deal.revalidate.js';
 import { round2 } from '../deals/deal.pricing.js';
 
 // ── Enum conversion helpers ──
@@ -192,6 +192,14 @@ export function mapOrderOut(order: any): any {
       status: p.status,
       updatedAt: p.updatedAt,
     })),
+    // Per-dish status for deal redemptions — a sibling to kitchenProgress
+    // above, which still covers every non-deal item as one shared ticket.
+    kitchenDealProgress: (order.kitchenDealProgress ?? []).map((p: any) => ({
+      kitchenId: p.kitchenId,
+      dealItemKey: p.dealItemKey,
+      status: p.status,
+      updatedAt: p.updatedAt,
+    })),
   };
 }
 
@@ -207,6 +215,43 @@ export async function generateOrderNumber(): Promise<string> {
     n++;
   }
   return `ORD-${Date.now().toString().slice(-6)}`;
+}
+
+/** Seeds the shared per-kitchen OrderKitchenProgress ticket for every non-deal
+ *  item's matching kitchen — unchanged from before deal items got their own
+ *  tracking — and reports whether ANY item, deal or plain, matched an active
+ *  kitchen at all, so the caller can skip the kitchen pipeline entirely when
+ *  nothing needs cooking. A deal item's own OrderKitchenDealProgress row is
+ *  NOT created here; it's created lazily the first time a kitchen actually
+ *  touches that specific dish (updateOrderKitchenStatus), the same
+ *  self-healing pattern the shared ticket already used for historic orders. */
+export async function seedKitchenProgress(
+  db: Prisma.TransactionClient | typeof prisma,
+  orderId: string,
+  items: { dealId?: string | null; menuItem?: { category?: { name?: string | null } | null } | null }[],
+): Promise<boolean> {
+  const activeKitchens = await (db as typeof prisma).kitchen.findMany({ where: { status: 'active' } });
+  const matchedKitchenIds = new Set<string>();
+  let hasDealKitchenWork = false;
+
+  for (const item of items) {
+    const categoryName = item.menuItem?.category?.name;
+    if (!categoryName) continue;
+    for (const kitch of activeKitchens) {
+      if (Array.isArray(kitch.assignedCategories) && kitch.assignedCategories.includes(categoryName)) {
+        if (item.dealId) hasDealKitchenWork = true;
+        else matchedKitchenIds.add(kitch.id);
+      }
+    }
+  }
+
+  if (matchedKitchenIds.size > 0) {
+    await (db as typeof prisma).orderKitchenProgress.createMany({
+      data: Array.from(matchedKitchenIds).map((kitchenId) => ({ orderId, kitchenId, status: 'pending' })),
+    });
+  }
+
+  return matchedKitchenIds.size > 0 || hasDealKitchenWork;
 }
 
 // ============================================================
@@ -264,6 +309,7 @@ export const getOrders = asyncHandler(async (req: Request, res: Response) => {
           select: { id: true, status: true, reason: true, createdAt: true },
         },
         kitchenProgress: true,
+        kitchenDealProgress: true,
       },
     }),
     prisma.order.count({ where }),
@@ -290,6 +336,7 @@ export const getOrder = asyncHandler(async (req: Request, res: Response) => {
       },
       modifications: { orderBy: { timestamp: 'desc' } },
       kitchenProgress: true,
+      kitchenDealProgress: true,
     },
   });
   if (!order) throw ApiError.notFound('Order not found');
@@ -343,7 +390,7 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
     : (orderSource === 'waiter' ? false : true);
 
   await validateOrderStock(prisma, scope, items);
-  const revalidatedItems = await revalidateDealLines(prisma, type, items);
+  const revalidatedItems = withDealItemKeys(await revalidateDealLines(prisma, type, items));
 
   // Order-level discount (Promo Code / Minimum Spend) — the one part of this
   // order's money that IS re-derived server-side (see this file's known gap
@@ -419,6 +466,7 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
           dealId: item.dealId ?? null,
           dealName: item.dealName ?? null,
           dealLineId: item.dealLineId ?? null,
+          dealItemKey: item.dealItemKey ?? null,
         })),
       },
     },
@@ -434,30 +482,8 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   });
 
   if (!isFutureSale) {
-    // Resolve which active kitchens have at least one matching item, using the same
-    // category-matching rule Kitchen Panel already applies today. If none match, there's
-    // nothing to cook — skip the kitchen pipeline and mark the order ready immediately.
-    const activeKitchens = await prisma.kitchen.findMany({ where: { status: 'active' } });
-    const matchedKitchenIds = new Set<string>();
-    for (const item of order.items as any[]) {
-      const categoryName = item.menuItem?.category?.name;
-      if (!categoryName) continue;
-      for (const kitch of activeKitchens) {
-        if (Array.isArray(kitch.assignedCategories) && kitch.assignedCategories.includes(categoryName)) {
-          matchedKitchenIds.add(kitch.id);
-        }
-      }
-    }
-
-    if (matchedKitchenIds.size > 0) {
-      await prisma.orderKitchenProgress.createMany({
-        data: Array.from(matchedKitchenIds).map((kitchenId) => ({
-          orderId: order.id,
-          kitchenId,
-          status: 'pending',
-        })),
-      });
-    } else {
+    const hasKitchenWork = await seedKitchenProgress(prisma, order.id, order.items as any[]);
+    if (!hasKitchenWork) {
       await prisma.order.update({ where: { id: order.id }, data: { status: 'READY' as any } });
       order.status = 'READY' as any;
     }
@@ -530,7 +556,7 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
 
     if (Array.isArray(items) && items.length > 0) {
       await tx.orderItem.deleteMany({ where: { orderId: id } });
-      const revalidatedItems = await revalidateDealLines(tx, type ?? existing.type, items);
+      const revalidatedItems = withDealItemKeys(await revalidateDealLines(tx, type ?? existing.type, items));
 
       // Only touch the order-level discount when the caller explicitly sent
       // `dealCode` (a string to apply, or null to clear) alongside the new
@@ -572,6 +598,7 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
           dealId: item.dealId ?? null,
           dealName: item.dealName ?? null,
           dealLineId: item.dealLineId ?? null,
+          dealItemKey: item.dealItemKey ?? null,
         })),
       };
     }
@@ -1022,6 +1049,7 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
           },
         },
         kitchenProgress: true,
+        kitchenDealProgress: true,
       },
     });
 
@@ -1029,6 +1057,12 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
 
     if (prismaStatus === 'READY' || prismaStatus === 'COMPLETED') {
       await tx.orderKitchenProgress.updateMany({
+        where: { orderId: id },
+        data: { status: 'ready' },
+      });
+      // A manual whole-order override (e.g. a waiter force-completing the order)
+      // fast-forwards every deal dish's own ticket too, same as the shared one above.
+      await tx.orderKitchenDealProgress.updateMany({
         where: { orderId: id },
         data: { status: 'ready' },
       });
@@ -1054,10 +1088,15 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
   res.json(ApiResponse.success(statusUpdated, 'Order status updated'));
 });
 
-/** PUT /api/orders/:id/kitchen-status — one kitchen updates its own progress on an order */
+/** PUT /api/orders/:id/kitchen-status — one kitchen updates its own progress on an
+ *  order. With no `dealItemKey`, this targets the order's shared per-kitchen ticket
+ *  (every non-deal item at this kitchen, moved together — unchanged behavior). With
+ *  a `dealItemKey`, it targets one specific dish from a deal redemption instead, so
+ *  the kitchen can accept/prepare/ready each dish of a deal independently rather
+ *  than the whole redemption at once. */
 export const updateOrderKitchenStatus = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { kitchenId, status } = req.body;
+  const { kitchenId, status, dealItemKey } = req.body;
   if (!kitchenId) throw ApiError.badRequest('kitchenId is required');
   if (!status || !['preparing', 'ready'].includes(status)) {
     throw ApiError.badRequest('status must be one of: preparing, ready');
@@ -1065,7 +1104,11 @@ export const updateOrderKitchenStatus = asyncHandler(async (req: Request, res: R
 
   const existing = await prisma.order.findUnique({
     where: { id },
-    include: { items: true, kitchenProgress: true },
+    include: {
+      items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
+      kitchenProgress: true,
+      kitchenDealProgress: true,
+    },
   });
   if (!existing) throw ApiError.notFound('Order not found');
   const scope = resolveOutletScope(req);
@@ -1075,63 +1118,94 @@ export const updateOrderKitchenStatus = asyncHandler(async (req: Request, res: R
     throw ApiError.badRequest('Cannot change order status while a cancellation request is pending approval');
   }
 
-  let progress = existing.kitchenProgress.find((p) => p.kitchenId === kitchenId);
-  if (!progress) {
-    // Self-healing: if an order was created before progress rows were populated
-    // (e.g. historic self-orders), dynamically create the missing progress row.
-    const kitchenObj = await prisma.kitchen.findUnique({ where: { id: kitchenId } });
-    if (!kitchenObj) throw ApiError.notFound('Kitchen not found');
+  let sharedProgressId: string | null = null;
+  let dealProgressId: string | null = null;
 
-    progress = await prisma.orderKitchenProgress.create({
-      data: {
-        orderId: id,
-        kitchenId,
-        status: 'pending',
-      },
-    });
-    existing.kitchenProgress.push(progress);
+  if (dealItemKey) {
+    const ownsKey = existing.items.some((i: any) => i.dealId && i.dealItemKey === dealItemKey);
+    if (!ownsKey) throw ApiError.badRequest('This deal item does not belong to this order');
+
+    let dealProgress = existing.kitchenDealProgress.find(
+      (p) => p.kitchenId === kitchenId && p.dealItemKey === dealItemKey,
+    );
+    if (!dealProgress) {
+      const kitchenObj = await prisma.kitchen.findUnique({ where: { id: kitchenId } });
+      if (!kitchenObj) throw ApiError.notFound('Kitchen not found');
+
+      dealProgress = await prisma.orderKitchenDealProgress.create({
+        data: { orderId: id, kitchenId, dealItemKey, status: 'pending' },
+      });
+      existing.kitchenDealProgress.push(dealProgress);
+    }
+    dealProgressId = dealProgress.id;
+  } else {
+    let sharedProgress = existing.kitchenProgress.find((p) => p.kitchenId === kitchenId);
+    if (!sharedProgress) {
+      // Self-healing: if an order was created before progress rows were populated
+      // (e.g. historic self-orders), dynamically create the missing progress row.
+      const kitchenObj = await prisma.kitchen.findUnique({ where: { id: kitchenId } });
+      if (!kitchenObj) throw ApiError.notFound('Kitchen not found');
+
+      sharedProgress = await prisma.orderKitchenProgress.create({
+        data: { orderId: id, kitchenId, status: 'pending' },
+      });
+      existing.kitchenProgress.push(sharedProgress);
+    }
+    sharedProgressId = sharedProgress.id;
   }
 
   const activeKitchens = await prisma.kitchen.findMany({ where: { status: 'active' } });
 
-  // Map each kitchen's status after this update:
-  const getKitchenStatusAfter = (kId: string): string => {
-    if (kId === kitchenId) return status;
+  // Resolves what a shared (non-deal) ticket's status would be after this update.
+  const sharedStatusAfter = (kId: string): string => {
+    if (!dealItemKey && kId === kitchenId) return status;
     const p = existing.kitchenProgress.find((row) => row.kitchenId === kId);
     return p ? p.status : 'pending';
   };
+  // Resolves what one deal dish's own ticket would be after this update.
+  const dealStatusAfter = (kId: string, key: string): string => {
+    if (dealItemKey && key === dealItemKey && kId === kitchenId) return status;
+    const p = existing.kitchenDealProgress.find((row) => row.kitchenId === kId && row.dealItemKey === key);
+    return p ? p.status : 'pending';
+  };
 
-  // An order is READY automatically when all items' assigned kitchens are 'ready'
+  // An order is READY automatically once every item's assigned kitchen(s) are
+  // 'ready' — via the shared ticket for a plain item, or that dish's own ticket
+  // for a deal item.
   let allReadyAfter = status === 'ready';
   if (allReadyAfter && existing.items.length > 0) {
     for (const item of existing.items as any[]) {
-      const catName = item.categoryName || item.menuItem?.category?.name;
+      const catName = item.menuItem?.category?.name;
       if (!catName) continue;
       const assigned = activeKitchens.filter(
         (k) => Array.isArray(k.assignedCategories) && k.assignedCategories.includes(catName)
       );
-      if (assigned.length > 0) {
-        const itemReady = assigned.every((k) => getKitchenStatusAfter(k.id) === 'ready');
-        if (!itemReady) {
-          allReadyAfter = false;
-          break;
-        }
+      if (assigned.length === 0) continue;
+
+      const itemReady = item.dealId && item.dealItemKey
+        ? assigned.every((k) => dealStatusAfter(k.id, item.dealItemKey) === 'ready')
+        : assigned.every((k) => sharedStatusAfter(k.id) === 'ready');
+      if (!itemReady) {
+        allReadyAfter = false;
+        break;
       }
     }
   }
 
   const anyStartedAfter = status === 'preparing' || status === 'ready'
-    || existing.kitchenProgress.some((p) => p.status === 'preparing' || p.status === 'ready');
+    || existing.kitchenProgress.some((p) => p.status === 'preparing' || p.status === 'ready')
+    || existing.kitchenDealProgress.some((p) => p.status === 'preparing' || p.status === 'ready');
 
   let newPrismaStatus = existing.status;
   if (allReadyAfter) newPrismaStatus = 'READY' as any;
   else if (anyStartedAfter && (existing.status === 'PENDING' || existing.status === 'SCHEDULED')) newPrismaStatus = 'PREPARING' as any;
 
   const order = await prisma.$transaction(async (tx) => {
-    await tx.orderKitchenProgress.update({
-      where: { id: progress.id },
-      data: { status },
-    });
+    if (dealProgressId) {
+      await tx.orderKitchenDealProgress.update({ where: { id: dealProgressId }, data: { status } });
+    } else if (sharedProgressId) {
+      await tx.orderKitchenProgress.update({ where: { id: sharedProgressId }, data: { status } });
+    }
 
     const needsOrderUpdate = newPrismaStatus !== existing.status;
     const updated = needsOrderUpdate
@@ -1141,6 +1215,7 @@ export const updateOrderKitchenStatus = asyncHandler(async (req: Request, res: R
           include: {
             items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
             kitchenProgress: true,
+            kitchenDealProgress: true,
           },
         })
       : await tx.order.findUniqueOrThrow({
@@ -1148,6 +1223,7 @@ export const updateOrderKitchenStatus = asyncHandler(async (req: Request, res: R
           include: {
             items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
             kitchenProgress: true,
+            kitchenDealProgress: true,
           },
         });
 
@@ -1194,6 +1270,7 @@ export const acceptSelfOrder = asyncHandler(async (req: Request, res: Response) 
     include: {
       items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
       kitchenProgress: true,
+      kitchenDealProgress: true,
     },
   });
 

@@ -16,7 +16,8 @@ import { emitOrderEvent } from '../../socket.js';
 import { generateOrderNumber, mapOrderOut } from '../order/order.controller.js';
 import { emitSelfOrderTableEvent, clearSelfOrderTableState } from './self-order.socket.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
-import { revalidateDealLines, resolveOrderDiscount } from '../deals/deal.revalidate.js';
+import { revalidateDealLines, resolveOrderDiscount, withDealItemKeys } from '../deals/deal.revalidate.js';
+import { seedKitchenProgress } from '../order/order.controller.js';
 import { isDealCurrentlyValid, mapDealOutPublic, round2 } from '../deals/deal.pricing.js';
 
 /** GET /api/self-order/table/:tableId */
@@ -276,6 +277,10 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
     itemsData[0].notes = specialInstructions;
   }
 
+  // Assigns each deal item its stable per-dish kitchen-ticket key — see
+  // withDealItemKeys' doc comment. Plain items pass through with a null key.
+  const keyedItemsData = withDealItemKeys(itemsData);
+
   // Order-level discount (Promo Code / Minimum Spend) — fully server-derived,
   // same as everything else in this handler: self-order is public/
   // unauthenticated, so a client-sent discount amount is never trusted.
@@ -359,7 +364,7 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
       tableNumber: !isNaN(Number(table.number)) ? Number(table.number) : null,
       orderSource: 'self-order',
       guestCount: Number(guestCount),
-      items: { create: itemsData },
+      items: { create: keyedItemsData },
     },
     include: {
       items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
@@ -369,29 +374,12 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
   // Deliberately does NOT occupy the table yet — this order is unverified until a
   // waiter accepts it. Table occupancy is triggered from acceptSelfOrder instead.
 
-  // Mirror the same kitchen-matching logic that createOrder runs so that kitchen
-  // staff can accept this order via PUT /orders/:id/kitchen-status. Without these
-  // rows, that endpoint always throws 400 "This kitchen has no items on this order".
-  const activeKitchens = await prisma.kitchen.findMany({ where: { status: 'active' } });
-  const matchedKitchenIds = new Set<string>();
-  for (const item of order.items as any[]) {
-    const categoryName = item.menuItem?.category?.name;
-    if (!categoryName) continue;
-    for (const kitch of activeKitchens) {
-      if (Array.isArray(kitch.assignedCategories) && kitch.assignedCategories.includes(categoryName)) {
-        matchedKitchenIds.add(kitch.id);
-      }
-    }
-  }
-  if (matchedKitchenIds.size > 0) {
-    await prisma.orderKitchenProgress.createMany({
-      data: Array.from(matchedKitchenIds).map((kitchenId) => ({
-        orderId: order.id,
-        kitchenId,
-        status: 'pending',
-      })),
-    });
-  } else {
+  // Mirror the same kitchen-matching logic createOrder runs so that kitchen staff can
+  // accept this order via PUT /orders/:id/kitchen-status. Without a shared-ticket row
+  // (for a plain item) that endpoint's self-healing covers it lazily, but skipping
+  // this for a deal-only order would leave nothing to flip it out of PENDING.
+  const hasKitchenWork = await seedKitchenProgress(prisma, order.id, order.items as any[]);
+  if (!hasKitchenWork) {
     // No kitchen assigned to any item in this order — mark it ready immediately
     // (e.g., a drinks-only order on an outlet with no beverage kitchen).
     await prisma.order.update({ where: { id: order.id }, data: { status: 'READY' as any } });
