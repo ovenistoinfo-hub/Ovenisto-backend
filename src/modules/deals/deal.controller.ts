@@ -79,7 +79,16 @@ const TYPE_TO_PRISMA: Record<DealInput['type'], string> = {
   option_combo: 'OPTION_COMBO',
   percentage: 'PERCENTAGE',
   buy_x_get_y: 'BUY_X_GET_Y',
+  order_discount: 'ORDER_DISCOUNT',
 };
+
+/** A promo code is looked up case-insensitively at order time, so it is
+ *  normalized once here rather than at every lookup site. Only order_discount
+ *  rows are touched — other types' `code` is just a free-text label. */
+function normalizeDealCode(body: DealInput): string | null {
+  if (body.type !== 'order_discount' || !body.code) return body.code || null;
+  return body.code.trim().toUpperCase();
+}
 
 function buildNestedWrite(body: DealInput) {
   if (body.type === 'combo') {
@@ -168,6 +177,18 @@ function buildFlatFields(body: DealInput) {
     applicableItems: body.applicableItems ?? [],
     applicableCategories: body.applicableCategories ?? [],
     ...bogoFlatMirror(body),
+    ...orderDiscountFields(body),
+  };
+}
+
+/** minSpend/flatDiscount only mean something for order_discount — cleared for
+ *  every other type so switching a deal's format on edit doesn't leave stale
+ *  values behind (same reasoning as bogoFlatMirror/channelPercentFields). */
+function orderDiscountFields(body: DealInput) {
+  if (body.type !== 'order_discount') return { minSpend: null, flatDiscount: null };
+  return {
+    minSpend: body.minSpend ?? null,
+    flatDiscount: body.flatDiscount ?? null,
   };
 }
 
@@ -308,7 +329,7 @@ export const createDeal = asyncHandler(async (req: Request, res: Response) => {
     const deal = await prisma.deal.create({
       data: {
         name: body.name,
-        code: body.code || null,
+        code: normalizeDealCode(body),
         description: body.description || null,
         image: body.image || null,
         type: TYPE_TO_PRISMA[body.type] as any,
@@ -366,7 +387,7 @@ export const updateDeal = asyncHandler(async (req: Request, res: Response) => {
         where: { id },
         data: {
           name: body.name,
-          code: body.code || null,
+          code: normalizeDealCode(body),
           description: body.description || null,
           image: body.image || null,
           type: TYPE_TO_PRISMA[body.type] as any,

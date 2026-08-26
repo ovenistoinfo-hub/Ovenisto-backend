@@ -10,6 +10,7 @@ export const createSelfOrderSchema = z.object({
   customerPhone: z.string().trim().min(1, 'Phone number is required').max(20),
   guestCount: z.coerce.number().int().min(1, 'Guest count is required').max(50),
   specialInstructions: z.string().max(500).optional(),
+  dealCode: z.string().trim().max(20).optional().nullable(),
   items: z.array(z.object({
     menuItemId: z.string().uuid().optional().nullable(),
     variantId: z.string().uuid().optional().nullable(),

@@ -8,7 +8,7 @@ import { authenticate } from '../../middleware/authenticate.js';
 import { authorize } from '../../middleware/authorize.js';
 import {
   getOrders, getOrder, createOrder, updateOrder, updateOrderStatus, updateOrderKitchenStatus, deleteOrder,
-  acceptSelfOrder, rejectSelfOrder,
+  acceptSelfOrder, rejectSelfOrder, validateCoupon,
   getKitchens, createKitchen, updateKitchen, deleteKitchen,
 } from './order.controller.js';
 import { createCancellationRequest } from '../cancellation-requests/cancellation-request.controller.js';
@@ -25,6 +25,7 @@ export const ordersRouter = Router();
 ordersRouter.get('/', authenticate, getOrders);
 ordersRouter.get('/:id', authenticate, getOrder);
 ordersRouter.post('/', authenticate, authorize(posRoles), createOrder);
+ordersRouter.post('/validate-coupon', authenticate, authorize(posRoles), validateCoupon);
 ordersRouter.put('/:id/status', authenticate, authorize(kitchenRoles), updateOrderStatus);
 ordersRouter.put('/:id/kitchen-status', authenticate, authorize(kitchenRoles), updateOrderKitchenStatus);
 ordersRouter.post('/:id/accept-self-order', authenticate, authorize(posRoles), acceptSelfOrder);

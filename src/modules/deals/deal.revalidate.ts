@@ -20,6 +20,7 @@ import {
   matchesPinnedVariant,
   capFreeUnitPrice,
   resolveBogoSides,
+  computeOrderDiscount,
   type DealForPricing,
   type BogoSideItem,
 } from './deal.pricing.js';
@@ -85,6 +86,9 @@ function toDealForPricing(deal: any): DealForPricing {
     getItemId: deal.getItemId ?? null,
     getVariantId: deal.getVariantId ?? null,
     getQty: deal.getQty ?? null,
+    minSpend: deal.minSpend != null ? Number(deal.minSpend) : null,
+    flatDiscount: deal.flatDiscount != null ? Number(deal.flatDiscount) : null,
+    code: deal.code ?? null,
   };
 }
 
@@ -384,4 +388,67 @@ function revalidateBuyXGetYLine(
   }
 
   return out;
+}
+
+export interface OrderDiscountApplied {
+  dealId: string;
+  dealName: string;
+  code: string | null;
+  amount: number;
+}
+
+/** Resolves the (at most one) order-level discount for a checkout — a
+ *  Promo Code (`enteredCode` provided, must match an active deal's `code`
+ *  exactly) or a Minimum Spend deal (no code, auto-applies once `subtotal`
+ *  clears its floor). Never trusts a client-sent discount amount: the
+ *  Deal record and the caller's own server-derived subtotal are the only
+ *  inputs. Returns null when nothing applies (not an error — most orders
+ *  don't use a coupon and no Minimum Spend deal may currently be running).
+ *
+ *  Throws only when a code was actually entered and it doesn't resolve to a
+ *  usable deal — an unknown/mistyped code, or a real code that doesn't meet
+ *  its own minimum spend, should tell the customer why, not silently no-op. */
+export async function resolveOrderDiscount(
+  tx: Prisma.TransactionClient | typeof prisma,
+  params: { enteredCode?: string | null; outletId?: string | null; orderType: string | undefined; subtotal: number },
+): Promise<OrderDiscountApplied | null> {
+  const enteredCode = params.enteredCode?.trim();
+
+  if (enteredCode) {
+    const deal: any = await (tx as any).deal.findFirst({
+      where: { type: 'ORDER_DISCOUNT', code: enteredCode.toUpperCase() },
+    });
+    if (!deal) throw ApiError.badRequest('Invalid or expired coupon code');
+
+    const dealForPricing = toDealForPricing(deal);
+    const validity = isDealCurrentlyValid(dealForPricing);
+    if (!validity.valid) throw ApiError.badRequest(validity.reason ? `"${deal.name}": ${validity.reason}` : `"${deal.name}" is not currently available`);
+    if (params.outletId && deal.outletIds.length > 0 && !deal.outletIds.includes(params.outletId)) {
+      throw ApiError.badRequest('This coupon is not valid at this outlet');
+    }
+
+    const outcome = computeOrderDiscount(dealForPricing, params.orderType, params.subtotal);
+    if (!outcome.valid) throw ApiError.badRequest(outcome.reason ?? 'This coupon cannot be applied to this order');
+
+    return { dealId: deal.id, dealName: deal.name, code: deal.code, amount: outcome.amount as number };
+  }
+
+  // No code entered — look for the best currently-eligible Minimum Spend
+  // deal (code === null) instead. Silent no-match is normal here.
+  const candidates: any[] = await (tx as any).deal.findMany({
+    where: { type: 'ORDER_DISCOUNT', code: null, isActive: true, status: { not: 'archived' } },
+  });
+
+  let best: OrderDiscountApplied | null = null;
+  for (const deal of candidates) {
+    if (params.outletId && deal.outletIds.length > 0 && !deal.outletIds.includes(params.outletId)) continue;
+    const dealForPricing = toDealForPricing(deal);
+    if (!isDealCurrentlyValid(dealForPricing).valid) continue;
+    const outcome = computeOrderDiscount(dealForPricing, params.orderType, params.subtotal);
+    if (!outcome.valid) continue;
+    if (!best || (outcome.amount as number) > best.amount) {
+      best = { dealId: deal.id, dealName: deal.name, code: null, amount: outcome.amount as number };
+    }
+  }
+  return best;
 }
