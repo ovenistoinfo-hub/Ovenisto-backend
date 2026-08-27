@@ -501,13 +501,19 @@ export function mapDealOut(deal: any): any {
  *  (takeAway/delivery/foodpanda) and outletIds, and folds price down to a
  *  single customer-facing figure (dineIn, since self-order is always
  *  dine-in). Never expose mapDealOut()'s full shape on an unauthenticated
- *  route — mirrors self-order.controller.ts's getSelfOrderMenu warning. */
+ *  route — mirrors self-order.controller.ts's getSelfOrderMenu warning.
+ *
+ *  `code`/`minSpend`/`flatDiscount` are stripped too. getSelfOrderDeals
+ *  already filters ORDER_DISCOUNT deals out entirely, so nothing carrying a
+ *  real promo code should ever reach here — this is the second lock, so a
+ *  future caller that forgets that filter still can't publish a working
+ *  coupon code to an unauthenticated client. */
 export function mapDealOutPublic(deal: any): any {
   const mapped = mapDealOut(deal);
   const {
     dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice,
     dineInPercent, takeAwayPercent, deliveryPercent, foodpandaPercent,
-    outletIds, status, ...rest
+    outletIds, status, code, minSpend, flatDiscount, ...rest
   } = mapped;
   return {
     ...rest,

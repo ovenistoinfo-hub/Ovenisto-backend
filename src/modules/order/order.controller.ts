@@ -558,30 +558,50 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
       await tx.orderItem.deleteMany({ where: { orderId: id } });
       const revalidatedItems = withDealItemKeys(await revalidateDealLines(tx, type ?? existing.type, items));
 
-      // Only touch the order-level discount when the caller explicitly sent
-      // `dealCode` (a string to apply, or null to clear) alongside the new
-      // items — an items-only edit (e.g. adding a plain item) that says
-      // nothing about the coupon must not silently drop an existing one.
-      if (dealCode !== undefined) {
-        const itemsGross = revalidatedItems.reduce((s: number, i: any) => s + Number(i.price) * Number(i.qty), 0);
-        const itemsDiscount = revalidatedItems.reduce((s: number, i: any) => s + Number(i.discount ?? 0), 0);
-        const netItemsSubtotal = round2(itemsGross - itemsDiscount);
-        const orderDiscount = await resolveOrderDiscount(tx, {
-          enteredCode: dealCode,
+      // Whenever the items change, the order-level discount has to be
+      // re-derived from the NEW contents — an edit can push the order over (or
+      // under) a Minimum Spend floor, and a percentage coupon is a function of
+      // the subtotal. Skipping this (it used to be gated on the caller sending
+      // `dealCode`) let a plain items-only edit from POS overwrite
+      // subtotal/discount/total with client figures that know nothing about
+      // the discount, silently dropping the money while leaving appliedDealId
+      // and appliedDealName pointing at a deal the total no longer reflects.
+      //
+      // The code to re-check is whatever the caller explicitly sent, or — when
+      // it says nothing about the coupon — whatever the order already had, so
+      // an unrelated edit never loses a coupon the customer already used.
+      const explicitCode = dealCode !== undefined;
+      const codeToApply = explicitCode ? dealCode : existing.appliedDealCode;
+      const itemsGross = revalidatedItems.reduce((s: number, i: any) => s + Number(i.price) * Number(i.qty), 0);
+      const itemsDiscount = revalidatedItems.reduce((s: number, i: any) => s + Number(i.discount ?? 0), 0);
+      const netItemsSubtotal = round2(itemsGross - itemsDiscount);
+
+      let orderDiscount: Awaited<ReturnType<typeof resolveOrderDiscount>> = null;
+      try {
+        orderDiscount = await resolveOrderDiscount(tx, {
+          enteredCode: codeToApply,
           outletId: scope ?? existing.outletId,
           orderType: type ?? existing.type,
           subtotal: netItemsSubtotal,
         });
-        // Stacks with whatever manual order-level discount the client sent
-        // (POS's own "extra discount" field) — never replaces it.
-        const manualDiscount = Number(discount ?? 0);
-        dataToUpdate.subtotal = netItemsSubtotal;
-        dataToUpdate.discount = orderDiscount ? round2(manualDiscount + orderDiscount.amount) : round2(manualDiscount);
-        dataToUpdate.total = round2(netItemsSubtotal - dataToUpdate.discount + Number(tax ?? existing.tax));
-        dataToUpdate.appliedDealId = orderDiscount?.dealId ?? null;
-        dataToUpdate.appliedDealCode = orderDiscount?.code ?? null;
-        dataToUpdate.appliedDealName = orderDiscount?.dealName ?? null;
+      } catch (err) {
+        // A code the caller just typed that doesn't apply is a real error the
+        // staff member needs to see. A carried-over one that stopped
+        // qualifying (the edit dropped the order below its minimum spend) is
+        // not — the coupon simply comes off, and the edit goes through.
+        if (explicitCode) throw err;
+        orderDiscount = null;
       }
+
+      // Stacks with whatever manual order-level discount the client sent
+      // (POS's own "extra discount" field) — never replaces it.
+      const manualDiscount = Number(discount ?? 0);
+      dataToUpdate.subtotal = netItemsSubtotal;
+      dataToUpdate.discount = orderDiscount ? round2(manualDiscount + orderDiscount.amount) : round2(manualDiscount);
+      dataToUpdate.total = round2(netItemsSubtotal - dataToUpdate.discount + Number(tax ?? existing.tax));
+      dataToUpdate.appliedDealId = orderDiscount?.dealId ?? null;
+      dataToUpdate.appliedDealCode = orderDiscount?.code ?? null;
+      dataToUpdate.appliedDealName = orderDiscount?.dealName ?? null;
 
       dataToUpdate.items = {
         create: revalidatedItems.map((item: any) => ({

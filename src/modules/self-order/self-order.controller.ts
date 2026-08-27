@@ -239,6 +239,12 @@ export const getSelfOrderDeals = asyncHandler(async (req: Request, res: Response
     where: {
       status: { not: 'archived' },
       isActive: true,
+      // ORDER_DISCOUNT deals are never browsable. A Promo Code is something the
+      // customer is given out-of-band and types in; listing it here would hand
+      // every active code to anyone who curls this public, unauthenticated
+      // endpoint. A Minimum Spend deal has no card to show either — it applies
+      // on its own via validate-coupon once the cart clears its floor.
+      type: { not: 'ORDER_DISCOUNT' },
       OR: [{ outletIds: { isEmpty: true } }, ...(outletId ? [{ outletIds: { has: outletId } }] : [])],
     },
     include: {
