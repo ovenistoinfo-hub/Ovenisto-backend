@@ -130,6 +130,7 @@ export const getSelfOrderDeals = asyncHandler(async (req: Request, res: Response
     },
     include: {
       components: { orderBy: { displayOrder: 'asc' as const } },
+      bogoItems: { orderBy: { displayOrder: 'asc' as const } },
       optionGroups: {
         orderBy: { displayOrder: 'asc' as const },
         include: { options: { orderBy: { displayOrder: 'asc' as const } } },
@@ -458,7 +459,11 @@ export const getActiveOrdersForTable = asyncHandler(async (req: Request, res: Re
       name: item.name,
       price: Number(item.price),
       qty: item.qty,
+      discount: Number(item.discount),
       modifiers: item.modifiers,
+      dealId: item.dealId,
+      dealName: item.dealName,
+      dealLineId: item.dealLineId,
     })),
     status: {
       orderId: order.id,
