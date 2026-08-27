@@ -247,6 +247,31 @@ plus a body explaining _why_ the change was made when that is not obvious.
   whatever the client sends (`costPrice ?? 0` on the item, `v.costPrice ?? 0` per variant) with no
   backend recipe-cost recalculation. A trustworthy snapshot depends entirely on the frontend having
   computed and sent it correctly (`FoodMenuForm.tsx`) — don't assume it's server-verified.
+- **`order.controller.ts`'s `validateOrderStock` is the one real "can this actually be made"
+  gate** — it sums each ordered `menuItemId`/`variantId`/`qty` against `FoodRecipe` rows (filtered
+  `!r.variantId || r.variantId === item.variantId`) and rejects with `ApiError.badRequest` if the
+  outlet's `KITCHEN` warehouse stock (or, absent one, the chain-wide `Ingredient.currentStock`) can't
+  cover it. `createOrder` always called it; `self-order.controller.ts`'s `createSelfOrder` did not
+  until 2026-08-27 — self-order orders went straight through with zero stock checking. Any new
+  order-creation path needs this call too, not just `revalidateDealLines`.
+- **`getSelfOrderDeals`'s Prisma `include` must list `bogoItems`**, same as `deal.controller.ts`'s
+  own `dealInclude` — it didn't (fixed 2026-08-27), so every BUY_X_GET_Y deal returned to a
+  self-order customer silently fell back to the single-item `buyItemId`/`getItemId` flat mirror
+  regardless of how many items the deal actually configures per side. `revalidateDealLines` was
+  never affected (its own query already includes it) — only the public listing was short.
+- **`getSelfOrderMenu` (self-order.controller.ts) takes an optional `?tableId=`** (added 2026-08-27,
+  mirroring `getSelfOrderDeals`'s existing param) purely to resolve which outlet's kitchen stock to
+  check — the menu catalog itself stays global. It loads `FoodRecipe` for every returned item and
+  folds live stock into a plain `available: boolean` per item and per variant via a local
+  `isVariantAvailable` helper (same `floor(stock / qtyPerUnit)`, minimum-across-ingredients rule as
+  `validateOrderStock`/the frontend's `calculateFoodAvailability`) — never raw stock numbers, since
+  this is a public, unauthenticated route. Omitting `tableId` makes everything come back available.
+- **`getActiveOrdersForTable`'s item mapping is a manual whitelist — it must include `discount`,
+  `dealId`, `dealName`, `dealLineId`** (fixed 2026-08-27; all four are plain persisted `OrderItem`
+  columns, no extra query cost). It didn't, so a device reconciling a table's already-placed orders
+  (a promoted host, or a second device joining an occupied table) saw any deal line's full
+  undiscounted price, overstating that table's bill. Any future field added to this response needs
+  adding here explicitly — it does not spread the raw Prisma row.
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph
