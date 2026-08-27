@@ -249,6 +249,40 @@ plus a body explaining _why_ the change was made when that is not obvious.
   computed and sent it correctly (`FoodMenuForm.tsx`) — don't assume it's server-verified.
 
 <!-- code-review-graph MCP tools -->
+## Superpowers plugin conventions
+
+The `superpowers` plugin is enabled for this repo (its skills are namespaced
+`superpowers:<name>`, e.g. `superpowers:writing-plans`). Its generic workflow needs the
+following filled in with Ovenisto specifics — read the section a skill points to before
+using it, rather than duplicating rules here:
+
+- **`superpowers:brainstorming` / `superpowers:writing-plans`** — the domain is a
+  multi-outlet restaurant POS (see "Outlet scoping" above); any plan touching a
+  data model must say whether the new/changed rows are outlet-scoped via
+  `resolveOutletScope`/`resolveCreateOutlet`, chain-wide like `Deal`, or
+  warehouse-derived like Challan/Demand — don't leave scoping as an implementation
+  detail to be decided mid-`executing-plans`. Save plans/specs exactly where the
+  existing ones live: `docs/superpowers/plans/YYYY-MM-DD-<slug>-plan.md` and
+  `docs/superpowers/specs/YYYY-MM-DD-<slug>-design.md`, matching the date-prefixed
+  naming already in that directory.
+- **`superpowers:test-driven-development`** — this repo's tests are the pure-logic
+  unit style described under "Backend Dev Quick-Reference" (colocated `__tests__/`,
+  mocked `Request` objects, no real DB/Prisma call, no full controller/integration
+  test). Follow that pattern for new tests; if a task seems to call for a real
+  DB/integration test, ask first rather than introducing a new test style.
+- **`superpowers:requesting-code-review` / `superpowers:receiving-code-review` /
+  `superpowers:subagent-driven-development` / `superpowers:dispatching-parallel-agents`**
+  — use the code-review-graph MCP tools first (below), and check any changed
+  controller against the outlet-scoping contract and the `ApiError`/import-extension
+  conventions in "Backend Dev Quick-Reference" — those are this repo's most common
+  review findings.
+- **`superpowers:finishing-a-development-branch` / `superpowers:using-git-worktrees`**
+  — the menu these skills present must still produce commits that follow "Git
+  conventions" above exactly: author/committer identity, no AI trailers or
+  co-author lines, and a merge subject that doesn't leak a `claude/...` branch name.
+- **`superpowers:using-superpowers`** — point new contributors at this section
+  first; it's the one place the generic skill workflow is pinned to this repo.
+
 ## MCP Tools: code-review-graph
 
 **IMPORTANT: This project has a knowledge graph. ALWAYS use the
