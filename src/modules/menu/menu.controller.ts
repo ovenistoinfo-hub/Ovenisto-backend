@@ -21,6 +21,7 @@ export function normalizeMenuItem(item: any): any {
     deliveryPrice:  item.deliveryPrice  != null ? Number(item.deliveryPrice)  : null,
     foodpandaPrice: item.foodpandaPrice != null ? Number(item.foodpandaPrice) : null,
     costPrice:      Number(item.costPrice ?? 0),
+    lowStockAlert:  Number(item.lowStockAlert ?? 5),
     mealTypeIds: item.mealTypeIds ?? [],
     variants: (item.variants ?? []).map((v: any) => ({
       ...v,
@@ -59,6 +60,17 @@ export function normalizeMenuItem(item: any): any {
       } : null,
     })) : undefined,
   };
+}
+
+/** Portions-remaining threshold at which POS flags a dish "Low Stock".
+ *  Coerced to a non-negative whole number; anything missing or unparseable
+ *  falls back to 5, the value that used to be hardcoded for every dish. 0 is a
+ *  legitimate setting ("never warn me, only tell me when it's actually out"),
+ *  so it is kept rather than treated as unset — hence `??`, not `||`. */
+function normalizeLowStockAlert(value: unknown): number {
+  const n = Number(value ?? 5);
+  if (!Number.isFinite(n) || n < 0) return 5;
+  return Math.floor(n);
 }
 
 /** Auto-generate item code from name: "Chicken Tikka" → "CT", "Pizza" → "PIZ" */
@@ -251,7 +263,7 @@ function parseModData(modifiersInput: any[] | undefined, modifierIds: string[] |
 /** POST /api/menu/items */
 export const createMenuItem = asyncHandler(async (req: Request, res: Response) => {
   const {
-    name, code, categoryId, price, dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice, costPrice,
+    name, code, categoryId, price, dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice, costPrice, lowStockAlert,
     available, image, tags, cookingTime, mealTypeIds, variants, modifierIds, modifiers: modifiersInput,
   } = req.body;
 
@@ -281,6 +293,7 @@ export const createMenuItem = asyncHandler(async (req: Request, res: Response) =
       deliveryPrice:  deliveryPrice  ?? null,
       foodpandaPrice: foodpandaPrice ?? null,
       costPrice: costPrice ?? 0,
+      lowStockAlert: normalizeLowStockAlert(lowStockAlert),
       available: available ?? true,
       image: image || null,
       tags: tags ?? [],
@@ -307,7 +320,7 @@ export const createMenuItem = asyncHandler(async (req: Request, res: Response) =
 export const updateMenuItem = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   const {
-    name, code, categoryId, price, dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice, costPrice,
+    name, code, categoryId, price, dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice, costPrice, lowStockAlert,
     available, image, tags, cookingTime, mealTypeIds, variants, modifierIds, modifiers: modifiersInput,
   } = req.body;
 
@@ -343,6 +356,7 @@ export const updateMenuItem = asyncHandler(async (req: Request, res: Response) =
         ...(deliveryPrice !== undefined && { deliveryPrice: deliveryPrice ?? null }),
         ...(foodpandaPrice !== undefined && { foodpandaPrice: foodpandaPrice ?? null }),
         ...(costPrice !== undefined && { costPrice: costPrice ?? 0 }),
+        ...(lowStockAlert !== undefined && { lowStockAlert: normalizeLowStockAlert(lowStockAlert) }),
         ...(available !== undefined && { available }),
         ...(image !== undefined && { image: image || null }),
         ...(tags !== undefined && { tags }),

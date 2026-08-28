@@ -240,6 +240,11 @@ model FoodMenuItem {
   deliveryPrice  Decimal? @db.Decimal(10, 2)
   foodpandaPrice Decimal? @db.Decimal(10, 2)
   costPrice      Decimal  @default(0) @db.Decimal(10, 2) // recipe-derived food cost, snapshotted at save time
+  // Portions-remaining threshold at/below which POS flags this dish "Low Stock".
+  // Was hardcoded to 5 for every dish in foodAvailability.ts; a slow-moving item
+  // and a bestseller need very different warning points, so it is per-dish now.
+  // Applies to every variant of the item (availability is computed per variant).
+  lowStockAlert  Int      @default(5)
   available      Boolean  @default(true)
   image          String?
   tags           String[]

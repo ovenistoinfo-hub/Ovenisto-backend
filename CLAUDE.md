@@ -164,6 +164,30 @@ plus a body explaining _why_ the change was made when that is not obvious.
 
 ## Backend Dev Quick-Reference
 
+- **Never add a background timer. `grep -rn "setInterval" src` must return nothing.** Neon bills
+  compute-hours and suspends the compute when idle; anything querying on a fixed clock keeps it
+  awake 24/7. A 60s `setInterval` in `index.ts` calling `autoProcessExpiredBatches()` burned ~97%
+  of one month's free allowance by itself (removed 2026-08-28), and `database.ts`'s keep-alive
+  ping was deleted earlier for the same reason — don't reinvent either under a new name. Auto-expiry
+  now runs **on read paths only** (11 call sites in `stock`/`warehouse`/`inventory`/`challan`/
+  `reports` controllers), which is sufficient because expiry is *derived* at read time by
+  `effectiveExpiry()` rather than stored — quantities are correct whenever anyone looks. If work
+  genuinely must happen while nobody is using the app, schedule it externally, not in-process.
+- **`GET /self-order/deals` must exclude `ORDER_DISCOUNT` deals** (`type: { not: 'ORDER_DISCOUNT' }`),
+  and `mapDealOutPublic` strips `code`/`minSpend`/`flatDiscount` as a second lock. Without the filter,
+  this public unauthenticated route served every active Promo Code to anyone who curled it — no auth,
+  no table id needed. Fixed 2026-08-28; keep both halves.
+- **Order-level discounts rewrite the client's money, so the client must be able to predict them.**
+  `createOrder` calls `resolveOrderDiscount` on *every* order — with a `dealCode` it matches a Promo
+  Code, without one it auto-applies the best qualifying Minimum Spend deal — then overwrites
+  `discount`/`total`. Rules that follow from that: the client sends `discount` = **manual staff
+  discount only** (the server adds the deal amount on top, so pre-adding it double-counts); the
+  client's `tax` is kept as sent, so it must be computed on the post-discount subtotal; eligibility
+  is judged on the **raw items subtotal before the manual discount**; and `POST /orders/validate-coupon`
+  exists so POS/Waiter can preview the exact same call before charging. `updateOrder` re-resolves on
+  every items edit, carrying forward `existing.appliedDealCode` when the caller sends no `dealCode`
+  (it used to only run when `dealCode` was sent, which silently dropped the discount on a plain edit
+  while leaving `appliedDealId`/`appliedDealName` stale).
 - **ESM import paths use `.js` even for `.ts` files** (`from '../../utils/ApiError.js'`). The build is
   `prisma generate && tsc`; a missing/extra extension fails the build. Match the existing imports.
 - **`ApiError` style is per-file, not global.** Some controllers use the constructor

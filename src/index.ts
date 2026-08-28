@@ -10,13 +10,23 @@ import { env } from './config/env.js';
 import { connectDatabase, disconnectDatabase } from './config/database.js';
 import { registerIO } from './socket.js';
 import { socketAuth } from './middleware/socketAuth.js';
-import { autoProcessExpiredBatches } from './modules/stock/autoExpiry.js';
 import { setupSelfOrderNamespace } from './modules/self-order/self-order.socket.js';
 
-// Background auto-expiry processing (every 60s while server is running)
-setInterval(() => {
-  autoProcessExpiredBatches().catch((err) => console.error('Auto-expiry background error:', err));
-}, 60000);
+// NOTE: A 60-second background auto-expiry timer used to live here. It was
+// removed — it queried the DB every single minute, forever, which kept Neon's
+// compute permanently awake and defeated scale-to-zero exactly the way the
+// keep-alive ping this file already warns about below does. (It burned ~97% of
+// a month's free compute allowance on its own.)
+//
+// Nothing is lost by dropping it: autoProcessExpiredBatches() is already
+// called on every stock/warehouse/inventory/challan/report read path (11 call
+// sites), and expiry itself is DERIVED at read time by effectiveExpiry()
+// rather than stored — so quantities are correct whenever anyone actually
+// looks, timer or no timer. The only change is WHEN the WasteRecord rows get
+// written: at the first read after the batch expired, instead of within a
+// minute of it. If a future feature genuinely needs expiry processed while
+// nobody is using the app (e.g. an unattended overnight report), schedule it
+// externally rather than reinstating a permanent in-process poll.
 
 // Create HTTP server
 const server = http.createServer(app);
