@@ -278,6 +278,18 @@ plus a body explaining _why_ the change was made when that is not obvious.
   cover it. `createOrder` always called it; `self-order.controller.ts`'s `createSelfOrder` did not
   until 2026-08-27 — self-order orders went straight through with zero stock checking. Any new
   order-creation path needs this call too, not just `revalidateDealLines`.
+- **`Order.status` (PENDING→PREPARING→READY) is *derived* from KDS progress rows, never set
+  directly.** `updateOrderKitchenStatus` recomputes it from `OrderKitchenProgress` (one shared row
+  per order+kitchen for non-deal items) + `OrderKitchenDealProgress` (per order+kitchen+`dealItemKey`,
+  created lazily on first kitchen touch — a pure-deal order has none at creation). Rule: an item is
+  ready once **every** active `Kitchen` whose `assignedCategories` include its category has marked it
+  `ready`. **`Kitchen` has no `outletId`** — so two active kitchens sharing a category (often a
+  leftover duplicate) make every order of that category need readying on *both* boards or it never
+  reaches `READY` and stalls in Order Monitor's Preparing column; keep each category on one active
+  kitchen. `computeDerivedOrderStatus()` (added 2026-08-29) is a second copy of the rule, used by
+  `deleteKitchen` — which must `deleteMany` both progress tables before `kitchen.delete` (they FK
+  `Kitchen` with no `onDelete` → `Foreign key constraint failed` otherwise), then re-derives and
+  promotes any now-ready open order.
 - **`getSelfOrderDeals`'s Prisma `include` must list `bogoItems`**, same as `deal.controller.ts`'s
   own `dealInclude` — it didn't (fixed 2026-08-27), so every BUY_X_GET_Y deal returned to a
   self-order customer silently fell back to the single-item `buyItemId`/`getItemId` flat mirror
