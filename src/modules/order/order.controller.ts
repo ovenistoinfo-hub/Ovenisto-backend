@@ -206,8 +206,19 @@ export function mapOrderOut(order: any): any {
 // ── Order Number Generation ──
 
 export async function generateOrderNumber(): Promise<string> {
-  const count = await prisma.order.count();
-  let n = count + 1;
+  // Highest existing order number instead of a full COUNT(*) on every create
+  // (the count scans the whole table and only grows). The dedup loop below
+  // still guards against gaps and collisions.
+  const latest = await prisma.order.findFirst({
+    orderBy: { createdAt: 'desc' },
+    select: { orderNumber: true },
+  });
+  const parsed = latest ? parseInt(latest.orderNumber.replace(/\D/g, ''), 10) : 0;
+  // If the newest order carries the exhaustion fallback (`ORD-<6-digit timestamp>`)
+  // its number is meaningless as a sequence position — fall back to COUNT(*) so we
+  // don't cascade into the timestamp fallback on every subsequent order.
+  const lastN = Number.isFinite(parsed) && parsed < 99999 ? parsed : await prisma.order.count();
+  let n = lastN + 1;
   while (n <= 99999) {
     const candidate = `ORD-${String(n).padStart(3, '0')}`;
     const exists = await prisma.order.findUnique({ where: { orderNumber: candidate } });
@@ -252,6 +263,60 @@ export async function seedKitchenProgress(
   }
 
   return matchedKitchenIds.size > 0 || hasDealKitchenWork;
+}
+
+/**
+ * Recomputes what an order's whole status should be from its *persisted* kitchen
+ * progress rows plus the current set of active kitchens. Used when the kitchen
+ * roster changes (a kitchen deleted / deactivated / re-categorised) so an order
+ * stuck in PREPARING only because a kitchen it was waiting on is gone can be
+ * re-evaluated.
+ *
+ * An item counts as ready when — among the active kitchens assigned to its
+ * category — at least one has a 'ready' progress row for it and none has a row
+ * that isn't 'ready'. A kitchen with no row for that item never took it (another
+ * kitchen sharing the category did) and doesn't hold the order back.
+ */
+export function computeDerivedOrderStatus(
+  order: {
+    items: { dealId?: string | null; dealItemKey?: string | null; menuItem?: { category?: { name?: string | null } | null } | null }[];
+    kitchenProgress: { kitchenId: string; status: string }[];
+    kitchenDealProgress: { kitchenId: string; dealItemKey: string; status: string }[];
+  },
+  activeKitchens: { id: string; assignedCategories: string[] }[],
+): 'PENDING' | 'PREPARING' | 'READY' {
+  const anyStarted = [...order.kitchenProgress, ...order.kitchenDealProgress]
+    .some((r) => r.status === 'preparing' || r.status === 'ready');
+
+  let hasKitchenRoutedItem = false;
+  let allItemsReady = true;
+
+  for (const item of order.items) {
+    const catName = item.menuItem?.category?.name;
+    if (!catName) continue;
+    const assigned = activeKitchens.filter(
+      (k) => Array.isArray(k.assignedCategories) && k.assignedCategories.includes(catName),
+    );
+    if (assigned.length === 0) continue;
+    hasKitchenRoutedItem = true;
+
+    const rows = (item.dealId && item.dealItemKey)
+      ? assigned
+          .map((k) => order.kitchenDealProgress.find((p) => p.kitchenId === k.id && p.dealItemKey === item.dealItemKey))
+          .filter((p): p is { kitchenId: string; dealItemKey: string; status: string } => !!p)
+      : assigned
+          .map((k) => order.kitchenProgress.find((p) => p.kitchenId === k.id))
+          .filter((p): p is { kitchenId: string; status: string } => !!p);
+
+    if (!(rows.length > 0 && rows.every((r) => r.status === 'ready'))) {
+      allItemsReady = false;
+      break;
+    }
+  }
+
+  if (hasKitchenRoutedItem && allItemsReady) return 'READY';
+  if (anyStarted) return 'PREPARING';
+  return 'PENDING';
 }
 
 // ============================================================
@@ -374,7 +439,6 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   if (!items?.length) throw ApiError.badRequest('Order must have at least one item');
   if (total === undefined || total === null) throw ApiError.badRequest('Total is required');
 
-  const orderNumber = await generateOrderNumber();
   const prismaType = TYPE_TO_PRISMA[type] ?? 'WALKIN';
   const prismaStatus = isFutureSale ? 'SCHEDULED' : 'PENDING';
 
@@ -389,8 +453,17 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
     ? cashApproved
     : (orderSource === 'waiter' ? false : true);
 
-  await validateOrderStock(prisma, scope, items);
-  const revalidatedItems = withDealItemKeys(await revalidateDealLines(prisma, type, items));
+  // These three have no dependency on each other — run them together rather
+  // than as three serial round-trips to Neon. resolveOrderDiscount stays
+  // after: it needs the revalidated item totals. (If both the stock check and
+  // deal revalidation would fail, the client now sees whichever rejects first
+  // — both are 400s, so the outcome is unchanged.)
+  const [orderNumber, , revalidatedRaw] = await Promise.all([
+    generateOrderNumber(),
+    validateOrderStock(prisma, scope, items),
+    revalidateDealLines(prisma, type, items),
+  ]);
+  const revalidatedItems = withDealItemKeys(revalidatedRaw);
 
   // Order-level discount (Promo Code / Minimum Spend) — the one part of this
   // order's money that IS re-derived server-side (see this file's known gap
@@ -723,23 +796,29 @@ export async function validateOrderStock(
     }
   }
 
-  // Check ingredient stock
-  for (const [ingredientId, reqData] of Object.entries(requiredIngredients)) {
-    let availableStock = 0;
+  // Check ingredient stock — batch-fetch every level in ONE query instead of
+  // one findUnique per ingredient. This loop ran serially, so an 8-ingredient
+  // order meant 8 sequential round-trips to Neon on the order-placement path.
+  const ingredientIds = Object.keys(requiredIngredients);
+  const stockByIngredient = new Map<string, number>();
+  if (ingredientIds.length > 0) {
     if (kitchenWarehouseId) {
-      const ws = await tx.warehouseStock.findUnique({
-        where: { warehouseId_ingredientId: { warehouseId: kitchenWarehouseId, ingredientId } },
-        select: { currentStock: true },
+      const rows = await tx.warehouseStock.findMany({
+        where: { warehouseId: kitchenWarehouseId, ingredientId: { in: ingredientIds } },
+        select: { ingredientId: true, currentStock: true },
       });
-      availableStock = Math.max(0, Number(ws?.currentStock ?? 0));
+      for (const r of rows) stockByIngredient.set(r.ingredientId, Math.max(0, Number(r.currentStock ?? 0)));
     } else {
-      const ing = await tx.ingredient.findUnique({
-        where: { id: ingredientId },
-        select: { currentStock: true },
+      const rows = await tx.ingredient.findMany({
+        where: { id: { in: ingredientIds } },
+        select: { id: true, currentStock: true },
       });
-      availableStock = Math.max(0, Number(ing?.currentStock ?? 0));
+      for (const r of rows) stockByIngredient.set(r.id, Math.max(0, Number(r.currentStock ?? 0)));
     }
+  }
 
+  for (const [ingredientId, reqData] of Object.entries(requiredIngredients)) {
+    const availableStock = stockByIngredient.get(ingredientId) ?? 0;
     if (availableStock < reqData.qty) {
       throw ApiError.badRequest(
         `Insufficient stock for ingredient "${reqData.name}" (Required: ${reqData.qty.toFixed(2)} ${reqData.unit}, Available: ${availableStock.toFixed(2)} ${reqData.unit}). Order cannot be placed.`
@@ -747,15 +826,28 @@ export async function validateOrderStock(
     }
   }
 
-  // Check production item stock (e.g. Pizza Dough)
+  // Check production item stock (e.g. Pizza Dough) — same batch-fetch, one
+  // query instead of one findFirst per production item.
   if (kitchenWarehouseId) {
-    for (const [productionItemId, reqData] of Object.entries(requiredProdItems)) {
-      const pws = await tx.productionWarehouseStock.findFirst({
-        where: { productionItemId, warehouseId: kitchenWarehouseId },
-        select: { currentStock: true },
+    const prodItemIds = Object.keys(requiredProdItems);
+    const stockByProdItem = new Map<string, number>();
+    if (prodItemIds.length > 0) {
+      const rows = await tx.productionWarehouseStock.findMany({
+        where: { warehouseId: kitchenWarehouseId, productionItemId: { in: prodItemIds } },
+        select: { productionItemId: true, currentStock: true },
+        orderBy: { id: 'asc' },
       });
-      const availableStock = Math.max(0, Number(pws?.currentStock ?? 0));
-
+      for (const r of rows) {
+        // A production item can historically have more than one stock row per
+        // warehouse; keep the first deterministically (orderBy id) so this can't
+        // pick a different row than the run before.
+        if (!stockByProdItem.has(r.productionItemId)) {
+          stockByProdItem.set(r.productionItemId, Math.max(0, Number(r.currentStock ?? 0)));
+        }
+      }
+    }
+    for (const [productionItemId, reqData] of Object.entries(requiredProdItems)) {
+      const availableStock = stockByProdItem.get(productionItemId) ?? 0;
       if (availableStock < reqData.qty) {
         throw ApiError.badRequest(
           `Insufficient stock for production item "${reqData.name}" (Required: ${reqData.qty.toFixed(2)} ${reqData.unit}, Available: ${availableStock.toFixed(2)} ${reqData.unit}). Order cannot be placed.`
@@ -1191,7 +1283,10 @@ export const updateOrderKitchenStatus = asyncHandler(async (req: Request, res: R
 
   // An order is READY automatically once every item's assigned kitchen(s) are
   // 'ready' — via the shared ticket for a plain item, or that dish's own ticket
-  // for a deal item.
+  // for a deal item. Derived from the order's items × each active kitchen's
+  // assignedCategories, NOT from which progress rows happen to exist: a
+  // pure-deal order has no shared ticket at all, and a deal dish no kitchen has
+  // started yet has no deal ticket — both must still be judged correctly.
   let allReadyAfter = status === 'ready';
   if (allReadyAfter && existing.items.length > 0) {
     for (const item of existing.items as any[]) {
@@ -1722,8 +1817,51 @@ export const updateKitchen = asyncHandler(async (req: Request, res: Response) =>
 
 /** DELETE /api/kitchens/:id */
 export const deleteKitchen = asyncHandler(async (req: Request, res: Response) => {
-  const existing = await prisma.kitchen.findUnique({ where: { id: req.params.id } });
+  const { id } = req.params;
+  const existing = await prisma.kitchen.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Kitchen not found');
-  await prisma.kitchen.delete({ where: { id: req.params.id } });
-  res.json(ApiResponse.success(null, 'Kitchen deleted'));
+
+  // OrderKitchenProgress / OrderKitchenDealProgress FK this kitchen with no
+  // onDelete rule, so a plain delete throws "Foreign key constraint failed"
+  // the moment any order has ever been routed here. Those rows are KDS ticket
+  // state only — clear them, then remove the kitchen, in one transaction.
+  await prisma.$transaction([
+    prisma.orderKitchenProgress.deleteMany({ where: { kitchenId: id } }),
+    prisma.orderKitchenDealProgress.deleteMany({ where: { kitchenId: id } }),
+    prisma.kitchen.delete({ where: { id } }),
+  ]);
+
+  // Removing a kitchen changes what "all cooked" means for an order. Re-derive
+  // every still-open order against the reduced roster and promote any that is
+  // now fully ready but was stuck only because a kitchen it waited on is gone.
+  // Promote-only — this never sends an order backwards.
+  const [openOrders, activeKitchens] = await Promise.all([
+    prisma.order.findMany({
+      where: { status: { in: ['PENDING', 'PREPARING'] } },
+      include: {
+        items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
+        kitchenProgress: true,
+        kitchenDealProgress: true,
+      },
+    }),
+    prisma.kitchen.findMany({ where: { status: 'active' }, select: { id: true, assignedCategories: true } }),
+  ]);
+
+  const promoted: string[] = [];
+  for (const o of openOrders) {
+    if (o.status === 'READY') continue;
+    if (computeDerivedOrderStatus(o as any, activeKitchens) !== 'READY') continue;
+    const updated = await prisma.order.update({
+      where: { id: o.id },
+      data: { status: 'READY' as any },
+      include: { items: { include: { menuItem: { select: { category: { select: { name: true } } } } } } },
+    });
+    emitOrderEvent('order:updated', mapOrderOut(updated));
+    promoted.push(o.orderNumber);
+  }
+
+  res.json(ApiResponse.success(
+    { promotedOrders: promoted },
+    promoted.length ? `Kitchen deleted — ${promoted.length} order(s) moved to Ready` : 'Kitchen deleted',
+  ));
 });
