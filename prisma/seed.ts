@@ -1733,13 +1733,13 @@ async function main() {
     });
   }
 
-  // Deal 5: Promo Code OVEN15 (ORDER_DISCOUNT)
+  // Deal 5: Promo Code OVEN15 (PROMO_CODE — has a code)
   await prisma.deal.upsert({
     where: { code: 'OVEN15' },
     update: {
       name: '15% Off Discount Code',
       description: 'Get 15% discount on orders above Rs. 1500 using coupon OVEN15',
-      type: DealType.ORDER_DISCOUNT,
+      type: DealType.PROMO_CODE,
       discountPercent: 15,
       minSpend: 1500,
       isActive: true,
@@ -1749,7 +1749,7 @@ async function main() {
       name: '15% Off Discount Code',
       code: 'OVEN15',
       description: 'Get 15% discount on orders above Rs. 1500 using coupon OVEN15',
-      type: DealType.ORDER_DISCOUNT,
+      type: DealType.PROMO_CODE,
       discountPercent: 15,
       minSpend: 1500,
       isActive: true,
@@ -1758,13 +1758,15 @@ async function main() {
     },
   });
 
-  // Deal 6: Flat Rs. 300 Off on Minimum Spend Rs. 2000 (ORDER_DISCOUNT)
+  // Deal 6: Flat Rs. 300 Off using coupon FLAT300 (PROMO_CODE — has a code, so the
+  // pre-split resolveOrderDiscount only ever matched it via an explicitly-entered
+  // code; the backfill script classifies it the same way, on that same rule).
   await prisma.deal.upsert({
     where: { code: 'FLAT300' },
     update: {
       name: 'Flat Rs. 300 Off Deal',
-      description: 'Get Rs. 300 flat off on all orders above Rs. 2000',
-      type: DealType.ORDER_DISCOUNT,
+      description: 'Get Rs. 300 flat off on all orders above Rs. 2000 using coupon FLAT300',
+      type: DealType.PROMO_CODE,
       flatDiscount: 300,
       minSpend: 2000,
       isActive: true,
@@ -1773,8 +1775,8 @@ async function main() {
     create: {
       name: 'Flat Rs. 300 Off Deal',
       code: 'FLAT300',
-      description: 'Get Rs. 300 flat off on all orders above Rs. 2000',
-      type: DealType.ORDER_DISCOUNT,
+      description: 'Get Rs. 300 flat off on all orders above Rs. 2000 using coupon FLAT300',
+      type: DealType.PROMO_CODE,
       flatDiscount: 300,
       minSpend: 2000,
       isActive: true,
@@ -1782,7 +1784,26 @@ async function main() {
       outletIds: [outlet.id],
     },
   });
-  console.log('✅ Created 6 distinct Deals & Combo bundles');
+
+  // Deal 7: Auto-applied Rs. 200 off orders above Rs. 2500 (MIN_SPEND — no code, applies
+  // automatically to the best-qualifying order; new deal type, seeded for real coverage).
+  const autoDiscountData = {
+    description: 'Automatically applied: Rs. 200 off orders above Rs. 2500',
+    type: DealType.MIN_SPEND,
+    flatDiscount: 200,
+    minSpend: 2500,
+    isActive: true,
+    validFrom: new Date('2024-01-01'),
+  };
+  const existingAutoDiscount = await prisma.deal.findFirst({ where: { name: 'Big Order Auto Discount' } });
+  if (existingAutoDiscount) {
+    await prisma.deal.update({ where: { id: existingAutoDiscount.id }, data: autoDiscountData });
+  } else {
+    await prisma.deal.create({
+      data: { name: 'Big Order Auto Discount', ...autoDiscountData, outletIds: [outlet.id] },
+    });
+  }
+  console.log('✅ Created 7 distinct Deals & Combo bundles');
 
   // ============================================
   // 17. RESTAURANT TABLES (Multi-Floor Table Layout)
