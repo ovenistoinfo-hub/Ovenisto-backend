@@ -18,7 +18,7 @@ import { emitSelfOrderTableEvent, clearSelfOrderTableState } from './self-order.
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { revalidateDealLines, resolveOrderDiscount, withDealItemKeys } from '../deals/deal.revalidate.js';
 import { seedKitchenProgress } from '../order/order.controller.js';
-import { isDealCurrentlyValid, mapDealOutPublic, round2 } from '../deals/deal.pricing.js';
+import { isDealCurrentlyValid, isDealAvailableForChannel, mapDealOutPublic, round2 } from '../deals/deal.pricing.js';
 
 /** GET /api/self-order/table/:tableId */
 export const getTableForSelfOrder = asyncHandler(async (req: Request, res: Response) => {
@@ -239,12 +239,16 @@ export const getSelfOrderDeals = asyncHandler(async (req: Request, res: Response
     where: {
       status: { not: 'archived' },
       isActive: true,
-      // ORDER_DISCOUNT deals are never browsable. A Promo Code is something the
-      // customer is given out-of-band and types in; listing it here would hand
-      // every active code to anyone who curls this public, unauthenticated
-      // endpoint. A Minimum Spend deal has no card to show either — it applies
-      // on its own via validate-coupon once the cart clears its floor.
-      type: { not: 'ORDER_DISCOUNT' },
+      // PROMO_CODE/MIN_SPEND deals are never browsable. A Promo Code is
+      // something the customer is given out-of-band and types in; listing it
+      // here would hand every active code to anyone who curls this public,
+      // unauthenticated endpoint. A Minimum Spend deal has no card to show
+      // either — it applies on its own via validate-coupon once the cart
+      // clears its floor.
+      type: { notIn: ['PROMO_CODE', 'MIN_SPEND'] },
+      // Self-order is always dine-in — a deal disabled for Dine In has no
+      // card to show here either.
+      availableDineIn: true,
       OR: [{ outletIds: { isEmpty: true } }, ...(outletId ? [{ outletIds: { has: outletId } }] : [])],
     },
     include: {
@@ -258,7 +262,9 @@ export const getSelfOrderDeals = asyncHandler(async (req: Request, res: Response
     orderBy: { createdAt: 'desc' },
   });
 
-  const liveDeals = deals.filter((d) => isDealCurrentlyValid(d as any).valid);
+  const liveDeals = deals.filter(
+    (d) => isDealCurrentlyValid(d as any).valid && isDealAvailableForChannel(d as any, 'Dine In'),
+  );
   res.json(ApiResponse.success(liveDeals.map(mapDealOutPublic)));
 });
 

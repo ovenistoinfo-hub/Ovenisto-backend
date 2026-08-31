@@ -1451,7 +1451,15 @@ enum DealType {
   OPTION_COMBO   @map("option_combo")
   PERCENTAGE     @map("percentage")
   BUY_X_GET_Y    @map("buy_x_get_y")
+  // Deprecated: superseded by PROMO_CODE/MIN_SPEND below. Kept only until the
+  // backfill script (scripts/backfill-order-discount-split.ts) has migrated every
+  // existing row and this member can be dropped in a follow-up destructive db push.
   ORDER_DISCOUNT @map("order_discount")
+  // ORDER_DISCOUNT split in two: PROMO_CODE = customer types a code; MIN_SPEND =
+  // auto-applies once the raw items subtotal clears `minSpend`. Both still share
+  // minSpend/flatDiscount/discountPercent below.
+  PROMO_CODE     @map("promo_code")
+  MIN_SPEND      @map("min_spend")
 }
 
 model Deal {
@@ -1480,6 +1488,14 @@ model Deal {
   isActive       Boolean   @default(true)
   status         String    @default("active") @db.VarChar(20) // active | archived
   outletIds      String[] // empty = chain-wide
+  // Channel-availability gates, every deal type. Default true so every existing row
+  // keeps working unchanged (same backwards-compat pattern as activeDays/[]).
+  // Enforced both client-side (deal card filtering on POS/WaiterPanel/SelfOrder) and
+  // server-side (revalidateDealLines, resolveOrderDiscount). No Foodpanda toggle —
+  // matches POS's own 3-channel orderTypes; Foodpanda deals aren't gated here.
+  availableDineIn   Boolean @default(true)
+  availableTakeaway Boolean @default(true)
+  availableDelivery Boolean @default(true)
   validFrom      DateTime  @db.Date
   validTo        DateTime? @db.Date
   // For COMBO/OPTION_COMBO/BUY_X_GET_Y: gates whether the whole deal is orderable.
@@ -1582,12 +1598,19 @@ enum BogoRole {
 }
 
 model DealOptionGroup {
-  id            String @id @default(uuid())
+  id            String    @id @default(uuid())
   dealId        String
-  label         String @db.VarChar(100)
+  label         String    @db.VarChar(100)
   minSelections Int
   maxSelections Int
-  displayOrder  Int    @default(0)
+  displayOrder  Int       @default(0)
+  /// null = an OPTION_COMBO (Customizable) group — the only case before this column
+  /// existed. Set (BUY|GET) = this group belongs to a BUY_X_GET_Y deal's side that the
+  /// admin put in "Customizable" mode (see BogoRole below). A BUY_X_GET_Y side left in
+  /// "Fixed" mode instead uses DealBogoItem rows, unrelated to this table — a single
+  /// deal can have one side Fixed (DealBogoItem) and the other Customizable
+  /// (DealOptionGroup rows tagged with bogoSide) at the same time.
+  bogoSide      BogoRole?
 
   // Relations
   deal    Deal             @relation(fields: [dealId], references: [id], onDelete: Cascade)

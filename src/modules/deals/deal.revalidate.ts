@@ -11,18 +11,21 @@ import { prisma } from '../../config/database.js';
 import { ApiError } from '../../utils/ApiError.js';
 import {
   isDealCurrentlyValid,
+  isDealAvailableForChannel,
   resolveChannelPrice,
   resolveChannelPercent,
   round2,
   allocateDealDiscount,
   validateDealSelection,
+  validateOptionGroupSelection,
   isItemEligibleForDiscount,
   matchesPinnedVariant,
   capFreeUnitPrice,
   resolveBogoSides,
+  resolveBogoSideMode,
+  resolveBogoOptionGroups,
   computeOrderDiscount,
   type DealForPricing,
-  type BogoSideItem,
 } from './deal.pricing.js';
 
 export interface IncomingOrderItem {
@@ -65,11 +68,15 @@ function toDealForPricing(deal: any): DealForPricing {
     startTime: deal.startTime,
     endTime: deal.endTime,
     activeDays: deal.activeDays ?? [],
+    availableDineIn: deal.availableDineIn ?? true,
+    availableTakeaway: deal.availableTakeaway ?? true,
+    availableDelivery: deal.availableDelivery ?? true,
     components: (deal.components ?? []).map((c: any) => ({
       id: c.id, menuItemId: c.menuItemId, variantId: c.variantId, qty: c.qty,
     })),
     optionGroups: (deal.optionGroups ?? []).map((g: any) => ({
       id: g.id, label: g.label, minSelections: g.minSelections, maxSelections: g.maxSelections,
+      bogoSide: g.bogoSide ?? null,
       options: (g.options ?? []).map((o: any) => ({
         id: o.id, menuItemId: o.menuItemId, variantId: o.variantId, extraPrice: Number(o.extraPrice),
       })),
@@ -183,6 +190,9 @@ export async function revalidateDealLines(
     const dealForPricing = toDealForPricing(deal);
     const validity = isDealCurrentlyValid(dealForPricing);
     if (!validity.valid) throw ApiError.badRequest(validity.reason ? `"${deal.name}": ${validity.reason}` : `"${deal.name}" is not currently available`);
+    if (!isDealAvailableForChannel(dealForPricing, orderType)) {
+      throw ApiError.badRequest(`"${deal.name}" is not available for ${orderType ?? 'this'} orders`);
+    }
 
     if (dealForPricing.type === 'PERCENTAGE') {
       revalidated.push(...revalidatePercentageLine(deal, dealForPricing, lineItems, lineId, menuItemById, orderType));
@@ -282,26 +292,15 @@ function revalidatePercentageLine(
 
 /** BUY_X_GET_Y: the submitted lines for one dealLineId, split by dealRole into
  *  the things the customer bought and the things they are getting free.
- *
- *  Both sides can hold several items — "Buy 1 Pizza + 1 Pasta, get 1 Drink +
- *  1 Fries free" is one deal, not four. Every configured BUY row must be
- *  present in at least the quantity the deal asks for, and every submitted GET
- *  line must correspond to a configured GET row and stay within its quantity.
- *
- *  Each row is matched on variant as well as item. Matching only the item let a
- *  customer qualify with the cheapest size and claim the priciest one free —
- *  "Buy 1 Pizza, Get 1 Pizza Free" bought as a Small and taken as a Large.
- *  Rows that pin no variant (legacy deals) still accept any size, but their
- *  giveaway is capped at the cheapest one. */
+ *  Each side is independently either "Fixed" (a flat, all-required item
+ *  list — the only shape before this feature) or "Customizable" (an option
+ *  set the customer chooses from, matched the same way an OPTION_COMBO
+ *  group is) — see resolveBogoSideMode. One deal can mix modes across its
+ *  two sides. */
 function revalidateBuyXGetYLine(
   deal: any, dealForPricing: DealForPricing, lineItems: IncomingOrderItem[], lineId: string,
   menuItemById: Map<string, any>, orderType: string | undefined,
 ): IncomingOrderItem[] {
-  const { buy: buyRows, get: getRows } = resolveBogoSides(dealForPricing);
-  if (buyRows.length === 0 || getRows.length === 0) {
-    throw ApiError.badRequest(`"${deal.name}" is not configured correctly`);
-  }
-
   const submittedBuy = lineItems.filter((i) => i.dealRole === 'buy');
   const submittedGet = lineItems.filter((i) => i.dealRole === 'get');
   if (submittedBuy.length === 0 || submittedGet.length === 0) {
@@ -311,89 +310,64 @@ function revalidateBuyXGetYLine(
     throw ApiError.badRequest(`"${deal.name}" has a line that is neither bought nor free`);
   }
 
-  /** Finds the configured row a submitted line is claiming against, consuming it
-   *  so two submitted lines can never both satisfy the same row. */
-  const takeMatchingRow = (rows: BogoSideItem[], used: boolean[], item: IncomingOrderItem) => {
-    const idx = rows.findIndex(
-      (row, i) =>
-        !used[i] &&
-        row.menuItemId === item.menuItemId &&
-        matchesPinnedVariant(row.variantId, item.variantId ?? null),
-    );
-    if (idx === -1) return null;
-    used[idx] = true;
-    return rows[idx];
-  };
+  return [
+    ...revalidateBogoSide(deal, dealForPricing, 'BUY', submittedBuy, lineId, menuItemById, orderType),
+    ...revalidateBogoSide(deal, dealForPricing, 'GET', submittedGet, lineId, menuItemById, orderType),
+  ];
+}
 
+/** Re-derives one side (BUY or GET) of a Buy X Get Y redemption, branching on
+ *  whether that side is Fixed or Customizable (resolveBogoSideMode).
+ *
+ *  Fixed: every configured row must be present in at least (buy) / at most
+ *  (get) the quantity the deal asks for. Each row is matched on variant as
+ *  well as item — matching only the item let a customer qualify with the
+ *  cheapest size and claim the priciest one free. Rows that pin no variant
+ *  (legacy deals) still accept any size, but their giveaway is capped at the
+ *  cheapest one. Unchanged from before this feature.
+ *
+ *  Customizable: the same per-group min/max + allow-list validator an
+ *  OPTION_COMBO group uses (validateOptionGroupSelection) — a group's
+ *  options are always specific item+variant choices, so there's no
+ *  "unpinned variant" ambiguity to cap the way a legacy Fixed row can have. */
+function revalidateBogoSide(
+  deal: any,
+  dealForPricing: DealForPricing,
+  side: 'BUY' | 'GET',
+  submitted: IncomingOrderItem[],
+  lineId: string,
+  menuItemById: Map<string, any>,
+  orderType: string | undefined,
+): IncomingOrderItem[] {
+  const isBuy = side === 'BUY';
+  const mode = resolveBogoSideMode(dealForPricing, side);
   const out: IncomingOrderItem[] = [];
 
-  // --- the things they have to buy ---
-  const buyUsed = buyRows.map(() => false);
-  for (const item of submittedBuy) {
-    const row = takeMatchingRow(buyRows, buyUsed, item);
-    if (!row) throw ApiError.badRequest(`"${deal.name}"'s "buy" items do not match the offer`);
-
-    const qty = Math.max(1, Math.trunc(item.qty));
-    if (qty < row.qty) {
-      throw ApiError.badRequest(`"${deal.name}" requires buying at least ${row.qty} of each listed item`);
+  const buildLine = (menuItem: any, variantId: string | null, unitPrice: number, qty: number) => {
+    const variant = variantId ? menuItem.variants.find((v: any) => v.id === variantId) : undefined;
+    if (isBuy) {
+      return {
+        menuItemId: menuItem.id,
+        variantId,
+        name: `${menuItem.name}${variant ? ` (${variant.name})` : ''}`,
+        price: unitPrice,
+        qty,
+        discount: 0,
+        modifiers: [],
+        dealId: deal.id,
+        dealName: deal.name,
+        dealLineId: lineId,
+      };
     }
-
-    const menuItem: any = menuItemById.get(row.menuItemId);
-    if (!menuItem) throw ApiError.badRequest(`A menu item in "${deal.name}" is no longer available`);
-
-    const unitPrice = resolveLinePrice(menuItem, item.variantId, orderType);
-    const variant = item.variantId ? menuItem.variants.find((v: any) => v.id === item.variantId) : undefined;
-
-    out.push({
-      menuItemId: menuItem.id,
-      variantId: item.variantId ?? null,
-      name: `${menuItem.name}${variant ? ` (${variant.name})` : ''}`,
-      price: unitPrice,
-      qty,
-      discount: 0,
-      modifiers: [],
-      dealId: deal.id,
-      dealName: deal.name,
-      dealLineId: lineId,
-    });
-  }
-  if (buyUsed.some((u) => !u)) {
-    throw ApiError.badRequest(`"${deal.name}" requires buying every item the offer lists`);
-  }
-
-  // --- the things they get free ---
-  const getUsed = getRows.map(() => false);
-  for (const item of submittedGet) {
-    const row = takeMatchingRow(getRows, getUsed, item);
-    if (!row) throw ApiError.badRequest(`"${deal.name}"'s free items do not match the offer`);
-
-    const qty = Math.max(1, Math.trunc(item.qty));
-    if (qty > row.qty) {
-      throw ApiError.badRequest(`"${deal.name}" gives at most ${row.qty} of that item free`);
-    }
-
-    const menuItem: any = menuItemById.get(row.menuItemId);
-    if (!menuItem) throw ApiError.badRequest(`A menu item in "${deal.name}" is no longer available`);
-
-    const unitPrice = resolveLinePrice(menuItem, item.variantId, orderType);
-    const variant = item.variantId ? menuItem.variants.find((v: any) => v.id === item.variantId) : undefined;
-    // A row that pins no variant could have meant any size, so cap what it
-    // gives away at the cheapest; anything above that the customer pays.
-    const cappedUnitPrice = capFreeUnitPrice(
-      row.variantId,
-      unitPrice,
-      cheapestUnitPrice(menuItem, orderType),
-    );
-    // The giveaway is fully free by default, but a channel can cover only part
-    // of it (e.g. half price on Foodpanda instead of free).
+    // The giveaway is fully free by default, but a channel can cover only
+    // part of it (e.g. half price on Foodpanda instead of free). Only call it
+    // free when the deal covers the whole line — a partial coverage leaves
+    // the customer paying the difference.
     const coveragePercent = resolveChannelPercent(dealForPricing, orderType, 100);
-    const freeUnitPrice = round2(cappedUnitPrice * (coveragePercent / 100));
-
-    out.push({
+    const freeUnitPrice = round2(unitPrice * (coveragePercent / 100));
+    return {
       menuItemId: menuItem.id,
-      variantId: item.variantId ?? null,
-      // Only call it free when the deal covers the whole line — a capped legacy
-      // giveaway leaves the customer paying the difference.
+      variantId,
       name: `${deal.name}: ${menuItem.name}${variant ? ` (${variant.name})` : ''}${
         freeUnitPrice <= 0 ? '' : freeUnitPrice >= unitPrice ? ' (Free)' : ' (Discounted)'
       }`,
@@ -404,9 +378,75 @@ function revalidateBuyXGetYLine(
       dealId: deal.id,
       dealName: deal.name,
       dealLineId: lineId,
-    });
+    };
+  };
+
+  if (mode === 'fixed') {
+    const rows = resolveBogoSides(dealForPricing)[isBuy ? 'buy' : 'get'];
+    if (rows.length === 0) throw ApiError.badRequest(`"${deal.name}" is not configured correctly`);
+
+    /** Finds the configured row a submitted line is claiming against, consuming
+     *  it so two submitted lines can never both satisfy the same row. */
+    const used = rows.map(() => false);
+    const takeMatchingRow = (item: IncomingOrderItem) => {
+      const idx = rows.findIndex(
+        (row, i) => !used[i] && row.menuItemId === item.menuItemId && matchesPinnedVariant(row.variantId, item.variantId ?? null),
+      );
+      if (idx === -1) return null;
+      used[idx] = true;
+      return rows[idx];
+    };
+
+    for (const item of submitted) {
+      const row = takeMatchingRow(item);
+      if (!row) {
+        throw ApiError.badRequest(
+          isBuy ? `"${deal.name}"'s "buy" items do not match the offer` : `"${deal.name}"'s free items do not match the offer`,
+        );
+      }
+      const qty = Math.max(1, Math.trunc(item.qty));
+      if (isBuy && qty < row.qty) {
+        throw ApiError.badRequest(`"${deal.name}" requires buying at least ${row.qty} of each listed item`);
+      }
+      if (!isBuy && qty > row.qty) {
+        throw ApiError.badRequest(`"${deal.name}" gives at most ${row.qty} of that item free`);
+      }
+
+      const menuItem: any = menuItemById.get(row.menuItemId);
+      if (!menuItem) throw ApiError.badRequest(`A menu item in "${deal.name}" is no longer available`);
+      const unitPrice = resolveLinePrice(menuItem, item.variantId, orderType);
+      // A row that pins no variant could have meant any size, so a GET row
+      // caps what it gives away at the cheapest; anything above that the
+      // customer pays. BUY rows never cap — the customer is paying full price
+      // for whatever size they submitted. The capped figure feeds buildLine's
+      // "price"/coverage-% math for a GET line, matching pre-existing behavior.
+      const priceForLine = isBuy ? unitPrice : capFreeUnitPrice(row.variantId, unitPrice, cheapestUnitPrice(menuItem, orderType));
+      out.push(buildLine(menuItem, item.variantId ?? null, priceForLine, qty) as IncomingOrderItem);
+    }
+    if (isBuy && used.some((u) => !u)) {
+      throw ApiError.badRequest(`"${deal.name}" requires buying every item the offer lists`);
+    }
+    return out;
   }
 
+  // Customizable
+  const groups = resolveBogoOptionGroups(dealForPricing, side);
+  if (groups.length === 0) throw ApiError.badRequest(`"${deal.name}" is not configured correctly`);
+
+  const picks = submitted.map((i) => ({
+    groupId: i.dealGroupId ?? undefined,
+    menuItemId: i.menuItemId as string,
+    variantId: i.variantId ?? null,
+    qty: i.qty,
+  }));
+  const selection = validateOptionGroupSelection(groups, picks);
+
+  for (const line of selection) {
+    const menuItem: any = menuItemById.get(line.menuItemId);
+    if (!menuItem) throw ApiError.badRequest(`A menu item in "${deal.name}" is no longer available`);
+    const unitPrice = resolveLinePrice(menuItem, line.variantId, orderType) + line.extraPrice;
+    out.push(buildLine(menuItem, line.variantId, unitPrice, line.qty) as IncomingOrderItem);
+  }
   return out;
 }
 
@@ -418,16 +458,17 @@ export interface OrderDiscountApplied {
 }
 
 /** Resolves the (at most one) order-level discount for a checkout — a
- *  Promo Code (`enteredCode` provided, must match an active deal's `code`
- *  exactly) or a Minimum Spend deal (no code, auto-applies once `subtotal`
- *  clears its floor). Never trusts a client-sent discount amount: the
- *  Deal record and the caller's own server-derived subtotal are the only
+ *  PROMO_CODE deal (`enteredCode` provided, must match an active deal's
+ *  `code` exactly) or a MIN_SPEND deal (no code, auto-applies once
+ *  `subtotal` clears its floor). Never trusts a client-sent discount amount:
+ *  the Deal record and the caller's own server-derived subtotal are the only
  *  inputs. Returns null when nothing applies (not an error — most orders
  *  don't use a coupon and no Minimum Spend deal may currently be running).
  *
  *  Throws only when a code was actually entered and it doesn't resolve to a
- *  usable deal — an unknown/mistyped code, or a real code that doesn't meet
- *  its own minimum spend, should tell the customer why, not silently no-op. */
+ *  usable deal — an unknown/mistyped code, a real code that doesn't meet its
+ *  own minimum spend, or one disabled for this order's channel, should tell
+ *  the customer why, not silently no-op. */
 export async function resolveOrderDiscount(
   tx: Prisma.TransactionClient | typeof prisma,
   params: { enteredCode?: string | null; outletId?: string | null; orderType: string | undefined; subtotal: number },
@@ -436,7 +477,7 @@ export async function resolveOrderDiscount(
 
   if (enteredCode) {
     const deal: any = await (tx as any).deal.findFirst({
-      where: { type: 'ORDER_DISCOUNT', code: enteredCode.toUpperCase() },
+      where: { type: 'PROMO_CODE', code: enteredCode.toUpperCase() },
     });
     if (!deal) throw ApiError.badRequest('Invalid or expired coupon code');
 
@@ -446,6 +487,9 @@ export async function resolveOrderDiscount(
     if (params.outletId && deal.outletIds.length > 0 && !deal.outletIds.includes(params.outletId)) {
       throw ApiError.badRequest('This coupon is not valid at this outlet');
     }
+    if (!isDealAvailableForChannel(dealForPricing, params.orderType)) {
+      throw ApiError.badRequest(`This coupon is not available for ${params.orderType ?? 'this'} orders`);
+    }
 
     const outcome = computeOrderDiscount(dealForPricing, params.orderType, params.subtotal);
     if (!outcome.valid) throw ApiError.badRequest(outcome.reason ?? 'This coupon cannot be applied to this order');
@@ -454,9 +498,9 @@ export async function resolveOrderDiscount(
   }
 
   // No code entered — look for the best currently-eligible Minimum Spend
-  // deal (code === null) instead. Silent no-match is normal here.
+  // deal instead. Silent no-match is normal here.
   const candidates: any[] = await (tx as any).deal.findMany({
-    where: { type: 'ORDER_DISCOUNT', code: null, isActive: true, status: { not: 'archived' } },
+    where: { type: 'MIN_SPEND', isActive: true, status: { not: 'archived' } },
   });
 
   let best: OrderDiscountApplied | null = null;
@@ -464,6 +508,7 @@ export async function resolveOrderDiscount(
     if (params.outletId && deal.outletIds.length > 0 && !deal.outletIds.includes(params.outletId)) continue;
     const dealForPricing = toDealForPricing(deal);
     if (!isDealCurrentlyValid(dealForPricing).valid) continue;
+    if (!isDealAvailableForChannel(dealForPricing, params.orderType)) continue;
     const outcome = computeOrderDiscount(dealForPricing, params.orderType, params.subtotal);
     if (!outcome.valid) continue;
     if (!best || (outcome.amount as number) > best.amount) {

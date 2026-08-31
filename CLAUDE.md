@@ -173,13 +173,15 @@ plus a body explaining _why_ the change was made when that is not obvious.
   `reports` controllers), which is sufficient because expiry is *derived* at read time by
   `effectiveExpiry()` rather than stored — quantities are correct whenever anyone looks. If work
   genuinely must happen while nobody is using the app, schedule it externally, not in-process.
-- **`GET /self-order/deals` must exclude `ORDER_DISCOUNT` deals** (`type: { not: 'ORDER_DISCOUNT' }`),
-  and `mapDealOutPublic` strips `code`/`minSpend`/`flatDiscount` as a second lock. Without the filter,
+- **`GET /self-order/deals` must exclude `PROMO_CODE`/`MIN_SPEND` deals**
+  (`type: { notIn: ['PROMO_CODE', 'MIN_SPEND'] } }`) and any deal with `availableDineIn: false`, and
+  `mapDealOutPublic` strips `code`/`minSpend`/`flatDiscount` as a second lock. Without the type filter,
   this public unauthenticated route served every active Promo Code to anyone who curled it — no auth,
-  no table id needed. Fixed 2026-08-28; keep both halves.
+  no table id needed. Fixed 2026-08-28 (as a single `ORDER_DISCOUNT` type, split into the two 2026-09
+  when `ORDER_DISCOUNT` became two real `DealType` members); keep all three halves.
 - **Order-level discounts rewrite the client's money, so the client must be able to predict them.**
-  `createOrder` calls `resolveOrderDiscount` on *every* order — with a `dealCode` it matches a Promo
-  Code, without one it auto-applies the best qualifying Minimum Spend deal — then overwrites
+  `createOrder` calls `resolveOrderDiscount` on *every* order — with a `dealCode` it matches a
+  `PROMO_CODE` deal, without one it auto-applies the best qualifying `MIN_SPEND` deal — then overwrites
   `discount`/`total`. Rules that follow from that: the client sends `discount` = **manual staff
   discount only** (the server adds the deal amount on top, so pre-adding it double-counts); the
   client's `tax` is kept as sent, so it must be computed on the post-discount subtotal; eligibility
@@ -187,7 +189,9 @@ plus a body explaining _why_ the change was made when that is not obvious.
   exists so POS/Waiter can preview the exact same call before charging. `updateOrder` re-resolves on
   every items edit, carrying forward `existing.appliedDealCode` when the caller sends no `dealCode`
   (it used to only run when `dealCode` was sent, which silently dropped the discount on a plain edit
-  while leaving `appliedDealId`/`appliedDealName` stale).
+  while leaving `appliedDealId`/`appliedDealName` stale). `resolveOrderDiscount` also rejects (or, for
+  the no-code auto-match scan, silently skips) a candidate deal that has `isDealAvailableForChannel`
+  false for the order's channel — see the channel-availability bullet below.
 - **ESM import paths use `.js` even for `.ts` files** (`from '../../utils/ApiError.js'`). The build is
   `prisma generate && tsc`; a missing/extra extension fails the build. Match the existing imports.
 - **`ApiError` style is per-file, not global.** Some controllers use the constructor
@@ -210,6 +214,16 @@ plus a body explaining _why_ the change was made when that is not obvious.
   `@map`'d DB strings (e.g. `OrderType` compares against `'DINE_IN'`, not the mapped value).
 - **Prod DB is Neon** — schema changes go via `npm run db:push` (never `prisma migrate dev`); adding a
   unique constraint needs `--accept-data-loss` even when safe.
+- **`DealType.ORDER_DISCOUNT` → `PROMO_CODE`/`MIN_SPEND` is a three-step migration, not a single
+  push** (2026-09): (1) `npm run db:push` with `PROMO_CODE`/`MIN_SPEND` added and `ORDER_DISCOUNT`
+  still present (additive, safe); (2) `npx tsx scripts/backfill-order-discount-split.ts` — moves
+  every `ORDER_DISCOUNT` row to `PROMO_CODE` (has a `code`) or `MIN_SPEND` (no `code`), matching the
+  rule `resolveOrderDiscount` always used to distinguish them, idempotent; (3) once that script
+  reports zero remaining `ORDER_DISCOUNT` rows, remove the member from `enum DealType` in
+  `schema.prisma` and run `npx prisma db push --accept-data-loss` (destructive — only safe after
+  step 2 confirms no row still references it). Application code already assumes step 3 is done
+  (no `ORDER_DISCOUNT` branches remain) — the enum member lingering briefly between steps 1–3 in the
+  live DB doesn't break anything, since nothing writes it anymore once this code is deployed.
 - **`self-order/` is the one public/unauthenticated module** — every other module's routes assume
   `authenticate` ran. Its two `Customer`-by-phone lookups (`lookupCustomerByPhone`,
   `createSelfOrder`'s find-or-rename) MUST use the identical matcher (`equals` + 10-digit minimum,
@@ -242,11 +256,45 @@ plus a body explaining _why_ the change was made when that is not obvious.
   ambiguous). Legacy rows with a null variant still accept any size — `capFreeUnitPrice` caps their
   giveaway at the item's cheapest variant instead of rejecting the order, and the free line is
   labelled "(Discounted)" rather than "(Free)" when that cap bites.
+- **A BUY_X_GET_Y side is independently "Fixed" (`DealBogoItem` rows, everything above) or
+  "Customizable"** (added 2026-09) — an option set the customer chooses from, reusing
+  `DealOptionGroup`/`DealOptionItem` (the same tables OPTION_COMBO uses) via a nullable
+  `DealOptionGroup.bogoSide` column (`BUY`/`GET`; `null` = an OPTION_COMBO group). One deal can mix
+  a Fixed buy side with a Customizable get side or vice versa. `deal.pricing.ts`'s
+  `resolveBogoSideMode(deal, side)` reads which shape a side is in (any `bogoSide`-tagged group →
+  Customizable, else Fixed — covers both the `DealBogoItem` relation and the legacy flat-column
+  case); `resolveBogoOptionGroups(deal, side)` returns that side's groups. `revalidateBuyXGetYLine`
+  branches per side: Fixed keeps the exact matching/capping logic above, untouched; Customizable
+  validates submitted picks (tagged `dealGroupId`/`dealRole` on the order item — those two fields
+  existed on `IncomingOrderItem` since BOGO's option-group work started but were unused until this
+  feature activated them) through `validateOptionGroupSelection`, the same per-group min/max +
+  allow-list primitive `validateDealSelection` extracted for OPTION_COMBO. A Customizable get-side
+  pick still runs through `capFreeUnitPrice`/`resolveChannelPercent` for its free/discounted amount.
+  `deal.controller.ts`'s `buildNestedWrite` writes `bogoItems.create` for a Fixed side or
+  `optionGroups.create` (via `buildOptionGroupCreate`, tagged with `bogoSide`) for a Customizable
+  one; `assertBuyXGetYVariants` has a parallel per-group variant-pinning check for a Customizable
+  side (same item+variant *can* repeat across two different groups — those are independent AND
+  requirements — but not twice within one group).
+- **Every deal type carries `availableDineIn`/`availableTakeaway`/`availableDelivery` booleans**
+  (added 2026-09, default `true` so an existing row keeps working unchanged — no Foodpanda toggle,
+  matching POS's own 3-channel order-type selector). `deal.pricing.ts`'s
+  `isDealAvailableForChannel(deal, orderType)` is the one check (same `ORDER_TYPE_TO_FIELD`-style
+  map idiom as `resolveChannelPrice`), enforced in `revalidateDealLines` (every line-deal type) and
+  `resolveOrderDiscount` (both the `PROMO_CODE` match and the `MIN_SPEND` best-match scan) — a deal
+  disabled for the order's channel is rejected/skipped server-side regardless of what the client
+  shows. `getSelfOrderDeals` also filters `availableDineIn: true` at the query level (self-order is
+  always dine-in) as a second lock, same reasoning as its type exclusion above.
 - **`Deal` is chain-wide, not outlet-scoped via the standard contract above** — it uses
   `outletIds: String[]` as an allow-list (empty = every outlet) instead of `resolveOutletScope`'s
   `where.outletId` shape, because it overlays the equally chain-wide `FoodMenuItem`/`FoodCategory`
   catalog. See `deal.controller.ts`'s top comment. Don't flag its missing `where.outletId` as a
   scoping leak when auditing against the outlet-scoping contract — it's a deliberate exception.
+  Who may set `outletIds` on write is a separate, simpler rule: `resolveWritableOutletIds` lets only
+  `'Super Admin'` target any outlet(s) or chain-wide; every other role (Admin included, since
+  2026-09 — Admin was previously grouped in as unrestricted) is forced onto their own
+  `req.user.outletId`. `updateDeal` has a second, independent gate before allowing an edit at all:
+  a non-Super-Admin may only edit a deal whose existing `outletIds` is exactly their own outlet
+  (not chain-wide, not another outlet).
 - **`Deal.activeDays Int[]`** (0 = Sunday … 6 = Saturday, added 2026-08-23) gates which weekdays a
   deal runs — empty means every day, which is what every row written before it holds, so the column
   is backwards-compatible by construction. `deal.controller.ts`'s `normalizeActiveDays` sorts,

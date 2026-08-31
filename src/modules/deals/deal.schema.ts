@@ -51,7 +51,7 @@ export const dealSchema = z
     code: z.string().trim().min(1).max(20).optional().nullable(),
     description: z.string().max(1000).optional().nullable(),
     image: z.string().max(2000).optional().nullable(),
-    type: z.enum(['combo', 'option_combo', 'percentage', 'buy_x_get_y', 'order_discount']),
+    type: z.enum(['combo', 'option_combo', 'percentage', 'buy_x_get_y', 'promo_code', 'min_spend']),
     // Flat bundle price — only required for combo/option_combo.
     price: z.coerce.number().positive('Deal price must be greater than 0').optional().nullable(),
     dineInPrice: z.coerce.number().min(0).optional().nullable(),
@@ -65,6 +65,11 @@ export const dealSchema = z
     deliveryPercent: z.coerce.number().min(0).max(100).optional().nullable(),
     foodpandaPercent: z.coerce.number().min(0).max(100).optional().nullable(),
     isActive: z.boolean().optional().default(true),
+    // Channel-availability gates — every deal type, not just the ones with
+    // channel price/percent overrides above.
+    availableDineIn: z.boolean().optional().default(true),
+    availableTakeaway: z.boolean().optional().default(true),
+    availableDelivery: z.boolean().optional().default(true),
     outletIds: z.array(z.string().uuid()).optional().default([]),
     validFrom: z.coerce.date(),
     validTo: z.coerce.date().optional().nullable(),
@@ -78,18 +83,25 @@ export const dealSchema = z
     discountPercent: z.coerce.number().positive('Discount must be greater than 0').max(100, 'Discount cannot exceed 100%').optional().nullable(),
     applicableItems: z.array(z.string().uuid()).optional().default([]),
     applicableCategories: z.array(z.string().uuid()).optional().default([]),
-    // buy_x_get_y — buyItems/getItems are the real shape; the flat buy*/get*
-    // fields below are the legacy single-item form, still accepted so an older
-    // client keeps working.
+    // buy_x_get_y — each side is independently "fixed" (buyItems/getItems, the
+    // flat all-required list — the only shape before this feature) or
+    // "customizable" (buyGroups/getGroups, an option set the customer chooses
+    // from, same shape option_combo's optionGroups uses). The flat buy*/get*
+    // fields below are the legacy single-item form, still accepted so an
+    // older client keeps working when buyMode/getMode is "fixed".
+    buyMode: z.enum(['fixed', 'customizable']).optional().default('fixed'),
+    getMode: z.enum(['fixed', 'customizable']).optional().default('fixed'),
     buyItems: z.array(bogoItemSchema).max(20).optional().default([]),
     getItems: z.array(bogoItemSchema).max(20).optional().default([]),
+    buyGroups: z.array(optionGroupSchema).max(10).optional().default([]),
+    getGroups: z.array(optionGroupSchema).max(10).optional().default([]),
     buyItemId: z.string().uuid().optional().nullable(),
     buyVariantId: z.string().uuid().optional().nullable(),
     buyQty: z.coerce.number().int().min(1).max(50).optional().nullable(),
     getItemId: z.string().uuid().optional().nullable(),
     getVariantId: z.string().uuid().optional().nullable(),
     getQty: z.coerce.number().int().min(1).max(50).optional().nullable(),
-    // order_discount
+    // promo_code / min_spend
     minSpend: z.coerce.number().min(0).optional().nullable(),
     flatDiscount: z.coerce.number().positive('Discount amount must be greater than 0').optional().nullable(),
   })
@@ -126,11 +138,21 @@ export const dealSchema = z
     }
 
     if (data.type === 'buy_x_get_y') {
-      // Either shape satisfies each side: the list, or the legacy single item.
-      if (data.buyItems.length === 0 && !data.buyItemId) {
+      // Buy side: fixed mode needs the item list (or the legacy single item);
+      // customizable mode needs at least one option group.
+      if (data.buyMode === 'customizable') {
+        if (data.buyGroups.length === 0) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Add at least one option group for what the customer can buy', path: ['buyGroups'] });
+        }
+      } else if (data.buyItems.length === 0 && !data.buyItemId) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Add at least one item the customer has to buy', path: ['buyItems'] });
       }
-      if (data.getItems.length === 0 && !data.getItemId) {
+      // Get side: same split.
+      if (data.getMode === 'customizable') {
+        if (data.getGroups.length === 0) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Add at least one option group for what the customer gets free', path: ['getGroups'] });
+        }
+      } else if (data.getItems.length === 0 && !data.getItemId) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Add at least one item the customer gets free', path: ['getItems'] });
       }
       // Whether a variant is *required* depends on whether the chosen item has
@@ -138,17 +160,17 @@ export const dealSchema = z
       // assertBuyXGetYVariants, not here.
     }
 
-    if (data.type === 'order_discount') {
+    if (data.type === 'promo_code' || data.type === 'min_spend') {
       const hasFlat = data.flatDiscount != null;
       const hasPercent = data.discountPercent != null;
       if (hasFlat === hasPercent) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Set either a flat Rs. amount or a percentage off — not both', path: ['flatDiscount'] });
       }
-      if (!data.code) {
-        // Minimum Spend: auto-applies, needs a threshold to gate on.
-        if (data.minSpend == null || data.minSpend <= 0) {
-          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Set a minimum spend, or add a code to make this a promo code instead', path: ['minSpend'] });
-        }
+      if (data.type === 'promo_code' && !data.code) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'A Promo Code deal needs a code', path: ['code'] });
+      }
+      if (data.type === 'min_spend' && (data.minSpend == null || data.minSpend <= 0)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Set a minimum spend for this deal to auto-apply at', path: ['minSpend'] });
       }
     }
   });
