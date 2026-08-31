@@ -525,6 +525,10 @@ const DEAL_TYPE_TO_WIRE: Record<string, string> = {
   BUY_X_GET_Y: 'buy_x_get_y',
   PROMO_CODE: 'promo_code',
   MIN_SPEND: 'min_spend',
+  // Legacy: ORDER_DISCOUNT was split into PROMO_CODE + MIN_SPEND.
+  // Any old row still carrying the old enum value maps to promo_code so the
+  // frontend's formatBadge lookup never receives an unknown type string.
+  ORDER_DISCOUNT: 'promo_code',
 };
 
 /** Decimal → Number + enum-member → wire-string mapping for a Deal record
