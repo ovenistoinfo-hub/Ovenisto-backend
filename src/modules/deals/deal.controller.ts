@@ -7,9 +7,10 @@
  * have no outletId either), so it does not use resolveOutletScope's
  * where.outletId shape. Instead `Deal.outletIds: String[]` is an allow-list —
  * empty means "every outlet". Reads filter by membership; writes are gated by
- * role (Manager is pinned to their own outlet, Admin/Super Admin can publish
- * chain-wide). Do not read this module's absence of where.outletId as a
- * scoping leak when auditing against the standard contract.
+ * role — every role except Super Admin is pinned to their own outlet; only
+ * Super Admin can publish chain-wide or target any specific outlet(s). Do not
+ * read this module's absence of where.outletId as a scoping leak when
+ * auditing against the standard contract.
  */
 
 import type { Request, Response } from 'express';
@@ -61,14 +62,15 @@ export const getDealById = asyncHandler(async (req: Request, res: Response) => {
   res.json(ApiResponse.success(mapDealOut(deal)));
 });
 
-/** Managers publish only to their own outlet; Admin/Super Admin may publish
- *  chain-wide (empty outletIds) or to any specific list. Returns the outletIds
- *  actually allowed to be persisted for this actor. */
+/** Every other role is locked to their own outlet, including Admin — only
+ *  Super Admin may publish chain-wide (empty outletIds) or to any specific
+ *  list. Returns the outletIds actually allowed to be persisted for this
+ *  actor. */
 function resolveWritableOutletIds(req: Request, requested: string[]): string[] {
   const role = req.user?.role;
-  if (role === 'Super Admin' || role === 'Admin') return requested;
+  if (role === 'Super Admin') return requested;
 
-  // Manager: forced to their own outlet, regardless of what was requested.
+  // Every other role: forced to their own outlet, regardless of what was requested.
   const own = req.user?.outletId;
   if (!own) throw ApiError.badRequest('Your account has no assigned outlet');
   return [own];
@@ -79,14 +81,15 @@ const TYPE_TO_PRISMA: Record<DealInput['type'], string> = {
   option_combo: 'OPTION_COMBO',
   percentage: 'PERCENTAGE',
   buy_x_get_y: 'BUY_X_GET_Y',
-  order_discount: 'ORDER_DISCOUNT',
+  promo_code: 'PROMO_CODE',
+  min_spend: 'MIN_SPEND',
 };
 
 /** A promo code is looked up case-insensitively at order time, so it is
- *  normalized once here rather than at every lookup site. Only order_discount
+ *  normalized once here rather than at every lookup site. Only promo_code
  *  rows are touched — other types' `code` is just a free-text label. */
 function normalizeDealCode(body: DealInput): string | null {
-  if (body.type !== 'order_discount' || !body.code) return body.code || null;
+  if (body.type !== 'promo_code' || !body.code) return body.code || null;
   return body.code.trim().toUpperCase();
 }
 
@@ -106,37 +109,54 @@ function buildNestedWrite(body: DealInput) {
   if (body.type === 'option_combo') {
     return {
       optionGroups: {
-        create: body.optionGroups.map((g, idx) => ({
-          label: g.label,
-          minSelections: g.minSelections,
-          maxSelections: g.maxSelections,
-          displayOrder: g.displayOrder ?? idx,
-          options: {
-            create: g.options.map((o, oIdx) => ({
-              menuItemId: o.menuItemId,
-              variantId: o.variantId ?? null,
-              extraPrice: o.extraPrice ?? 0,
-              displayOrder: o.displayOrder ?? oIdx,
-            })),
-          },
-        })),
+        create: body.optionGroups.map((g, idx) => buildOptionGroupCreate(g, idx, null)),
       },
     };
   }
   if (body.type === 'buy_x_get_y') {
     const { buy, get } = normalizeBogoSides(body);
-    return {
-      bogoItems: {
-        create: [
-          ...buy.map((r, idx) => ({ ...r, role: 'BUY' as const, displayOrder: idx })),
-          ...get.map((r, idx) => ({ ...r, role: 'GET' as const, displayOrder: idx })),
-        ],
-      },
-    };
+    const bogoItemsCreate: any[] = [];
+    const optionGroupsCreate: any[] = [];
+
+    if (body.buyMode === 'customizable') {
+      optionGroupsCreate.push(...body.buyGroups.map((g, idx) => buildOptionGroupCreate(g, idx, 'BUY')));
+    } else {
+      bogoItemsCreate.push(...buy.map((r, idx) => ({ ...r, role: 'BUY' as const, displayOrder: idx })));
+    }
+    if (body.getMode === 'customizable') {
+      optionGroupsCreate.push(...body.getGroups.map((g, idx) => buildOptionGroupCreate(g, idx, 'GET')));
+    } else {
+      bogoItemsCreate.push(...get.map((r, idx) => ({ ...r, role: 'GET' as const, displayOrder: idx })));
+    }
+
+    const nested: Record<string, any> = {};
+    if (bogoItemsCreate.length > 0) nested.bogoItems = { create: bogoItemsCreate };
+    if (optionGroupsCreate.length > 0) nested.optionGroups = { create: optionGroupsCreate };
+    return nested;
   }
   // percentage has no nested rows — its contents live entirely in the flat
   // fields below.
   return {};
+}
+
+/** One DealOptionGroup nested-create, shared by option_combo (bogoSide null)
+ *  and a Buy X Get Y side in "Customizable" mode (bogoSide BUY/GET). */
+function buildOptionGroupCreate(g: DealInput['optionGroups'][number], idx: number, bogoSide: 'BUY' | 'GET' | null) {
+  return {
+    label: g.label,
+    minSelections: g.minSelections,
+    maxSelections: g.maxSelections,
+    displayOrder: g.displayOrder ?? idx,
+    bogoSide,
+    options: {
+      create: g.options.map((o, oIdx) => ({
+        menuItemId: o.menuItemId,
+        variantId: o.variantId ?? null,
+        extraPrice: o.extraPrice ?? 0,
+        displayOrder: o.displayOrder ?? oIdx,
+      })),
+    },
+  };
 }
 
 /** The two sides of a Buy X Get Y offer, from whichever shape the client sent.
@@ -178,17 +198,31 @@ function buildFlatFields(body: DealInput) {
     applicableCategories: body.applicableCategories ?? [],
     ...bogoFlatMirror(body),
     ...orderDiscountFields(body),
+    ...channelAvailabilityFields(body),
   };
 }
 
-/** minSpend/flatDiscount only mean something for order_discount — cleared for
- *  every other type so switching a deal's format on edit doesn't leave stale
- *  values behind (same reasoning as bogoFlatMirror/channelPercentFields). */
+/** minSpend/flatDiscount only mean something for promo_code/min_spend —
+ *  cleared for every other type so switching a deal's format on edit doesn't
+ *  leave stale values behind (same reasoning as bogoFlatMirror/
+ *  channelPercentFields). Both new types keep both fields: a Promo Code deal
+ *  may also carry a minimum spend requirement (a code plus a floor), matching
+ *  the pre-split shape. */
 function orderDiscountFields(body: DealInput) {
-  if (body.type !== 'order_discount') return { minSpend: null, flatDiscount: null };
+  if (body.type !== 'promo_code' && body.type !== 'min_spend') return { minSpend: null, flatDiscount: null };
   return {
     minSpend: body.minSpend ?? null,
     flatDiscount: body.flatDiscount ?? null,
+  };
+}
+
+/** Channel-availability gates apply to every deal type, unconditionally —
+ *  unlike the type-conditional fields above, nothing to clear on a type switch. */
+function channelAvailabilityFields(body: DealInput) {
+  return {
+    availableDineIn: body.availableDineIn ?? true,
+    availableTakeaway: body.availableTakeaway ?? true,
+    availableDelivery: body.availableDelivery ?? true,
   };
 }
 
@@ -234,53 +268,65 @@ function bogoFlatMirror(body: DealInput) {
   };
 }
 
-/** Buy X Get Y pins every row of the offer to one specific variant. This check
+/** Buy X Get Y pins every configured item to one specific variant. This check
  *  needs the live menu records, so it cannot live in the Zod schema:
  *
  *   - a variant, when given, must actually belong to the item it is paired with
  *     (otherwise the deal would reference a size of some other dish);
- *   - a variant is REQUIRED whenever the item has any. Without it the row means
- *     "any variant", and revalidateBuyXGetYLine would let a customer qualify
+ *   - a variant is REQUIRED whenever the item has any. Without it, it means
+ *     "any variant", and order-time matching would let a customer qualify
  *     with the cheapest size while claiming the priciest one free.
  *
- *  Both sides are also checked for the same item appearing twice, which would
- *  make matching a submitted line to a row ambiguous at order time.
- */
+ *  A Fixed side is checked row-by-row (same item+size can't appear twice — it
+ *  would make matching a submitted line to a row ambiguous). A Customizable
+ *  side is checked per group instead (the same item+size CAN appear in two
+ *  different groups — those are independent picks, e.g. two separate BUY
+ *  requirements — but not twice within one group, which would make matching a
+ *  submitted pick to an option ambiguous the same way). */
 async function assertBuyXGetYVariants(body: DealInput) {
   if (body.type !== 'buy_x_get_y') return;
 
   const { buy, get } = normalizeBogoSides(body);
-  const sides = [
-    { label: 'Buy', rows: buy },
-    { label: 'Get', rows: get },
+  const fixedSides = [
+    { label: 'Buy', rows: body.buyMode === 'fixed' ? buy : [] },
+    { label: 'Get', rows: body.getMode === 'fixed' ? get : [] },
+  ];
+  const groupSides = [
+    { label: 'Buy', groups: body.buyMode === 'customizable' ? body.buyGroups : [] },
+    { label: 'Get', groups: body.getMode === 'customizable' ? body.getGroups : [] },
   ];
 
-  const itemIds = [...buy, ...get].map((r) => r.menuItemId);
+  const itemIds = [
+    ...fixedSides.flatMap((s) => s.rows.map((r) => r.menuItemId)),
+    ...groupSides.flatMap((s) => s.groups.flatMap((g) => g.options.map((o) => o.menuItemId))),
+  ];
   if (itemIds.length === 0) return;
 
   const menuItems = await prisma.foodMenuItem.findMany({
-    where: { id: { in: itemIds } },
+    where: { id: { in: [...new Set(itemIds)] } },
     include: { variants: true },
   });
   const byId = new Map(menuItems.map((m) => [m.id, m]));
 
-  for (const side of sides) {
-    const seen = new Set<string>();
-
-    for (const row of side.rows) {
-      const menuItem = byId.get(row.menuItemId);
-      if (!menuItem) throw ApiError.badRequest(`A "${side.label}" item no longer exists`);
-
-      if (row.variantId) {
-        if (!menuItem.variants.some((v) => v.id === row.variantId)) {
-          throw ApiError.badRequest(`A "${side.label}" size does not belong to ${menuItem.name}`);
-        }
-      } else if (menuItem.variants.length > 0) {
-        throw ApiError.badRequest(
-          `${menuItem.name} comes in ${menuItem.variants.length} sizes — pick which one the "${side.label}" side applies to`
-        );
+  const assertVariantPins = (label: string, menuItemId: string, variantId: string | null | undefined) => {
+    const menuItem = byId.get(menuItemId);
+    if (!menuItem) throw ApiError.badRequest(`A "${label}" item no longer exists`);
+    if (variantId) {
+      if (!menuItem.variants.some((v) => v.id === variantId)) {
+        throw ApiError.badRequest(`A "${label}" size does not belong to ${menuItem.name}`);
       }
+    } else if (menuItem.variants.length > 0) {
+      throw ApiError.badRequest(
+        `${menuItem.name} comes in ${menuItem.variants.length} sizes — pick which one the "${label}" side applies to`
+      );
+    }
+    return menuItem;
+  };
 
+  for (const side of fixedSides) {
+    const seen = new Set<string>();
+    for (const row of side.rows) {
+      const menuItem = assertVariantPins(side.label, row.menuItemId, row.variantId);
       // Same item+size twice on one side has no meaning the customer could act
       // on, and would make order-time row matching ambiguous.
       const key = `${row.menuItemId}:${row.variantId ?? ''}`;
@@ -288,6 +334,20 @@ async function assertBuyXGetYVariants(body: DealInput) {
         throw ApiError.badRequest(`${menuItem.name} is listed twice on the "${side.label}" side — raise its quantity instead`);
       }
       seen.add(key);
+    }
+  }
+
+  for (const side of groupSides) {
+    for (const group of side.groups) {
+      const seen = new Set<string>();
+      for (const option of group.options) {
+        const menuItem = assertVariantPins(side.label, option.menuItemId, option.variantId);
+        const key = `${option.menuItemId}:${option.variantId ?? ''}`;
+        if (seen.has(key)) {
+          throw ApiError.badRequest(`${menuItem.name} is listed twice in "${group.label}" — raise its quantity instead`);
+        }
+        seen.add(key);
+      }
     }
   }
 }
@@ -363,12 +423,12 @@ export const updateDeal = asyncHandler(async (req: Request, res: Response) => {
   if (!existing) throw ApiError.notFound('Deal not found');
 
   const role = req.user?.role;
-  if (role !== 'Super Admin' && role !== 'Admin') {
+  if (role !== 'Super Admin') {
     const own = req.user?.outletId;
     const existingIsChainWide = existing.outletIds.length === 0;
     const existingIsOwnOnly = existing.outletIds.length === 1 && existing.outletIds[0] === own;
     if (existingIsChainWide || !existingIsOwnOnly) {
-      throw ApiError.forbidden('Only Admin/Super Admin can edit a chain-wide deal, or a deal outside your outlet');
+      throw ApiError.forbidden('Only Super Admin can edit a chain-wide deal, or a deal outside your outlet');
     }
   }
 

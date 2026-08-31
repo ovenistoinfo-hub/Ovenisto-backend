@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   isDealCurrentlyValid,
+  isDealAvailableForChannel,
   resolveChannelPrice,
   resolveChannelPercent,
   allocateDealDiscount,
   validateDealSelection,
+  validateOptionGroupSelection,
   isItemEligibleForDiscount,
   mapDealOut,
   mapDealOutPublic,
@@ -12,6 +14,8 @@ import {
   matchesPinnedVariant,
   capFreeUnitPrice,
   resolveBogoSides,
+  resolveBogoSideMode,
+  resolveBogoOptionGroups,
   computeOrderDiscount,
 } from '../deal.pricing.js';
 
@@ -384,6 +388,11 @@ describe('mapDealOut with new deal types', () => {
     expect(mapDealOut({ id: 'd4', type: 'BUY_X_GET_Y', price: null }).type).toBe('buy_x_get_y');
   });
 
+  it('maps PROMO_CODE to promo_code and MIN_SPEND to min_spend', () => {
+    expect(mapDealOut({ id: 'd7', type: 'PROMO_CODE', price: null }).type).toBe('promo_code');
+    expect(mapDealOut({ id: 'd8', type: 'MIN_SPEND', price: null }).type).toBe('min_spend');
+  });
+
   it('keeps price as null rather than coercing to 0 for a discount-type deal', () => {
     const mapped = mapDealOut({ id: 'd6', type: 'PERCENTAGE', price: null, discountPercent: 15 });
     expect(mapped.price).toBeNull();
@@ -473,9 +482,106 @@ describe('resolveBogoSides', () => {
   });
 });
 
+describe('isDealAvailableForChannel', () => {
+  it('allows a channel with no explicit flag (defaults true)', () => {
+    expect(isDealAvailableForChannel({}, 'Dine In')).toBe(true);
+  });
+
+  it('rejects a channel explicitly disabled', () => {
+    expect(isDealAvailableForChannel({ availableDelivery: false }, 'Delivery')).toBe(false);
+  });
+
+  it('allows every other channel when only one is disabled', () => {
+    const deal = { availableDelivery: false };
+    expect(isDealAvailableForChannel(deal, 'Dine In')).toBe(true);
+    expect(isDealAvailableForChannel(deal, 'Take Away')).toBe(true);
+  });
+
+  it('never blocks an unrecognized/undefined order type (e.g. Foodpanda, which has no toggle)', () => {
+    expect(isDealAvailableForChannel({ availableDineIn: false, availableTakeaway: false, availableDelivery: false }, 'Foodpanda')).toBe(true);
+    expect(isDealAvailableForChannel({ availableDineIn: false }, undefined)).toBe(true);
+  });
+});
+
+describe('resolveBogoSideMode / resolveBogoOptionGroups', () => {
+  const bogo = (extra: Partial<DealForPricing>): DealForPricing => baseDeal({ type: 'BUY_X_GET_Y', ...extra });
+
+  it('is "fixed" for a side with DealBogoItem rows', () => {
+    const deal = bogo({ bogoItems: [{ role: 'BUY', menuItemId: 'pizza', variantId: null, qty: 1 }] });
+    expect(resolveBogoSideMode(deal, 'BUY')).toBe('fixed');
+    expect(resolveBogoOptionGroups(deal, 'BUY')).toEqual([]);
+  });
+
+  it('is "fixed" for a side using only the legacy flat columns', () => {
+    const deal = bogo({ getItemId: 'fries', getQty: 1 });
+    expect(resolveBogoSideMode(deal, 'GET')).toBe('fixed');
+  });
+
+  it('is "customizable" for a side with a bogoSide-tagged option group', () => {
+    const deal = bogo({
+      optionGroups: [
+        { id: 'g1', label: 'Pick your pizza', minSelections: 1, maxSelections: 1, bogoSide: 'BUY', options: [] },
+      ],
+    });
+    expect(resolveBogoSideMode(deal, 'BUY')).toBe('customizable');
+    expect(resolveBogoSideMode(deal, 'GET')).toBe('fixed'); // untouched, independent per side
+    expect(resolveBogoOptionGroups(deal, 'BUY')).toHaveLength(1);
+  });
+
+  it('a deal can mix a Fixed buy side with a Customizable get side', () => {
+    const deal = bogo({
+      bogoItems: [{ role: 'BUY', menuItemId: 'pizza', variantId: null, qty: 1 }],
+      optionGroups: [
+        { id: 'g1', label: 'Pick your free dessert', minSelections: 1, maxSelections: 1, bogoSide: 'GET', options: [] },
+      ],
+    });
+    expect(resolveBogoSideMode(deal, 'BUY')).toBe('fixed');
+    expect(resolveBogoSideMode(deal, 'GET')).toBe('customizable');
+  });
+
+  it('ignores an OPTION_COMBO group (bogoSide null) when resolving a BOGO side', () => {
+    const deal = bogo({
+      optionGroups: [{ id: 'g1', label: 'Unrelated', minSelections: 1, maxSelections: 1, bogoSide: null, options: [] }],
+    });
+    expect(resolveBogoSideMode(deal, 'BUY')).toBe('fixed');
+    expect(resolveBogoSideMode(deal, 'GET')).toBe('fixed');
+  });
+});
+
+describe('validateOptionGroupSelection (shared by OPTION_COMBO and a Customizable BOGO side)', () => {
+  const groups = [
+    {
+      id: 'g1',
+      label: 'Pick your free drink',
+      minSelections: 1,
+      maxSelections: 1,
+      options: [
+        { id: 'o1', menuItemId: 'coke', variantId: null, extraPrice: 0 },
+        { id: 'o2', menuItemId: 'sprite', variantId: null, extraPrice: 0 },
+      ],
+    },
+  ];
+
+  it('accepts an in-allow-list pick and returns a normalized line', () => {
+    const result = validateOptionGroupSelection(groups, [{ groupId: 'g1', menuItemId: 'coke', qty: 1 }]);
+    expect(result).toEqual([{ menuItemId: 'coke', variantId: null, qty: 1, extraPrice: 0 }]);
+  });
+
+  it('rejects a pick outside the group allow-list', () => {
+    expect(() => validateOptionGroupSelection(groups, [{ groupId: 'g1', menuItemId: 'pepsi' }])).toThrow();
+  });
+
+  it('rejects too few selections', () => {
+    expect(() => validateOptionGroupSelection(groups, [])).toThrow();
+  });
+});
+
 describe('computeOrderDiscount', () => {
+  // computeOrderDiscount is agnostic to PROMO_CODE vs MIN_SPEND — both share the
+  // same minSpend/flatDiscount/discountPercent fields; only resolveOrderDiscount's
+  // lookup (by code vs. auto-match) differs between the two types.
   function orderDiscountDeal(overrides: Partial<DealForPricing> = {}): DealForPricing {
-    return baseDeal({ type: 'ORDER_DISCOUNT', price: null, ...overrides });
+    return baseDeal({ type: 'MIN_SPEND', price: null, ...overrides });
   }
 
   it('applies a flat discount (Promo Code) when the minimum spend is met', () => {

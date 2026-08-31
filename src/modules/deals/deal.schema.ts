@@ -101,7 +101,7 @@ export const dealSchema = z
     getItemId: z.string().uuid().optional().nullable(),
     getVariantId: z.string().uuid().optional().nullable(),
     getQty: z.coerce.number().int().min(1).max(50).optional().nullable(),
-    // order_discount
+    // promo_code / min_spend
     minSpend: z.coerce.number().min(0).optional().nullable(),
     flatDiscount: z.coerce.number().positive('Discount amount must be greater than 0').optional().nullable(),
   })
