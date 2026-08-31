@@ -116,6 +116,30 @@ export function resolveChannelPercent(
   return Math.min(100, Math.max(0, override ?? base));
 }
 
+/** Whether a deal is orderable on this channel at all — a gate independent of
+ *  price/percent overrides above. Every deal type carries these three
+ *  booleans (no Foodpanda toggle — matches POS's own 3-channel order-type
+ *  selector; Foodpanda deals aren't gated here). An unrecognized/missing
+ *  order type is never blocked — the caller is responsible for knowing its
+ *  own channel; this only rejects a channel the deal explicitly disabled. */
+export interface ChannelAvailable {
+  availableDineIn?: boolean;
+  availableTakeaway?: boolean;
+  availableDelivery?: boolean;
+}
+
+const ORDER_TYPE_TO_AVAILABILITY_FIELD: Record<string, keyof ChannelAvailable> = {
+  'Dine In': 'availableDineIn',
+  'Take Away': 'availableTakeaway',
+  'Delivery': 'availableDelivery',
+};
+
+export function isDealAvailableForChannel(deal: ChannelAvailable, orderType: string | undefined): boolean {
+  const field = orderType ? ORDER_TYPE_TO_AVAILABILITY_FIELD[orderType] : undefined;
+  if (!field) return true;
+  return deal[field] ?? true;
+}
+
 export interface DealComponentForPricing {
   id: string;
   menuItemId: string;
@@ -136,6 +160,9 @@ export interface DealOptionGroupForPricing {
   minSelections: number;
   maxSelections: number;
   options: DealOptionItemForPricing[];
+  /** null = an OPTION_COMBO (Customizable) group. Set = this group is one
+   *  BUY_X_GET_Y side's "Customizable" mode — see resolveBogoSideMode. */
+  bogoSide?: 'BUY' | 'GET' | null;
 }
 
 export interface BogoItemForPricing {
@@ -153,9 +180,9 @@ export interface BogoSideItem {
   qty: number;
 }
 
-export type DealTypeMember = 'COMBO' | 'OPTION_COMBO' | 'PERCENTAGE' | 'BUY_X_GET_Y' | 'ORDER_DISCOUNT';
+export type DealTypeMember = 'COMBO' | 'OPTION_COMBO' | 'PERCENTAGE' | 'BUY_X_GET_Y' | 'PROMO_CODE' | 'MIN_SPEND';
 
-export interface DealForPricing extends ChannelPriced, ChannelDiscounted {
+export interface DealForPricing extends ChannelPriced, ChannelDiscounted, ChannelAvailable {
   id: string;
   type: DealTypeMember;
   isActive: boolean;
@@ -173,8 +200,10 @@ export interface DealForPricing extends ChannelPriced, ChannelDiscounted {
   applicableItems?: string[];
   applicableCategories?: string[];
   // BUY_X_GET_Y
-  /** Every item on both sides of the offer. Empty on legacy rows, which carry
-   *  their single item in the flat buy/get fields below instead. */
+  /** Every item on both sides of the offer, when the side is in "Fixed" mode.
+   *  Empty on legacy rows, which carry their single item in the flat buy/get
+   *  fields below instead. A side in "Customizable" mode instead has rows in
+   *  `optionGroups` tagged with its `bogoSide` — see resolveBogoSideMode. */
   bogoItems?: BogoItemForPricing[];
   buyItemId?: string | null;
   /** Pins the "buy" side to one variant. Null = any variant qualifies (legacy rows). */
@@ -184,11 +213,10 @@ export interface DealForPricing extends ChannelPriced, ChannelDiscounted {
   /** Pins the free side to one variant. Null = any variant, capped at the cheapest one's price. */
   getVariantId?: string | null;
   getQty?: number | null;
-  // ORDER_DISCOUNT
+  // PROMO_CODE / MIN_SPEND (formerly the single ORDER_DISCOUNT type)
   /** Whole-order discount floor — null/0 = no minimum spend required. */
   minSpend?: number | null;
-  /** Flat Rs. off the order. Null = use discountPercent instead (Minimum
-   *  Spend deals only — a promo code, i.e. `code` set, is always flat). */
+  /** Flat Rs. off the order. Null = use discountPercent instead. */
   flatDiscount?: number | null;
   code?: string | null;
 }
@@ -308,7 +336,20 @@ export function validateDealSelection(deal: DealForPricing, submitted: Submitted
   }
 
   // OPTION_COMBO
-  const groups = deal.optionGroups ?? [];
+  return validateOptionGroupSelection(deal.optionGroups ?? [], submitted);
+}
+
+/** Validates submitted picks against a set of option groups and returns the
+ *  normalized, trustworthy line list — the shared primitive behind an
+ *  OPTION_COMBO deal's groups (via validateDealSelection above) and a
+ *  BUY_X_GET_Y side in "Customizable" mode (via deal.revalidate.ts, using
+ *  resolveBogoOptionGroups's groups directly). Throws ApiError.badRequest on
+ *  any tamper: a pick outside its group's allow-list, or a group selection
+ *  count outside min/maxSelections. */
+export function validateOptionGroupSelection(
+  groups: DealOptionGroupForPricing[],
+  submitted: SubmittedDealPick[],
+): DealSelectionLine[] {
   const knownGroupIds = new Set(groups.map((g) => g.id));
   for (const s of submitted) {
     if (s.groupId && !knownGroupIds.has(s.groupId)) {
@@ -389,6 +430,26 @@ export function resolveBogoSides(deal: DealForPricing): { buy: BogoSideItem[]; g
   return { buy, get };
 }
 
+/** Is this Buy X Get Y side "Fixed" (a flat, all-required item list — today's
+ *  only shape, unchanged) or "Customizable" (an option set the customer
+ *  chooses from, admin-selectable per side)? A side is Customizable exactly
+ *  when the deal's optionGroups relation has any row tagged with that
+ *  bogoSide; every other case — DealBogoItem rows, or the legacy flat-column
+ *  fallback — is Fixed, since neither existed before this feature. */
+export function resolveBogoSideMode(deal: DealForPricing, side: 'BUY' | 'GET'): 'fixed' | 'customizable' {
+  const groups = deal.optionGroups ?? [];
+  return groups.some((g) => g.bogoSide === side) ? 'customizable' : 'fixed';
+}
+
+/** The option groups configured for a Buy X Get Y side in "Customizable"
+ *  mode, sorted for stable display/validation order. Meaningless (always
+ *  empty) for a side in "Fixed" mode — use resolveBogoSides for that side
+ *  instead. */
+export function resolveBogoOptionGroups(deal: DealForPricing, side: 'BUY' | 'GET'): DealOptionGroupForPricing[] {
+  const groups = deal.optionGroups ?? [];
+  return groups.filter((g) => g.bogoSide === side);
+}
+
 /** Does a submitted Buy X Get Y line satisfy the variant the deal pins it to?
  *
  *  A deal written since the *VariantId columns existed always pins both sides,
@@ -426,10 +487,13 @@ export interface OrderDiscountOutcome {
   amount?: number;
 }
 
-/** How much an ORDER_DISCOUNT deal takes off a whole order, given the order's
- *  own (server-derived) subtotal. Callers check isDealCurrentlyValid and any
- *  code match/outlet-eligibility themselves — same division of labour as
- *  every other deal type in this file. Never trusts a client-sent amount. */
+/** How much a PROMO_CODE or MIN_SPEND deal takes off a whole order, given the
+ *  order's own (server-derived) subtotal. Agnostic to which of the two: both
+ *  share the same minSpend/flatDiscount/discountPercent fields, and only
+ *  differ in how resolveOrderDiscount looks them up (by code vs. auto-match).
+ *  Callers check isDealCurrentlyValid and any code match/outlet-eligibility
+ *  themselves — same division of labour as every other deal type in this
+ *  file. Never trusts a client-sent amount. */
 export function computeOrderDiscount(
   deal: DealForPricing,
   orderType: string | undefined,
@@ -459,7 +523,8 @@ const DEAL_TYPE_TO_WIRE: Record<string, string> = {
   OPTION_COMBO: 'option_combo',
   PERCENTAGE: 'percentage',
   BUY_X_GET_Y: 'buy_x_get_y',
-  ORDER_DISCOUNT: 'order_discount',
+  PROMO_CODE: 'promo_code',
+  MIN_SPEND: 'min_spend',
 };
 
 /** Decimal → Number + enum-member → wire-string mapping for a Deal record
@@ -504,10 +569,10 @@ export function mapDealOut(deal: any): any {
  *  route — mirrors self-order.controller.ts's getSelfOrderMenu warning.
  *
  *  `code`/`minSpend`/`flatDiscount` are stripped too. getSelfOrderDeals
- *  already filters ORDER_DISCOUNT deals out entirely, so nothing carrying a
- *  real promo code should ever reach here — this is the second lock, so a
- *  future caller that forgets that filter still can't publish a working
- *  coupon code to an unauthenticated client. */
+ *  already filters PROMO_CODE/MIN_SPEND deals out entirely, so nothing
+ *  carrying a real promo code should ever reach here — this is the second
+ *  lock, so a future caller that forgets that filter still can't publish a
+ *  working coupon code to an unauthenticated client. */
 export function mapDealOutPublic(deal: any): any {
   const mapped = mapDealOut(deal);
   const {
