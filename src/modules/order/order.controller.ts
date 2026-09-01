@@ -228,41 +228,32 @@ export async function generateOrderNumber(): Promise<string> {
   return `ORD-${Date.now().toString().slice(-6)}`;
 }
 
-/** Seeds the shared per-kitchen OrderKitchenProgress ticket for every non-deal
- *  item's matching kitchen — unchanged from before deal items got their own
- *  tracking — and reports whether ANY item, deal or plain, matched an active
- *  kitchen at all, so the caller can skip the kitchen pipeline entirely when
- *  nothing needs cooking. A deal item's own OrderKitchenDealProgress row is
- *  NOT created here; it's created lazily the first time a kitchen actually
- *  touches that specific dish (updateOrderKitchenStatus), the same
- *  self-healing pattern the shared ticket already used for historic orders. */
+/** Reports whether ANY of an order's items matches an active kitchen's
+ *  assignedCategories, so the caller can skip the kitchen pipeline entirely
+ *  (mark the order READY immediately) when nothing needs cooking. Creates no
+ *  progress rows: every dish — deal or plain — gets its own
+ *  OrderKitchenDealProgress ticket created lazily the first time a kitchen
+ *  actually touches it (updateOrderKitchenStatus), the same self-healing
+ *  pattern deal dishes always used and the shared ticket used for historic
+ *  orders. `db` is kept in the signature for call-site symmetry / future use. */
 export async function seedKitchenProgress(
   db: Prisma.TransactionClient | typeof prisma,
-  orderId: string,
+  _orderId: string,
   items: { dealId?: string | null; menuItem?: { category?: { name?: string | null } | null } | null }[],
 ): Promise<boolean> {
   const activeKitchens = await (db as typeof prisma).kitchen.findMany({ where: { status: 'active' } });
-  const matchedKitchenIds = new Set<string>();
-  let hasDealKitchenWork = false;
 
   for (const item of items) {
     const categoryName = item.menuItem?.category?.name;
     if (!categoryName) continue;
     for (const kitch of activeKitchens) {
       if (Array.isArray(kitch.assignedCategories) && kitch.assignedCategories.includes(categoryName)) {
-        if (item.dealId) hasDealKitchenWork = true;
-        else matchedKitchenIds.add(kitch.id);
+        return true;
       }
     }
   }
 
-  if (matchedKitchenIds.size > 0) {
-    await (db as typeof prisma).orderKitchenProgress.createMany({
-      data: Array.from(matchedKitchenIds).map((kitchenId) => ({ orderId, kitchenId, status: 'pending' })),
-    });
-  }
-
-  return matchedKitchenIds.size > 0 || hasDealKitchenWork;
+  return false;
 }
 
 /**
@@ -300,7 +291,9 @@ export function computeDerivedOrderStatus(
     if (assigned.length === 0) continue;
     hasKitchenRoutedItem = true;
 
-    const rows = (item.dealId && item.dealItemKey)
+    // Every item now carries its own per-dish key (deal or plain); only rows
+    // written before that fall through to the legacy shared per-kitchen ticket.
+    const rows = item.dealItemKey
       ? assigned
           .map((k) => order.kitchenDealProgress.find((p) => p.kitchenId === k.id && p.dealItemKey === item.dealItemKey))
           .filter((p): p is { kitchenId: string; dealItemKey: string; status: string } => !!p)
@@ -1200,19 +1193,29 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
   res.json(ApiResponse.success(statusUpdated, 'Order status updated'));
 });
 
-/** PUT /api/orders/:id/kitchen-status — one kitchen updates its own progress on an
- *  order. With no `dealItemKey`, this targets the order's shared per-kitchen ticket
- *  (every non-deal item at this kitchen, moved together — unchanged behavior). With
- *  a `dealItemKey`, it targets one specific dish from a deal redemption instead, so
- *  the kitchen can accept/prepare/ready each dish of a deal independently rather
- *  than the whole redemption at once. */
+/** PUT /api/orders/:id/kitchen-status — one kitchen advances its progress on an
+ *  order. `dealItemKey` (one) or `dealItemKeys` (many, for "Start All Cooking" /
+ *  "Mark All Ready") each target a dish's own ticket (OrderKitchenDealProgress);
+ *  every item, deal or plain, has such a key (see withDealItemKeys). The batch
+ *  form does all the dishes in ONE request / transaction / socket emit instead
+ *  of one apiece. A request with neither key is the legacy path: it moves the
+ *  order's shared per-kitchen ticket (OrderKitchenProgress), still used for
+ *  in-flight orders whose OrderItem rows predate per-dish keys. */
 export const updateOrderKitchenStatus = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { kitchenId, status, dealItemKey } = req.body;
+  const { kitchenId, status, dealItemKey, dealItemKeys } = req.body;
   if (!kitchenId) throw ApiError.badRequest('kitchenId is required');
   if (!status || !['preparing', 'ready'].includes(status)) {
     throw ApiError.badRequest('status must be one of: preparing, ready');
   }
+
+  // Normalise to a list of targets. `null` in the list = the legacy shared
+  // ticket. Dedup so a caller repeating a key can't double-work.
+  const rawTargets: (string | null)[] = Array.isArray(dealItemKeys) && dealItemKeys.length > 0
+    ? Array.from(new Set(dealItemKeys.map((k: any) => (k == null ? null : String(k)))))
+    : [dealItemKey ?? null];
+  const targetKeys = rawTargets.filter((k): k is string => k !== null);
+  const targetLegacyShared = rawTargets.includes(null);
 
   const existing = await prisma.order.findUnique({
     where: { id },
@@ -1230,63 +1233,36 @@ export const updateOrderKitchenStatus = asyncHandler(async (req: Request, res: R
     throw ApiError.badRequest('Cannot change order status while a cancellation request is pending approval');
   }
 
-  let sharedProgressId: string | null = null;
-  let dealProgressId: string | null = null;
-
-  if (dealItemKey) {
-    const ownsKey = existing.items.some((i: any) => i.dealId && i.dealItemKey === dealItemKey);
-    if (!ownsKey) throw ApiError.badRequest('This deal item does not belong to this order');
-
-    let dealProgress = existing.kitchenDealProgress.find(
-      (p) => p.kitchenId === kitchenId && p.dealItemKey === dealItemKey,
-    );
-    if (!dealProgress) {
-      const kitchenObj = await prisma.kitchen.findUnique({ where: { id: kitchenId } });
-      if (!kitchenObj) throw ApiError.notFound('Kitchen not found');
-
-      dealProgress = await prisma.orderKitchenDealProgress.create({
-        data: { orderId: id, kitchenId, dealItemKey, status: 'pending' },
-      });
-      existing.kitchenDealProgress.push(dealProgress);
+  for (const key of targetKeys) {
+    if (!existing.items.some((i: any) => i.dealItemKey === key)) {
+      throw ApiError.badRequest('This item does not belong to this order');
     }
-    dealProgressId = dealProgress.id;
-  } else {
-    let sharedProgress = existing.kitchenProgress.find((p) => p.kitchenId === kitchenId);
-    if (!sharedProgress) {
-      // Self-healing: if an order was created before progress rows were populated
-      // (e.g. historic self-orders), dynamically create the missing progress row.
-      const kitchenObj = await prisma.kitchen.findUnique({ where: { id: kitchenId } });
-      if (!kitchenObj) throw ApiError.notFound('Kitchen not found');
-
-      sharedProgress = await prisma.orderKitchenProgress.create({
-        data: { orderId: id, kitchenId, status: 'pending' },
-      });
-      existing.kitchenProgress.push(sharedProgress);
-    }
-    sharedProgressId = sharedProgress.id;
   }
 
+  const kitchenObj = await prisma.kitchen.findUnique({ where: { id: kitchenId } });
+  if (!kitchenObj) throw ApiError.notFound('Kitchen not found');
   const activeKitchens = await prisma.kitchen.findMany({ where: { status: 'active' } });
 
-  // Resolves what a shared (non-deal) ticket's status would be after this update.
+  const targetKeySet = new Set(targetKeys);
+  // Resolves what the legacy shared (null-key) ticket's status would be after
+  // this update — only reached by items whose rows predate per-dish keys.
   const sharedStatusAfter = (kId: string): string => {
-    if (!dealItemKey && kId === kitchenId) return status;
+    if (targetLegacyShared && kId === kitchenId) return status;
     const p = existing.kitchenProgress.find((row) => row.kitchenId === kId);
     return p ? p.status : 'pending';
   };
-  // Resolves what one deal dish's own ticket would be after this update.
+  // Resolves what one dish's own per-item ticket would be after this update.
   const dealStatusAfter = (kId: string, key: string): string => {
-    if (dealItemKey && key === dealItemKey && kId === kitchenId) return status;
+    if (kId === kitchenId && targetKeySet.has(key)) return status;
     const p = existing.kitchenDealProgress.find((row) => row.kitchenId === kId && row.dealItemKey === key);
     return p ? p.status : 'pending';
   };
 
-  // An order is READY automatically once every item's assigned kitchen(s) are
-  // 'ready' — via the shared ticket for a plain item, or that dish's own ticket
-  // for a deal item. Derived from the order's items × each active kitchen's
-  // assignedCategories, NOT from which progress rows happen to exist: a
-  // pure-deal order has no shared ticket at all, and a deal dish no kitchen has
-  // started yet has no deal ticket — both must still be judged correctly.
+  // An order is READY automatically once every item's assigned kitchen(s) have
+  // marked that dish's own ticket 'ready'. Derived from the order's items ×
+  // each active kitchen's assignedCategories, NOT from which progress rows
+  // happen to exist: a dish no kitchen has started yet has no ticket at all and
+  // must still be judged correctly (not ready).
   let allReadyAfter = status === 'ready';
   if (allReadyAfter && existing.items.length > 0) {
     for (const item of existing.items as any[]) {
@@ -1297,9 +1273,9 @@ export const updateOrderKitchenStatus = asyncHandler(async (req: Request, res: R
       );
       if (assigned.length === 0) continue;
 
-      const itemReady = item.dealId && item.dealItemKey
+      const itemReady = item.dealItemKey
         ? assigned.every((k) => dealStatusAfter(k.id, item.dealItemKey) === 'ready')
-        : assigned.every((k) => sharedStatusAfter(k.id) === 'ready');
+        : assigned.every((k) => sharedStatusAfter(k.id) === 'ready'); // legacy null-key items only
       if (!itemReady) {
         allReadyAfter = false;
         break;
@@ -1311,19 +1287,36 @@ export const updateOrderKitchenStatus = asyncHandler(async (req: Request, res: R
     || existing.kitchenProgress.some((p) => p.status === 'preparing' || p.status === 'ready')
     || existing.kitchenDealProgress.some((p) => p.status === 'preparing' || p.status === 'ready');
 
-  let newPrismaStatus = existing.status;
-  if (allReadyAfter) newPrismaStatus = 'READY' as any;
-  else if (anyStartedAfter && (existing.status === 'PENDING' || existing.status === 'SCHEDULED')) newPrismaStatus = 'PREPARING' as any;
-
   const order = await prisma.$transaction(async (tx) => {
-    if (dealProgressId) {
-      await tx.orderKitchenDealProgress.update({ where: { id: dealProgressId }, data: { status } });
-    } else if (sharedProgressId) {
-      await tx.orderKitchenProgress.update({ where: { id: sharedProgressId }, data: { status } });
+    // Serialise concurrent kitchen-status writes on THIS order so the stock
+    // deduction guard below can't be raced — two dishes accepted at the same
+    // instant, two KDS terminals, or a batch racing a single tap.
+    await tx.$queryRaw`SELECT 1 FROM "orders" WHERE id = ${id} FOR UPDATE`;
+    const locked = await tx.order.findUniqueOrThrow({ where: { id }, select: { status: true } });
+
+    // Upsert every targeted ticket to `status` in one shot — replaces the old
+    // find-or-lazily-create-then-update dance, and does all dishes of a batch
+    // in this single transaction.
+    for (const key of targetKeySet) {
+      await tx.orderKitchenDealProgress.upsert({
+        where: { orderId_kitchenId_dealItemKey: { orderId: id, kitchenId, dealItemKey: key } },
+        create: { orderId: id, kitchenId, dealItemKey: key, status },
+        update: { status },
+      });
+    }
+    if (targetLegacyShared) {
+      await tx.orderKitchenProgress.upsert({
+        where: { orderId_kitchenId: { orderId: id, kitchenId } },
+        create: { orderId: id, kitchenId, status },
+        update: { status },
+      });
     }
 
-    const needsOrderUpdate = newPrismaStatus !== existing.status;
-    const updated = needsOrderUpdate
+    let newPrismaStatus: string = locked.status;
+    if (allReadyAfter) newPrismaStatus = 'READY';
+    else if (anyStartedAfter && (locked.status === 'PENDING' || locked.status === 'SCHEDULED')) newPrismaStatus = 'PREPARING';
+
+    const updated = newPrismaStatus !== locked.status
       ? await tx.order.update({
           where: { id },
           data: { status: newPrismaStatus as any },
@@ -1342,12 +1335,13 @@ export const updateOrderKitchenStatus = asyncHandler(async (req: Request, res: R
           },
         });
 
-    await deductStockForConsumedStates(tx, existing, updated.items, newPrismaStatus as string, req.user?.id);
+    // Pass the LOCKED status so the "already consumed?" guard is race-free.
+    await deductStockForConsumedStates(tx, { ...existing, status: locked.status }, updated.items, newPrismaStatus, req.user?.id);
 
     return updated;
   }, { timeout: 30000 });
 
-  const statusUpdated = await runOrderStatusPostEffects(prisma, existing, order, newPrismaStatus as string, req);
+  const statusUpdated = await runOrderStatusPostEffects(prisma, existing, order, order.status as string, req);
   res.json(ApiResponse.success(statusUpdated, 'Kitchen status updated'));
 });
 

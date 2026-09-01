@@ -135,23 +135,33 @@ function cheapestUnitPrice(menuItem: any, orderType: string | undefined): number
  * NOT re-price ordinary items (see order.controller.ts's createOrder for why
  * that's a separate, larger, descoped problem).
  */
-/** Assigns each deal-tagged item a stable per-dish key within its dealLineId
- *  (`${dealLineId}#${ordinal}`), computed from submission order — never
- *  client-trusted. This is what lets a kitchen accept/prepare/ready each dish
- *  of a deal redemption independently instead of the whole redemption
- *  together (see OrderKitchenDealProgress). It survives an order edit even
- *  though updateOrder deletes and recreates every OrderItem row, because it's
- *  derived from dealLineId — which the frontend preserves verbatim when an
- *  existing order is reloaded into the cart for editing, unlike a row's own
- *  id. Plain (non-deal) items get a null key and keep using the existing
- *  shared per-kitchen OrderKitchenProgress ticket, unchanged. */
+/** Assigns EVERY item a stable per-dish key, computed from submission order —
+ *  never client-trusted. This is what lets a kitchen accept/prepare/ready each
+ *  dish of an order independently instead of moving several dishes together
+ *  (see OrderKitchenDealProgress, keyed by this value). Every key survives an
+ *  order edit even though updateOrder deletes and recreates every OrderItem
+ *  row, because it's derived from stable content, not a row id:
+ *   - Deal item  → `${dealLineId}#${ordinal}` — dealLineId is preserved
+ *     verbatim by the frontend when an order is reloaded into the cart.
+ *   - Plain item → `p:${menuItemId||name}:${variantId||'-'}#${ordinal}` —
+ *     two genuinely identical lines get #0/#1 and are interchangeable, so
+ *     which ticket ends up bound to which physical row does not matter.
+ *  Historic orders whose rows predate this (null dealItemKey) fall back to the
+ *  legacy shared OrderKitchenProgress ticket in updateOrderKitchenStatus /
+ *  computeDerivedOrderStatus. */
 export function withDealItemKeys(items: any[]): any[] {
   const counters = new Map<string, number>();
   return items.map((item) => {
-    if (!item.dealId || !item.dealLineId) return { ...item, dealItemKey: null };
-    const n = counters.get(item.dealLineId) ?? 0;
-    counters.set(item.dealLineId, n + 1);
-    return { ...item, dealItemKey: `${item.dealLineId}#${n}` };
+    if (item.dealId && item.dealLineId) {
+      const n = counters.get(item.dealLineId) ?? 0;
+      counters.set(item.dealLineId, n + 1);
+      return { ...item, dealItemKey: `${item.dealLineId}#${n}` };
+    }
+    const rawBase = `p:${item.menuItemId ?? String(item.name ?? '').trim().toLowerCase()}:${item.variantId ?? '-'}`;
+    const base = rawBase.length > 120 ? rawBase.slice(0, 120) : rawBase;
+    const n = counters.get(base) ?? 0;
+    counters.set(base, n + 1);
+    return { ...item, dealItemKey: `${base}#${n}` };
   });
 }
 

@@ -326,18 +326,36 @@ plus a body explaining _why_ the change was made when that is not obvious.
   cover it. `createOrder` always called it; `self-order.controller.ts`'s `createSelfOrder` did not
   until 2026-08-27 — self-order orders went straight through with zero stock checking. Any new
   order-creation path needs this call too, not just `revalidateDealLines`.
-- **`Order.status` (PENDING→PREPARING→READY) is *derived* from KDS progress rows, never set
-  directly.** `updateOrderKitchenStatus` recomputes it from `OrderKitchenProgress` (one shared row
-  per order+kitchen for non-deal items) + `OrderKitchenDealProgress` (per order+kitchen+`dealItemKey`,
-  created lazily on first kitchen touch — a pure-deal order has none at creation). Rule: an item is
-  ready once **every** active `Kitchen` whose `assignedCategories` include its category has marked it
-  `ready`. **`Kitchen` has no `outletId`** — so two active kitchens sharing a category (often a
-  leftover duplicate) make every order of that category need readying on *both* boards or it never
-  reaches `READY` and stalls in Order Monitor's Preparing column; keep each category on one active
-  kitchen. `computeDerivedOrderStatus()` (added 2026-08-29) is a second copy of the rule, used by
+- **`Order.status` (PENDING→PREPARING→READY) is *derived* from per-dish KDS progress rows, never
+  set directly.** Since 2026-09-01 **every** dish (deal or plain) has its own ticket:
+  `OrderKitchenDealProgress` keyed `(order, kitchen, dealItemKey)`, created lazily on first kitchen
+  touch — an order has **zero** progress rows at creation. `deal.revalidate.ts`'s `withDealItemKeys`
+  assigns every item a `dealItemKey` (deal → `${dealLineId}#${n}`, plain →
+  `p:${menuItemId||name}:${variantId||'-'}#${n}`); `seedKitchenProgress` no longer pre-creates rows,
+  it only returns whether any item routes to a kitchen (for the auto-`READY` shortcut).
+  `OrderKitchenProgress` (the old one-shared-row-per-order+kitchen) is still read/written but **only
+  for legacy orders whose items have `dealItemKey === null`** — `updateOrderKitchenStatus` /
+  `computeDerivedOrderStatus` branch `item.dealItemKey ? per-dish : shared`. Rule (unchanged, now
+  per dish): a dish is ready once **every** active `Kitchen` whose `assignedCategories` include its
+  category has marked that dish `ready`; the order is `READY` once every dish is. **`Kitchen` has no
+  `outletId`** — so two active kitchens sharing a category (often a leftover duplicate) make every
+  order of that category need readying on *both* boards or it never reaches `READY` and stalls in
+  Order Monitor's Preparing column; keep each category on one active kitchen.
+  `computeDerivedOrderStatus()` (added 2026-08-29) is a second copy of the rule, used by
   `deleteKitchen` — which must `deleteMany` both progress tables before `kitchen.delete` (they FK
   `Kitchen` with no `onDelete` → `Foreign key constraint failed` otherwise), then re-derives and
-  promotes any now-ready open order.
+  promotes any now-ready open order. **No schema/DB migration was needed for the per-dish rollout** —
+  it reuses `OrderItem.dealItemKey` (`VarChar(140)`) and `OrderKitchenDealProgress`'s existing
+  `@@unique([orderId, kitchenId, dealItemKey])`.
+  - **`updateOrderKitchenStatus` accepts `dealItemKey` (one) OR `dealItemKeys: string[]` (many).**
+    The batch form ("Start All Cooking" / "Mark All Ready") upserts every targeted ticket, derives
+    the order status, deducts stock and emits `order:updated` **once** — the per-dish rollout first
+    shipped this as N sequential client calls, which made the button visibly slow and fanned out N
+    socket reloads (fixed same day, 2026-09-01). The handler opens its `$transaction` with
+    `SELECT 1 FROM "orders" WHERE id = ${id} FOR UPDATE` and re-reads `status` under that lock, so
+    `deductStockForConsumedStates`'s `!alreadyConsumed` guard is race-free against a concurrent
+    accept of another dish / a second KDS terminal (otherwise both read `PENDING` and each deduct
+    the whole order's ingredients).
 - **`getSelfOrderDeals`'s Prisma `include` must list `bogoItems`**, same as `deal.controller.ts`'s
   own `dealInclude` — it didn't (fixed 2026-08-27), so every BUY_X_GET_Y deal returned to a
   self-order customer silently fell back to the single-item `buyItemId`/`getItemId` flat mirror
