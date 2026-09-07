@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseDateRange, buildOrderWhere, computeCogs, displayOrderType } from '../reports.helpers.js';
+import { parseDateRange, buildOrderWhere, computeCogs, displayOrderType, isLowStock } from '../reports.helpers.js';
 
 describe('parseDateRange', () => {
   it('parses valid from/to into inclusive day boundaries', () => {
@@ -168,6 +168,22 @@ describe('groupPayments', () => {
       { method: 'Cash', amount: 1000 },
       { method: 'JazzCash', amount: 507 },
     ]);
+  });
+});
+
+describe('isLowStock', () => {
+  it('is true when stock is below the threshold', () => {
+    expect(isLowStock(5, 10)).toBe(true);
+  });
+  it('is true when stock exactly equals the threshold', () => {
+    expect(isLowStock(10, 10)).toBe(true);
+  });
+  it('is false when stock is above the threshold', () => {
+    expect(isLowStock(15, 10)).toBe(false);
+  });
+  it('is true at a zero threshold only when stock is also zero or negative', () => {
+    expect(isLowStock(0, 0)).toBe(true);
+    expect(isLowStock(1, 0)).toBe(false);
   });
 });
 

@@ -374,6 +374,19 @@ plus a body explaining _why_ the change was made when that is not obvious.
   (a promoted host, or a second device joining an occupied table) saw any deal line's full
   undiscounted price, overstating that table's bill. Any future field added to this response needs
   adding here explicitly — it does not spread the raw Prisma row.
+- **`AttendanceRecord.date`/`LeaveRequest.startDate`/`endDate` are plain `String` columns
+  (`"YYYY-MM-DD"`), not `DateTime`** — never pass them through `dayBoundaries()`'s `{gte,lte}`
+  range; compare against a PKT-computed string instead: `new Date(Date.now() + 5*60*60*1000)
+  .toISOString().split('T')[0]`. `Reservation.date` is the opposite case — a real `DateTime
+  @db.Date` column, so the boundary-range pattern IS correct there. `getDashboard`'s
+  `attendanceToday` (2026-09-07) is the first place this file spells out the distinction.
+- **`StockDemand`'s warehouse relations are `requestingWH`/`supplyingWH`**, not
+  `requestingWarehouse`/`supplyingWarehouse` — get this wrong and Prisma throws a schema-validation
+  error at query time, not a silent no-op. `PurchaseRequest.status`/`RestaurantTable.status` are
+  plain `String` columns (compare as literal strings, e.g. `'PENDING'`/`'occupied'`); `StockDemand.status`
+  is the real `DemandStatus` enum (member `PENDING`) — three lookalike "status" fields, two different
+  shapes, verify each against `schema.prisma` rather than assuming a model's sibling follows the
+  same convention.
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph

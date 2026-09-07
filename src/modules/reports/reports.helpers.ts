@@ -121,6 +121,11 @@ export function fillChannels(
   return CHANNEL_ORDER.map((type) => byType.get(type) ?? { type, sales: 0, orders: 0 });
 }
 
+/** True when stock is at or below the low-stock threshold. */
+export function isLowStock(currentStock: number, lowStockLevel: number): boolean {
+  return currentStock <= lowStockLevel;
+}
+
 /**
  * Default payment-method buckets used when grouping payments (mirrors the fallback list in
  * cash-settlement.service.ts's getActiveBalances/getStaffActiveBalance). Only affects alias

@@ -9,10 +9,11 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import {
   parseDateRange, buildOrderWhere, computeCogs,
   dayBoundaries, monthBoundaries, classifyChannel, growthPct, fillChannels, groupPayments,
-  displayOrderType,
+  displayOrderType, isLowStock,
 } from './reports.helpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { autoProcessExpiredBatches } from '../stock/autoExpiry.js';
+import { getActiveBalances } from '../cash-settlement/cash-settlement.service.js';
 
 const COMPLETED = 'COMPLETED'; // Prisma OrderStatus enum value for completed orders
 
@@ -188,7 +189,7 @@ export const getStockReport = asyncHandler(async (req: Request, res: Response) =
     const stock = Number(i.currentStock);
     const low = Number(i.lowStockLevel);
     const price = Number(i.purchasePrice ?? 0);
-    if (stock <= low) lowStockItems += 1;
+    if (isLowStock(stock, low)) lowStockItems += 1;
     const value = stock * price;
     totalValue += value;
     const name = i.category?.name ?? 'Uncategorized';
@@ -287,7 +288,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
   const weekEnd = new Date(weekStart); weekEnd.setUTCDate(weekStart.getUTCDate() + 6); weekEnd.setUTCHours(23, 59, 59, 999);
   const weekOrders = await prisma.order.findMany({
     where: { ...outletFilter, ...onlyCompleted, createdAt: { gte: weekStart, lte: weekEnd } },
-    select: { total: true, createdAt: true },
+    select: { total: true, createdAt: true, type: true, customerId: true, customerName: true, phone: true },
   });
   const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const dayTotals = [0, 0, 0, 0, 0, 0, 0];
@@ -296,6 +297,59 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
     dayTotals[idx] += Number(o.total);
   }
   const daywiseSales = labels.map((label, i) => ({ label, sales: Math.round(dayTotals[i]) }));
+
+  // --- peakHours / orderTypeTrend / customerActivity: all derived from weekOrders above, zero new queries ---
+  const peakHours = Array.from({ length: 24 }, (_, hour) => ({ hour, orders: 0, revenue: 0 }));
+  const orderTypeMap = new Map<string, Map<string, { count: number; revenue: number }>>();
+  for (const o of weekOrders) {
+    const created = new Date(o.createdAt);
+    const hour = created.getUTCHours();
+    peakHours[hour].orders += 1;
+    peakHours[hour].revenue += Number(o.total);
+
+    const dayLabel = labels[(created.getUTCDay() + 6) % 7];
+    const type = displayOrderType(String(o.type));
+    const dayMap = orderTypeMap.get(dayLabel) ?? new Map<string, { count: number; revenue: number }>();
+    const cur = dayMap.get(type) ?? { count: 0, revenue: 0 };
+    cur.count += 1;
+    cur.revenue += Number(o.total);
+    dayMap.set(type, cur);
+    orderTypeMap.set(dayLabel, dayMap);
+  }
+  for (const p of peakHours) p.revenue = Math.round(p.revenue);
+  const orderTypeTrend = labels.flatMap((day) => {
+    const dayMap = orderTypeMap.get(day);
+    if (!dayMap) return [];
+    return [...dayMap.entries()].map(([type, v]) => ({ day, type, count: v.count, revenue: Math.round(v.revenue) }));
+  });
+
+  // Same dedup key as topCustomers below (customerId -> clean phone -> name); orders that don't
+  // resolve to an identifiable customer (walk-in / no name) are excluded from activity counts.
+  const weekCustomerKey = (o: { customerId: string | null; customerName: string | null; phone: string | null }): string | null => {
+    if (o.customerId) return `id:${o.customerId}`;
+    if (!o.customerName || o.customerName.trim() === '' || o.customerName.toLowerCase() === 'walk-in') return null;
+    const cleanPhone = o.phone ? o.phone.replace(/\D/g, '') : '';
+    const isDummyPhone = !cleanPhone || cleanPhone === '00000000000' || cleanPhone === '11111111111' || cleanPhone === '12345678901';
+    if (!isDummyPhone && cleanPhone.length >= 7) return `phone:${cleanPhone}`;
+    return `name:${o.customerName.toLowerCase().trim()}`;
+  };
+  const dayCustomerSets = labels.map(() => new Set<string>());
+  for (const o of weekOrders) {
+    const key = weekCustomerKey(o);
+    if (!key) continue;
+    const idx = (new Date(o.createdAt).getUTCDay() + 6) % 7;
+    dayCustomerSets[idx].add(key);
+  }
+  const seenSoFar = new Set<string>();
+  const customerActivity = labels.map((label, i) => {
+    const daySet = dayCustomerSets[i];
+    let newCustomers = 0, returningCustomers = 0;
+    for (const key of daySet) {
+      if (seenSoFar.has(key)) returningCustomers += 1; else newCustomers += 1;
+    }
+    for (const key of daySet) seenSoFar.add(key);
+    return { day: label, uniqueCustomers: daySet.size, newCustomers, returningCustomers };
+  });
 
   // --- payable / receivable / settings / top customers ---
   const [purchaseAgg, customerAgg, validCustomerOrders, settings] = await Promise.all([
@@ -319,7 +373,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
   const payable = Math.round(Number(purchaseAgg._sum.due ?? 0));
   const receivable = Math.round(Number(customerAgg._sum.outstandingDue ?? 0));
 
-  const custMap = new Map<string, { name: string; totalOrders: number; totalSpent: number }>();
+  const custMap = new Map<string, { name: string; customerId: string | null; totalOrders: number; totalSpent: number }>();
   for (const o of validCustomerOrders) {
     if (!o.customerName || o.customerName.trim() === '' || o.customerName.toLowerCase() === 'walk-in') continue;
 
@@ -335,6 +389,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
     const amt = Number(o.total || 0);
     const existing = custMap.get(key) ?? {
       name: o.customerName.trim(),
+      customerId: o.customerId ?? null,
       totalOrders: 0,
       totalSpent: 0,
     };
@@ -346,6 +401,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
 
   const topCustomersMapped = [...custMap.values()]
     .map((c) => ({
+      customerId: c.customerId,
       name: c.name,
       totalOrders: c.totalOrders,
       totalSpent: Math.round(c.totalSpent),
@@ -369,14 +425,125 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
     .sort((a, b) => b.revenue - a.revenue)
     .slice(0, 10);
 
+  // --- whole-app overview aggregates (Phase 1): cheap count/groupBy calls + one bounded findMany,
+  // all outlet-scoped and batched together, plus one 60-day query for dayOfWeekPerformance ---
+  const todayStr = new Date(Date.now() + 5 * 60 * 60 * 1000).toISOString().split('T')[0]; // PKT "today"
+  const sixtyDaysAgo = new Date(day.gte);
+  sixtyDaysAgo.setUTCDate(sixtyDaysAgo.getUTCDate() - 60);
+
+  const [
+    liveStatusRows,
+    tableStatusRows,
+    warehouseStockRows,
+    pendingPurchaseRequests,
+    pendingDemands,
+    attendanceRows,
+    pendingLeaveRequests,
+    reservationsToday,
+    deliveryActive,
+    cashHubBalances,
+    perfOrders,
+  ] = await Promise.all([
+    prisma.order.groupBy({
+      by: ['status'],
+      _count: { _all: true },
+      where: { ...outletFilter, createdAt: { gte: day.gte, lte: day.lte } },
+    }),
+    prisma.restaurantTable.groupBy({
+      by: ['status'],
+      _count: { _all: true },
+      where: { ...outletFilter },
+    }),
+    // Branch stock, not the chain-wide Ingredient catalog (Ingredient.outletId is null for
+    // virtually every row) — see this repo's CLAUDE.md low-stock note.
+    prisma.warehouseStock.findMany({
+      where: { ...(outletId ? { warehouse: { outletId } } : {}) },
+      select: { currentStock: true, lowStockLevel: true },
+    }),
+    prisma.purchaseRequest.count({
+      where: { status: 'PENDING', ...(outletId ? { warehouse: { outletId } } : {}) },
+    }),
+    prisma.stockDemand.count({
+      where: { status: 'PENDING', ...(outletId ? { requestingWH: { outletId } } : {}) },
+    }),
+    prisma.attendanceRecord.groupBy({
+      by: ['status'],
+      _count: { _all: true },
+      where: { date: todayStr, ...(outletId ? { outletId } : {}) },
+    }),
+    prisma.leaveRequest.count({
+      where: { status: 'pending', ...(outletId ? { outletId } : {}) },
+    }),
+    prisma.reservation.count({
+      where: {
+        date: { gte: day.gte, lte: day.lte },
+        status: { in: ['pending', 'confirmed'] },
+        ...outletFilter,
+      },
+    }),
+    prisma.deliveryAssignment.count({
+      where: {
+        status: { in: ['pending', 'accepted', 'dispatched'] },
+        order: { status: { not: 'CANCELLED' }, ...outletFilter },
+      },
+    }),
+    getActiveBalances(outletId ?? null),
+    prisma.order.findMany({
+      where: { ...outletFilter, ...onlyCompleted, createdAt: { gte: sixtyDaysAgo, lte: day.lte } },
+      select: { total: true, createdAt: true },
+    }),
+  ]);
+
+  const liveStatusBy = Object.fromEntries(liveStatusRows.map((r) => [r.status, r._count._all]));
+  const liveStatus = {
+    pending: liveStatusBy.PENDING ?? 0,
+    preparing: liveStatusBy.PREPARING ?? 0,
+    ready: liveStatusBy.READY ?? 0,
+  };
+
+  const tables = tableStatusRows.reduce<Record<string, number>>((acc, r) => {
+    acc[r.status] = r._count._all;
+    return acc;
+  }, { occupied: 0, available: 0 });
+
+  const lowStockCount = warehouseStockRows.filter((s) => isLowStock(Number(s.currentStock), Number(s.lowStockLevel))).length;
+
+  const attendanceBy = Object.fromEntries(attendanceRows.map((r) => [r.status, r._count._all]));
+  const attendanceToday = {
+    present: attendanceBy.present ?? 0,
+    late: attendanceBy.late ?? 0,
+    absent: attendanceBy.absent ?? 0,
+  };
+
+  const cashHub = {
+    totalUnsettled: Math.round(cashHubBalances.reduce((s, b) => s + b.totalExpected, 0)),
+    staffCount: cashHubBalances.length,
+  };
+
+  const perfLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const perfTotals = [0, 0, 0, 0, 0, 0, 0];
+  const perfCounts = [0, 0, 0, 0, 0, 0, 0];
+  for (const o of perfOrders) {
+    const idx = (new Date(o.createdAt).getUTCDay() + 6) % 7;
+    perfTotals[idx] += Number(o.total);
+    perfCounts[idx] += 1;
+  }
+  const dayOfWeekPerformance = perfLabels.map((label, i) => ({
+    label,
+    orderCount: perfCounts[i],
+    avgSales: perfCounts[i] > 0 ? Math.round(perfTotals[i] / perfCounts[i]) : 0,
+  }));
+
   res.json(ApiResponse.success({
     branchName: settings?.restaurantName ?? 'Ovenisto',
+    scope: outletId,
     today: {
       totalSales: todayTotalSales,
       totalOrders: todayOrders.length,
       channels,
       online: { sales: Math.round(onlineSales), orders: onlineOrders },
       offline: { sales: Math.round(offlineSales), orders: offlineOrders },
+      liveStatus,
     },
     month: {
       grossSale: Math.round(grossSale),
@@ -395,5 +562,18 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
     receivable,
     topItems,
     topCustomers: topCustomersMapped,
+    tables,
+    lowStockCount,
+    pendingPurchaseRequests,
+    pendingDemands,
+    attendanceToday,
+    pendingLeaveRequests,
+    reservationsToday,
+    deliveryActive,
+    cashHub,
+    peakHours,
+    orderTypeTrend,
+    customerActivity,
+    dayOfWeekPerformance,
   }));
 });
