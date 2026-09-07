@@ -101,7 +101,6 @@ router.get('/', (_req: Request, res: Response) => {
         reservations: '/api/reservations',
         tables: '/api/tables',
         reports: '/api/reports',
-        analytics: '/api/analytics',
         sms: '/api/sms',
       },
     })
@@ -177,7 +176,6 @@ router.use('/reservations', reservationsRouter);
 router.use('/tables', tableRoutes);
 router.use('/reports', reportsRouter);
 router.use('/production-items', productionItemsRoutes);
-// router.use('/analytics', analyticsRoutes);
 // router.use('/sms', smsRoutes);
 router.use('/self-order', selfOrderRouter);
 

@@ -16,7 +16,7 @@ export const rolePermissions: Record<string, string[]> = {
   'Super Admin': ['*'],
   'Admin': ['*'],
   'Manager': [
-    'dashboard', 'analytics', 'pos', 'kitchens', 'waiter', 'order-status',
+    'dashboard', 'pos', 'kitchens', 'waiter', 'order-status',
     'customer-display', 'outlets', 'items', 'production', 'stock', 'sales',
     'customers', 'customer-dues', 'purchases', 'suppliers', 'supplier-dues',
     'expenses', 'transfers', 'waste', 'attendance', 'reports', 'sms',
