@@ -127,6 +127,45 @@ export function isLowStock(currentStock: number, lowStockLevel: number): boolean
 }
 
 /**
+ * Parse "HH:MM" (24-hour) into minutes-since-midnight.
+ * Returns null when t is undefined or empty (no time filter).
+ * Throws ApiError 400 on a malformed string.
+ */
+export function parseTimeOfDay(t: string | undefined): number | null {
+  if (!t || t.trim() === '') return null;
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(t.trim());
+  if (!match) {
+    throw ApiError.badRequest(`Invalid time format "${t}" — expected HH:MM (24h)`);
+  }
+  return parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
+}
+
+/**
+ * Returns true if the order's PKT creation time falls within [fromMin, toMin).
+ * Returns true unconditionally when either bound is null (no filter applied).
+ * Shifts createdAt to PKT (+5 h) using the same getUTCHours/getUTCMinutes-on-shifted-Date
+ * pattern used throughout this codebase (see CLAUDE.md "PKT Timezone Pattern").
+ * Handles midnight-crossing windows (fromMin > toMin, e.g. 22:00→02:00) the same way
+ * isDealCurrentlyValid handles a deal's overnight time window.
+ */
+export function isWithinTimeOfDay(
+  createdAt: Date,
+  fromMin: number | null,
+  toMin: number | null,
+): boolean {
+  if (fromMin === null || toMin === null) return true;
+  // Shift UTC → PKT (+5 h)
+  const pkt = new Date(createdAt.getTime() + 5 * 60 * 60 * 1000);
+  const minutes = pkt.getUTCHours() * 60 + pkt.getUTCMinutes();
+  if (fromMin <= toMin) {
+    // Normal window, e.g. 09:00–17:00
+    return minutes >= fromMin && minutes < toMin;
+  }
+  // Midnight-crossing window, e.g. 22:00–02:00
+  return minutes >= fromMin || minutes < toMin;
+}
+
+/**
  * Default payment-method buckets used when grouping payments (mirrors the fallback list in
  * cash-settlement.service.ts's getActiveBalances/getStaffActiveBalance). Only affects alias
  * canonicalization (e.g. "card" -> "Credit Card") — parsePaymentMethodAmounts falls back to the

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseDateRange, buildOrderWhere, computeCogs, displayOrderType, isLowStock } from '../reports.helpers.js';
+import { parseDateRange, buildOrderWhere, computeCogs, displayOrderType, isLowStock, parseTimeOfDay, isWithinTimeOfDay } from '../reports.helpers.js';
 
 describe('parseDateRange', () => {
   it('parses valid from/to into inclusive day boundaries', () => {
@@ -199,3 +199,77 @@ describe('displayOrderType', () => {
     expect(displayOrderType('Whatever')).toBe('Whatever');
   });
 });
+
+describe('parseTimeOfDay', () => {
+  it('returns null for undefined, empty string, or whitespace', () => {
+    expect(parseTimeOfDay(undefined)).toBeNull();
+    expect(parseTimeOfDay('')).toBeNull();
+    expect(parseTimeOfDay('   ')).toBeNull();
+  });
+
+  it('parses valid HH:MM strings into minutes since midnight', () => {
+    expect(parseTimeOfDay('00:00')).toBe(0);
+    expect(parseTimeOfDay('09:30')).toBe(570);
+    expect(parseTimeOfDay('23:59')).toBe(1439);
+  });
+
+  it('throws on invalid formats or out-of-range values', () => {
+    expect(() => parseTimeOfDay('9:00')).toThrow();
+    expect(() => parseTimeOfDay('24:00')).toThrow();
+    expect(() => parseTimeOfDay('12:60')).toThrow();
+    expect(() => parseTimeOfDay('invalid')).toThrow();
+    expect(() => parseTimeOfDay('12:00:00')).toThrow();
+  });
+});
+
+describe('isWithinTimeOfDay', () => {
+  // Helper to build a UTC Date that corresponds to HH:MM in PKT (UTC+5)
+  // E.g., 09:00 PKT -> 04:00 UTC
+  const makePktDate = (pktHour: number, pktMinute: number) => {
+    const utcHour = pktHour - 5;
+    const day = utcHour < 0 ? 14 : 15;
+    const hour = (utcHour + 24) % 24;
+    return new Date(Date.UTC(2026, 5, day, hour, pktMinute, 0, 0));
+  };
+
+  it('returns true unconditionally when either or both bounds are null', () => {
+    const d = makePktDate(12, 0);
+    expect(isWithinTimeOfDay(d, null, null)).toBe(true);
+    expect(isWithinTimeOfDay(d, 540, null)).toBe(true);
+    expect(isWithinTimeOfDay(d, null, 1020)).toBe(true);
+  });
+
+  it('handles standard daytime window [09:00, 17:00) with half-open boundary', () => {
+    const fromMin = 540;  // 09:00
+    const toMin = 1020;   // 17:00
+
+    // Inside
+    expect(isWithinTimeOfDay(makePktDate(12, 0), fromMin, toMin)).toBe(true);
+    // At lower boundary (inclusive)
+    expect(isWithinTimeOfDay(makePktDate(9, 0), fromMin, toMin)).toBe(true);
+    // Just below boundary
+    expect(isWithinTimeOfDay(makePktDate(8, 59), fromMin, toMin)).toBe(false);
+    // At upper boundary (exclusive, [from, to))
+    expect(isWithinTimeOfDay(makePktDate(17, 0), fromMin, toMin)).toBe(false);
+    // Above upper boundary
+    expect(isWithinTimeOfDay(makePktDate(17, 1), fromMin, toMin)).toBe(false);
+  });
+
+  it('handles midnight-crossing window [22:00, 02:00)', () => {
+    const fromMin = 1320; // 22:00
+    const toMin = 120;    // 02:00
+
+    // Inside late night (>= 22:00)
+    expect(isWithinTimeOfDay(makePktDate(22, 0), fromMin, toMin)).toBe(true);
+    expect(isWithinTimeOfDay(makePktDate(23, 30), fromMin, toMin)).toBe(true);
+    // Inside early morning (< 02:00)
+    expect(isWithinTimeOfDay(makePktDate(0, 0), fromMin, toMin)).toBe(true);
+    expect(isWithinTimeOfDay(makePktDate(1, 59), fromMin, toMin)).toBe(true);
+    // At upper boundary (exclusive)
+    expect(isWithinTimeOfDay(makePktDate(2, 0), fromMin, toMin)).toBe(false);
+    // Outside during the day
+    expect(isWithinTimeOfDay(makePktDate(12, 0), fromMin, toMin)).toBe(false);
+    expect(isWithinTimeOfDay(makePktDate(21, 59), fromMin, toMin)).toBe(false);
+  });
+});
+

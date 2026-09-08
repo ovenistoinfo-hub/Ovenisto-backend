@@ -7,14 +7,16 @@ import {
   getItemsReport,
   getStockReport,
   getDashboard,
+  getSalesByChannel,
 } from './reports.controller.js';
 
 const reportRoles = ['Super Admin', 'Admin', 'Manager', 'Accountant'];
 
 export const reportsRouter = Router();
 
-reportsRouter.get('/sales', authenticate, authorize(reportRoles), getSalesReport);
-reportsRouter.get('/pnl',   authenticate, authorize(reportRoles), getPnlReport);
-reportsRouter.get('/items', authenticate, authorize(reportRoles), getItemsReport);
-reportsRouter.get('/stock', authenticate, authorize(reportRoles), getStockReport);
-reportsRouter.get('/dashboard', authenticate, authorize(reportRoles), getDashboard);
+reportsRouter.get('/sales',            authenticate, authorize(reportRoles), getSalesReport);
+reportsRouter.get('/pnl',              authenticate, authorize(reportRoles), getPnlReport);
+reportsRouter.get('/items',            authenticate, authorize(reportRoles), getItemsReport);
+reportsRouter.get('/stock',            authenticate, authorize(reportRoles), getStockReport);
+reportsRouter.get('/dashboard',        authenticate, authorize(reportRoles), getDashboard);
+reportsRouter.get('/sales-by-channel', authenticate, authorize(reportRoles), getSalesByChannel);

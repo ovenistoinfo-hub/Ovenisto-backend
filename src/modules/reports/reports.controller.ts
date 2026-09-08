@@ -10,6 +10,8 @@ import {
   parseDateRange, buildOrderWhere, computeCogs,
   dayBoundaries, monthBoundaries, classifyChannel, growthPct, fillChannels, groupPayments,
   displayOrderType, isLowStock,
+  parseTimeOfDay, isWithinTimeOfDay,
+  type CogsRecipe, type CogsItem,
 } from './reports.helpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { autoProcessExpiredBatches } from '../stock/autoExpiry.js';
@@ -581,4 +583,139 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
     customerActivity,
     dayOfWeekPerformance,
   }));
+});
+
+/** GET /api/reports/sales-by-channel */
+export const getSalesByChannel = asyncHandler(async (req: Request, res: Response) => {
+  // ── 1. Parse required date range ──────────────────────────────────────────
+  const from = req.query.from as string | undefined;
+  const to   = req.query.to   as string | undefined;
+  const { gte, lte } = parseDateRange(from, to);
+
+  // ── 2. Parse optional time-of-day window ──────────────────────────────────
+  const fromMin = parseTimeOfDay(req.query.fromTime as string | undefined);
+  const toMin   = parseTimeOfDay(req.query.toTime   as string | undefined);
+
+  // ── 3. Resolve outlet scope from X-Outlet-Id header (never a query param) ─
+  const outletId = resolveOutletScope(req) ?? undefined;
+
+  // ── 4. Fetch completed, cash-approved orders with their items ─────────────
+  const baseWhere = buildOrderWhere(gte, lte, outletId);
+  const orders = await prisma.order.findMany({
+    where: {
+      ...baseWhere,
+      status:       COMPLETED as never,
+      cashApproved: true,
+    },
+    select: {
+      type:      true,
+      total:     true,
+      createdAt: true,
+      items: {
+        select: {
+          menuItemId: true,
+          variantId:  true,
+          qty:        true,
+        },
+      },
+    },
+  });
+
+  // ── 5. Apply optional time-of-day filter in JS ────────────────────────────
+  const filtered = orders.filter((o) => isWithinTimeOfDay(o.createdAt, fromMin, toMin));
+
+  // ── 6. Bucket into exactly three channels; all other order types excluded ─
+  const buckets: Record<'dineIn' | 'takeaway' | 'delivery', typeof filtered> = {
+    dineIn:   [],
+    takeaway: [],
+    delivery: [],
+  };
+  for (const o of filtered) {
+    const display = displayOrderType(String(o.type));
+    if (display === 'Dine In')        buckets.dineIn.push(o);
+    else if (display === 'Take Away') buckets.takeaway.push(o);
+    else if (display === 'Delivery')  buckets.delivery.push(o);
+    // Online / Self Order / Foodpanda / Walk-in: intentionally excluded from this endpoint
+  }
+
+  // ── 7. Load COGS data once across all three channels ──────────────────────
+  const allBucketedOrders = [...buckets.dineIn, ...buckets.takeaway, ...buckets.delivery];
+  const distinctMenuItemIds = [
+    ...new Set(
+      allBucketedOrders
+        .flatMap((o) => o.items.map((i) => i.menuItemId))
+        .filter((x): x is string => !!x)
+    ),
+  ];
+
+  let recipesForCogs: CogsRecipe[] = [];
+  let priceById = new Map<string, number>();
+
+  if (distinctMenuItemIds.length > 0) {
+    const rawRecipes = await prisma.foodRecipe.findMany({
+      where: { menuItemId: { in: distinctMenuItemIds } },
+      select: { menuItemId: true, variantId: true, ingredientId: true, qtyPerUnit: true },
+    });
+    const distinctIngredientIds = [
+      ...new Set(
+        rawRecipes.map((r) => r.ingredientId).filter((id): id is string => id !== null)
+      ),
+    ];
+    const ingredients = await prisma.ingredient.findMany({
+      where: { id: { in: distinctIngredientIds } },
+      select: { id: true, purchasePrice: true },
+    });
+    priceById = new Map(ingredients.map((i) => [i.id, Number(i.purchasePrice ?? 0)]));
+    recipesForCogs = rawRecipes
+      .filter((r): r is typeof r & { ingredientId: string } => r.ingredientId !== null)
+      .map((r) => ({
+        menuItemId:   r.menuItemId,
+        variantId:    r.variantId,
+        ingredientId: r.ingredientId,
+        qtyPerUnit:   Number(r.qtyPerUnit),
+      }));
+  }
+
+  // ── 8. Compute per-channel figures (reuse recipes/priceById for all three) ─
+  const computeChannel = (bucket: typeof filtered) => {
+    const items: CogsItem[] = bucket.flatMap((o) =>
+      o.items.map((i) => ({
+        menuItemId: i.menuItemId ?? '',
+        variantId:  i.variantId ?? null,
+        qty:        i.qty,
+      }))
+    );
+    const sale   = Math.round(bucket.reduce((s, o) => s + Number(o.total), 0));
+    const cost   = computeCogs(items, recipesForCogs, priceById);
+    const profit = sale - cost;
+    return { sale, cost, profit, orders: bucket.length };
+  };
+
+  const dineIn   = computeChannel(buckets.dineIn);
+  const takeaway = computeChannel(buckets.takeaway);
+  const delivery = computeChannel(buckets.delivery);
+
+  // ── 9. Combined row sums only the three named channels ────────────────────
+  const combinedSale   = dineIn.sale   + takeaway.sale   + delivery.sale;
+  const combinedCost   = dineIn.cost   + takeaway.cost   + delivery.cost;
+  const combinedProfit = dineIn.profit + takeaway.profit + delivery.profit;
+  const combinedOrders = dineIn.orders + takeaway.orders + delivery.orders;
+  const marginPct      = combinedSale > 0 ? Math.round((combinedProfit / combinedSale) * 100) : 0;
+
+  res.json(
+    ApiResponse.success({
+      from:     from!,
+      to:       to!,
+      fromTime: fromMin !== null ? (req.query.fromTime as string) : null,
+      toTime:   toMin   !== null ? (req.query.toTime   as string) : null,
+      channels: { dineIn, takeaway, delivery },
+      combined: {
+        sale:      combinedSale,
+        cost:      combinedCost,
+        profit:    combinedProfit,
+        orders:    combinedOrders,
+        marginPct,
+      },
+    })
+  );
 });
