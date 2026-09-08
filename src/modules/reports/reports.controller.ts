@@ -441,6 +441,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
     pendingLeaveRequests,
     reservationsToday,
     deliveryActive,
+    pendingCancellations,
     cashHubBalances,
     perfOrders,
   ] = await Promise.all([
@@ -486,6 +487,9 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
         status: { in: ['pending', 'accepted', 'dispatched'] },
         order: { status: { not: 'CANCELLED' }, ...outletFilter },
       },
+    }),
+    prisma.orderCancellationRequest.count({
+      where: { status: 'pending', ...outletFilter },
     }),
     getActiveBalances(outletId ?? null),
     prisma.order.findMany({
@@ -570,6 +574,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
     pendingLeaveRequests,
     reservationsToday,
     deliveryActive,
+    pendingCancellations,
     cashHub,
     peakHours,
     orderTypeTrend,
