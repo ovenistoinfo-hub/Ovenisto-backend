@@ -350,7 +350,7 @@ export function isWithinTimeOfDay(createdAt: Date, fromMin: number | null, toMin
  * inline below) before the final where clause is known.
  */
 async function resolveOrdersWhere(req: Request): Promise<any> {
-  const { search, status, type, date, from, to, fromTime, toTime, tableNumber, orderSource } = req.query;
+  const { search, status, type, date, from, to, fromTime, toTime, tableNumber, orderSource, excludeUnpaid } = req.query;
 
   const where: any = {};
   // Outlet scope: Super Admin on "All" → no filter; otherwise restrict to the resolved outlet.
@@ -400,6 +400,18 @@ async function resolveOrdersWhere(req: Request): Promise<any> {
 
   if (tableNumber) where.tableNumber = Number(tableNumber);
   if (orderSource) where.orderSource = String(orderSource);
+
+  if (excludeUnpaid === 'true') {
+    // "Unpaid" here matches Sales & Orders' own formatPaymentMethod rule exactly (null, empty,
+    // or the literal string "Pending") — opt-in only, since other callers of this endpoint
+    // (Kitchen Panel, Order Monitor, Waiter Panel) need to see a completed-but-unpaid order to
+    // actually collect payment on it; only the Sales & Orders history view hides it.
+    where.AND = [
+      ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
+      { paymentMethod: { not: null } },
+      { paymentMethod: { notIn: ['', 'Pending'] } },
+    ];
+  }
 
   // Time-of-day narrowing (optional): Order.date has no time component, so this can't be a plain
   // where-clause — it's derived from Order.createdAt's PKT wall-clock time via a pagination-safe
