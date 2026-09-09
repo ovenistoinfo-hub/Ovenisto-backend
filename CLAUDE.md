@@ -387,6 +387,37 @@ plus a body explaining _why_ the change was made when that is not obvious.
   is the real `DemandStatus` enum (member `PENDING`) — three lookalike "status" fields, two different
   shapes, verify each against `schema.prisma` rather than assuming a model's sibling follows the
   same convention.
+- **`GET /api/orders`'s filter clause is built by one shared `resolveOrdersWhere(req)`** in
+  `order.controller.ts`, used by both `getOrders` and `getOrdersSummary` so the two never drift.
+  Params (2026-09-09): `from`/`to` (YYYY-MM-DD, supersede the legacy single `date`);
+  `fromTime`/`toTime` (24h `HH:mm`, PKT wall-clock time-of-day — `Order.date` has no time part,
+  so this is a **pagination-safe two-query pass**: fetch `{id, createdAt}` for the date match,
+  filter in JS via `isWithinTimeOfDay`, then re-query `id: {in: matchedIds}`; missing bound →
+  start/end of day; `fromMin > toMin` wraps past midnight). `parseTimeOfDay`/`isWithinTimeOfDay`
+  are **exported from `order.controller.ts`** — a *second independent copy* also lives in
+  `reports.helpers.ts` for `getSalesByChannel`; not unified, keep in sync. `status` and `type`
+  each accept a **comma list** (`"completed,cancelled"`, `"Dine In,Take Away,Delivery"`) so a
+  caller can ask for a subset without changing what an *absent* value means (Kitchen Panel / POS
+  / Order Monitor / Waiter Panel all call with no status/type filter and rely on the full set).
+  `type=Dine In` also matches `SELF_ORDER`. `excludeUnpaid=true` (opt-in) hides orders whose
+  `paymentMethod` is null/empty/`"Pending"` or whose `cashApproved` is not true — opt-in because other callers still need to see a
+  completed-but-unpaid order to collect payment on it. Requiring `cashApproved: true` keeps Sales & Orders totals 100% in sync with Dashboard's Sales By Channel.
+- **`GET /api/orders/summary`** (registered **before** `/:id` in `order.routes.ts`, or Express
+  matches `"summary"` as an `:id`) totals Sale/Cost/Profit/Margin across the whole filtered set
+  (not one page). `getOrders` also attaches per-order `cost`/`profit` computed via `computeCogs`
+  against one recipe/ingredient batch for that page's items. `loadCogsInputs(menuItemIds)` in
+  `order.controller.ts` is the fourth inline copy of the "load `FoodRecipe` + `Ingredient.purchasePrice`,
+  build a `CogsRecipe[]`/price map" boilerplate (`getPnlReport` / `getSalesByChannel` have their
+  own) — not extracted, to keep `reports.helpers.ts` DB-free for its pure unit tests.
+- **`computeCogs` (`reports.helpers.ts`) now falls back to the item-level (`variantId: null`)
+  recipe** when an order line has a `variantId` but no variant-specific recipe row exists —
+  mirroring `validateOrderStock`'s existing `!r.variantId || r.variantId === item.variantId`
+  filter, which `computeCogs` lacked. Root-caused live: a Self-Order line (always carries a real
+  `variantId` once a size is picked) costed **Rs. 0** on Sales By Channel while a POS
+  "Add Without Extras" line (`variantId: null`) for the same pizza costed correctly — its recipe
+  only ever existed at the item level. This under-costed **P&L** the same way, chain-wide.
+- **`getSalesByChannel` merges `SELF_ORDER` into its `dineIn` bucket** (2026-09-09), matching
+  `GET /api/orders`'s `type=Dine In` rule — keep the two merges in sync.
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph

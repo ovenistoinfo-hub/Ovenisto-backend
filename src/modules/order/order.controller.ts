@@ -403,13 +403,16 @@ async function resolveOrdersWhere(req: Request): Promise<any> {
 
   if (excludeUnpaid === 'true') {
     // "Unpaid" here matches Sales & Orders' own formatPaymentMethod rule exactly (null, empty,
-    // or the literal string "Pending") — opt-in only, since other callers of this endpoint
-    // (Kitchen Panel, Order Monitor, Waiter Panel) need to see a completed-but-unpaid order to
-    // actually collect payment on it; only the Sales & Orders history view hides it.
+    // or the literal string "Pending") AND requires cashApproved: true — opt-in only, since other
+    // callers of this endpoint (Kitchen Panel, Order Monitor, Waiter Panel) need to see a
+    // completed-but-unpaid order to actually collect payment on it; only the Sales & Orders history
+    // view hides it. Requiring cashApproved matches Dashboard (getSalesByChannel / getSalesReport)
+    // so settled sales totals are 100% consistent across both pages.
     where.AND = [
       ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
       { paymentMethod: { not: null } },
       { paymentMethod: { notIn: ['', 'Pending'] } },
+      { cashApproved: true },
     ];
   }
 
