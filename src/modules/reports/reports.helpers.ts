@@ -55,8 +55,15 @@ export interface CogsRecipe {
 
 /**
  * COGS = sum over order items of (matching recipe qtyPerUnit * item.qty * ingredient.purchasePrice).
- * A recipe matches when menuItemId equals; if the item has a variantId, the recipe's variantId must
- * equal it, otherwise the recipe must be variant-less (item-level). Missing price -> 0. No recipe -> 0.
+ * A recipe matches when menuItemId equals; if the item has a variantId, a variant-specific recipe
+ * row matches AND a variant-less (item-level) row still matches too (shared base-ingredient recipe
+ * that applies regardless of size) -- mirrors order.controller.ts's validateOrderStock, which uses
+ * this identical fallback. Without it, a menu item whose recipe was only ever defined once at the
+ * item level (never duplicated per size) silently costs 0 for every order line that carries a
+ * variantId, while an otherwise-identical variant-less line for the same item costs correctly --
+ * exactly what made a Self-Order (which always sends a real variantId once a size is picked) line
+ * report Rs. 0 cost while a POS "Add Without Extras" line (variantId: null) for the same pizza
+ * costed correctly. Missing price -> 0. No matching recipe at all -> 0.
  */
 export function computeCogs(
   items: CogsItem[],
@@ -68,7 +75,7 @@ export function computeCogs(
     if (!item.menuItemId) continue;
     const matching = recipes.filter((r) => {
       if (r.menuItemId !== item.menuItemId) return false;
-      return item.variantId ? r.variantId === item.variantId : !r.variantId;
+      return item.variantId ? (!r.variantId || r.variantId === item.variantId) : !r.variantId;
     });
     for (const r of matching) {
       const price = purchasePriceByIngredient.get(r.ingredientId) ?? 0;

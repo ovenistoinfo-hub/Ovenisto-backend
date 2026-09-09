@@ -63,6 +63,27 @@ describe('computeCogs', () => {
     const recipes = [{ menuItemId: 'm1', variantId: null, ingredientId: 'i1', qtyPerUnit: 3 }];
     expect(computeCogs(items, recipes, new Map())).toBe(0);
   });
+
+  it('falls back to the item-level recipe when the order line has a variantId but no variant-specific recipe exists', () => {
+    // Menu item whose recipe was only ever defined once, at the item level -- a real order line
+    // for a specific size (variantId set) must still cost against it, not silently cost 0.
+    const items = [{ menuItemId: 'm1', variantId: 'medium', qty: 1 }];
+    const recipes = [{ menuItemId: 'm1', variantId: null, ingredientId: 'i1', qtyPerUnit: 3 }];
+    const priceById = new Map([['i1', 10]]);
+    expect(computeCogs(items, recipes, priceById)).toBe(30);
+  });
+
+  it('includes both the item-level recipe AND the variant-specific recipe when both exist', () => {
+    const items = [{ menuItemId: 'm1', variantId: 'large', qty: 1 }];
+    const recipes = [
+      { menuItemId: 'm1', variantId: null, ingredientId: 'i1', qtyPerUnit: 2 },   // shared base
+      { menuItemId: 'm1', variantId: 'large', ingredientId: 'i2', qtyPerUnit: 1 }, // large-only extra
+      { menuItemId: 'm1', variantId: 'small', ingredientId: 'i2', qtyPerUnit: 99 }, // wrong variant, ignored
+    ];
+    const priceById = new Map([['i1', 10], ['i2', 20]]);
+    // base: 2 * 1 * 10 = 20 ; large extra: 1 * 1 * 20 = 20 ; total = 40
+    expect(computeCogs(items, recipes, priceById)).toBe(40);
+  });
 });
 
 import {
