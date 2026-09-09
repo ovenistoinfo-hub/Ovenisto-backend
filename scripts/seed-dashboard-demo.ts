@@ -108,15 +108,17 @@ async function main() {
   type Line = { menuItemId: string; variantId: string | null; name: string; price: number; qty: number; discount: number };
   const plans: { daysAgo: number; hour: number; lines: Line[] }[] = [];
 
-  // 14 orders spread across TODAY (so the section's default "Today" view shows both tables)
-  for (let i = 0; i < 14; i++) {
-    const nLines = rint(1, 3);
-    const lines: Line[] = [];
-    for (let j = 0; j < nLines; j++) {
-      const src = j === 0 ? pick(HEAVY) : pick([...HEAVY, ...MID, ...LIGHT]);
-      const l = lineFor(src);
-      lines.push({ ...l, qty: rint(1, 4), discount: 0 });
-    }
+  // TODAY: guarantee EVERY menu item is sold at least once (so the section's default "Today"
+  // view has > 10 distinct items and both tables render), with HEAVY items getting extra volume.
+  const todayBaskets: Line[][] = Array.from({ length: 14 }, () => []);
+  menu.forEach((m, idx) => {
+    todayBaskets[idx % todayBaskets.length].push({ ...lineFor(m), qty: rint(1, 3), discount: 0 });
+  });
+  for (let k = 0; k < 14; k++) {
+    todayBaskets[rint(0, todayBaskets.length - 1)].push({ ...lineFor(pick(HEAVY)), qty: rint(2, 4), discount: 0 });
+  }
+  for (const lines of todayBaskets) {
+    if (lines.length === 0) lines.push({ ...lineFor(pick(HEAVY)), qty: rint(1, 3), discount: 0 });
     plans.push({ daysAgo: 0, hour: rint(11, 22), lines });
   }
 
