@@ -16,7 +16,7 @@ import { mapReservation } from '../reservations/reservation.controller.js';
 import { emitSelfOrderEventForOrder } from '../self-order/self-order.socket.js';
 import { revalidateDealLines, resolveOrderDiscount, withDealItemKeys } from '../deals/deal.revalidate.js';
 import { round2 } from '../deals/deal.pricing.js';
-import { computeCogs, type CogsItem, type CogsRecipe } from '../reports/reports.helpers.js';
+import { computeCogs, splitOrderTotalByLine, orderUsedPaymentMethod, type CogsItem, type CogsRecipe } from '../reports/reports.helpers.js';
 
 // ── Enum conversion helpers ──
 
@@ -350,7 +350,7 @@ export function isWithinTimeOfDay(createdAt: Date, fromMin: number | null, toMin
  * inline below) before the final where clause is known.
  */
 async function resolveOrdersWhere(req: Request): Promise<any> {
-  const { search, status, type, date, from, to, fromTime, toTime, tableNumber, orderSource, excludeUnpaid } = req.query;
+  const { search, status, type, date, from, to, fromTime, toTime, tableNumber, orderSource, excludeUnpaid, category, paymentMethod } = req.query;
 
   const where: any = {};
   // Outlet scope: Super Admin on "All" → no filter; otherwise restrict to the resolved outlet.
@@ -401,6 +401,18 @@ async function resolveOrdersWhere(req: Request): Promise<any> {
   if (tableNumber) where.tableNumber = Number(tableNumber);
   if (orderSource) where.orderSource = String(orderSource);
 
+  // Category filter (Dashboard "Sales by Category" drill-down): keep only orders that have at
+  // least one ACTIVE line whose menu item belongs to this category. Matched by category NAME
+  // (not id) so the URL stays readable and the Sales page's own dropdown value maps straight
+  // through, consistent with how status/type are string params on this endpoint. getOrders /
+  // getOrdersSummary then narrow each order's Sale/Cost/Profit to just that category's slice.
+  if (category) {
+    const catName = String(category);
+    where.items = catName === 'Uncategorised'
+      ? { some: { status: 'active', OR: [{ menuItemId: null }, { menuItem: { categoryId: null } }] } }
+      : { some: { status: 'active', menuItem: { category: { name: catName } } } };
+  }
+
   if (excludeUnpaid === 'true') {
     // "Unpaid" here matches Sales & Orders' own formatPaymentMethod rule exactly (null, empty,
     // or the literal string "Pending") AND requires cashApproved: true — opt-in only, since other
@@ -419,13 +431,22 @@ async function resolveOrdersWhere(req: Request): Promise<any> {
   // Time-of-day narrowing (optional): Order.date has no time component, so this can't be a plain
   // where-clause — it's derived from Order.createdAt's PKT wall-clock time via a pagination-safe
   // two-query pass (id/createdAt only, then re-query with id: {in: matchedIds}) rather than
-  // filtering an already-paginated page, which would corrupt skip/take/count.
+  // filtering an already-paginated page, which would corrupt skip/take/count. The optional
+  // `paymentMethod` filter (Dashboard "Sales by Payment Method" drill-down) rides the same pass:
+  // Order.paymentMethod is a free-text string that can hold a split ("Cash: Rs.900, JazzCash:
+  // Rs.779"), so it needs the canonical parser (orderUsedPaymentMethod) in JS, not a `contains`
+  // — which would also wrongly match "Cash" inside "JazzCash".
   const fromMin = parseTimeOfDay(fromTime as string | undefined);
   const toMin = parseTimeOfDay(toTime as string | undefined);
-  if (fromMin !== null || toMin !== null) {
-    const candidates = await prisma.order.findMany({ where, select: { id: true, createdAt: true } });
+  const wantMethod = paymentMethod ? String(paymentMethod) : null;
+  if (fromMin !== null || toMin !== null || wantMethod) {
+    const candidates = await prisma.order.findMany({
+      where,
+      select: { id: true, createdAt: true, paymentMethod: true, total: true },
+    });
     const matchedIds = candidates
       .filter((o) => isWithinTimeOfDay(o.createdAt, fromMin, toMin))
+      .filter((o) => !wantMethod || orderUsedPaymentMethod(o.paymentMethod, Number(o.total), wantMethod))
       .map((o) => o.id);
     where.id = { in: matchedIds };
   }
@@ -491,6 +512,11 @@ export const getOrders = asyncHandler(async (req: Request, res: Response) => {
     ...new Set(orders.flatMap((o) => o.items.map((i) => i.menuItemId)).filter((x): x is string => !!x)),
   ];
   const { recipes, priceById } = await loadCogsInputs(pageMenuItemIds);
+  // When filtered to a category, each row also carries that category's slice of the order
+  // (revenue prorated by line gross-value, cost = real per-line COGS) so the Sales & Orders
+  // table + summary cards can show category-scoped figures that reconcile to the Dashboard's
+  // "Sales by Category" card — an order spanning Pizza + Coke contributes only its Pizza part.
+  const categoryFilter = req.query.category ? String(req.query.category) : null;
   const mapped = orders.map((o) => {
     const out = mapOrderOut(o);
     const cogsItems: CogsItem[] = o.items.map((i) => ({
@@ -499,7 +525,28 @@ export const getOrders = asyncHandler(async (req: Request, res: Response) => {
       qty: i.qty,
     }));
     const cost = computeCogs(cogsItems, recipes, priceById);
-    return { ...out, cost, profit: Math.round(out.total - cost) };
+    const base = { ...out, cost, profit: Math.round(out.total - cost) };
+    if (!categoryFilter) return base;
+
+    const active = o.items.filter((i) => i.status === 'active');
+    const grosses = active.map((i) => Number(i.price) * i.qty - Number(i.discount ?? 0));
+    const shares = splitOrderTotalByLine(Number(o.total), grosses);
+    let catSale = 0;
+    let catCost = 0;
+    active.forEach((i, idx) => {
+      if (((i as any).menuItem?.category?.name ?? 'Uncategorised') !== categoryFilter) return;
+      catSale += shares[idx] ?? 0;
+      catCost += computeCogs(
+        [{ menuItemId: i.menuItemId ?? '', variantId: i.variantId ?? null, qty: i.qty }],
+        recipes, priceById,
+      );
+    });
+    return {
+      ...base,
+      categorySale: Math.round(catSale),
+      categoryCost: Math.round(catCost),
+      categoryProfit: Math.round(catSale - catCost),
+    };
   });
 
   res.json(ApiResponse.paginated(mapped, Number(page), Number(limit), total));
@@ -513,6 +560,56 @@ export const getOrders = asyncHandler(async (req: Request, res: Response) => {
  */
 export const getOrdersSummary = asyncHandler(async (req: Request, res: Response) => {
   const where = await resolveOrdersWhere(req);
+  const categoryFilter = req.query.category ? String(req.query.category) : null;
+
+  if (categoryFilter) {
+    // Category-scoped totals: sum only each order's slice for this category (revenue prorated
+    // by line gross-value via splitOrderTotalByLine, cost = real per-line COGS), so these 4
+    // cards reconcile exactly to the Dashboard "Sales by Category" card and to the
+    // category-scoped columns getOrders returns for the same filter.
+    const catOrders = await prisma.order.findMany({
+      where,
+      select: {
+        total: true,
+        items: {
+          where: { status: 'active' },
+          select: {
+            menuItemId: true, variantId: true, qty: true, price: true, discount: true,
+            menuItem: { select: { category: { select: { name: true } } } },
+          },
+        },
+      },
+    });
+    const catMenuItemIds = [
+      ...new Set(catOrders.flatMap((o) => o.items.map((i) => i.menuItemId)).filter((x): x is string => !!x)),
+    ];
+    const { recipes: catRecipes, priceById: catPrices } = await loadCogsInputs(catMenuItemIds);
+    let catSale = 0;
+    let catCost = 0;
+    let matchedOrders = 0;
+    for (const o of catOrders) {
+      if (o.items.length === 0) continue;
+      const grosses = o.items.map((i) => Number(i.price) * i.qty - Number(i.discount ?? 0));
+      const shares = splitOrderTotalByLine(Number(o.total), grosses);
+      let touched = false;
+      o.items.forEach((i, idx) => {
+        if ((i.menuItem?.category?.name ?? 'Uncategorised') !== categoryFilter) return;
+        touched = true;
+        catSale += shares[idx] ?? 0;
+        catCost += computeCogs(
+          [{ menuItemId: i.menuItemId ?? '', variantId: i.variantId ?? null, qty: i.qty }],
+          catRecipes, catPrices,
+        );
+      });
+      if (touched) matchedOrders += 1;
+    }
+    const sale = Math.round(catSale);
+    const cost = Math.round(catCost);
+    const profit = sale - cost;
+    const marginPct = sale > 0 ? Math.round((profit / sale) * 100) : 0;
+    res.json(ApiResponse.success({ sale, cost, profit, orders: matchedOrders, marginPct }));
+    return;
+  }
 
   const orders = await prisma.order.findMany({
     where,

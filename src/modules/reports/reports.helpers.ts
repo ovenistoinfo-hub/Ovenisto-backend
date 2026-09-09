@@ -85,6 +85,40 @@ export function computeCogs(
   return Math.round(total);
 }
 
+/**
+ * Split one order's final `total` (tax- AND discount-inclusive) across its line items in
+ * proportion to each line's gross value (unit price × qty − line discount), so the returned
+ * parts sum back to `Math.round(orderTotal)` exactly — the last positive-weight line absorbs
+ * the rounding remainder, so no rupee is lost or invented.
+ *
+ * Used to attribute an order's revenue to the food category of each line (Sales-by-Category
+ * report + the Sales & Orders page's category-scoped columns): a single "Pizza + Coke" order
+ * puts its Pizza share in the Pizza bucket and its Coke share in Beverages, and the two shares
+ * add back to the order total. Prorating the *final total* — rather than handling the
+ * order-level discount and tax separately — keeps this figure identical in meaning to
+ * getSalesByChannel's Sale (which sums Order.total per order), so the two dashboard sections
+ * stay reconcilable.
+ *
+ * Degenerate input (every line gross ≤ 0, e.g. a fully comped order) falls back to an equal
+ * split so the total is still fully attributed rather than dropped. Empty input → [].
+ */
+export function splitOrderTotalByLine(orderTotal: number, lineGross: number[]): number[] {
+  const n = lineGross.length;
+  if (n === 0) return [];
+  const target = Math.round(orderTotal);
+  const clamped = lineGross.map((g) => (g > 0 ? g : 0));
+  const sum = clamped.reduce((s, g) => s + g, 0);
+  const weights = sum > 0 ? clamped.map((g) => g / sum) : clamped.map(() => 1 / n);
+  const out = weights.map((w) => Math.round(target * w));
+  const drift = target - out.reduce((s, v) => s + v, 0);
+  if (drift !== 0) {
+    let idx = n - 1;
+    while (idx > 0 && weights[idx] === 0) idx--;
+    out[idx] += drift;
+  }
+  return out;
+}
+
 export const ONLINE_TYPES = ['Foodpanda', 'Online', 'Self Order'];
 export const OFFLINE_TYPES = ['Dine In', 'Take Away', 'Walk-in'];
 // Channels shown as cards (mockup order). Walk-in is counted in offline totals but has no own card.
@@ -197,19 +231,59 @@ const DEFAULT_PAYMENT_METHODS = ['Cash', 'Credit Card', 'Account', 'JazzCash', '
  * Cash Hub treats a missing payment method) rather than being silently dropped from the total.
  * Ignores non-positive per-method amounts. Sorted desc, rounded.
  */
-export function groupPayments(
+/**
+ * Sum amounts by payment method across many orders AND count how many orders contributed a
+ * positive amount to each method. Same canonical parse as {@link groupPayments} (which is now a
+ * thin wrapper over this) — a genuine split ("Cash: Rs.1000, JazzCash: Rs.980") credits BOTH
+ * methods their own parsed amount and counts toward BOTH methods' `orders`. So `Σ orders` across
+ * methods can exceed the number of input rows; a caller wanting a distinct-order total should
+ * use the row count. A null/empty method defaults to Cash (parsePaymentMethodAmounts' own
+ * convention). Non-positive per-method amounts ignored. Sorted by amount desc, rounded.
+ */
+export function groupPaymentsWithCounts(
   rows: { method: string | null; amount: number }[]
-): { method: string; amount: number }[] {
-  const map = new Map<string, number>();
+): { method: string; amount: number; orders: number }[] {
+  const amtByMethod = new Map<string, number>();
+  const cntByMethod = new Map<string, number>();
   for (const r of rows) {
     if (!r.amount) continue;
     const parsed = parsePaymentMethodAmounts(r.method, r.amount, DEFAULT_PAYMENT_METHODS);
     for (const [method, amt] of Object.entries(parsed)) {
       if (amt <= 0) continue;
-      map.set(method, (map.get(method) ?? 0) + amt);
+      amtByMethod.set(method, (amtByMethod.get(method) ?? 0) + amt);
+      cntByMethod.set(method, (cntByMethod.get(method) ?? 0) + 1);
     }
   }
-  return [...map.entries()]
-    .map(([method, amount]) => ({ method, amount: Math.round(amount) }))
+  return [...amtByMethod.entries()]
+    .map(([method, amount]) => ({ method, amount: Math.round(amount), orders: cntByMethod.get(method) ?? 0 }))
     .sort((a, b) => b.amount - a.amount);
+}
+
+/** {@link groupPaymentsWithCounts} without the per-method order count — the shape getDashboard's
+ *  paymentBreakdown has always returned. */
+export function groupPayments(
+  rows: { method: string | null; amount: number }[]
+): { method: string; amount: number }[] {
+  return groupPaymentsWithCounts(rows).map(({ method, amount }) => ({ method, amount }));
+}
+
+/**
+ * True when `wanted` payment method contributed a positive amount to this order — parsing the
+ * order's paymentMethod string with the SAME canonical parser groupPayments uses. So a split
+ * ("Cash: Rs.900, JazzCash: Rs.779") matches BOTH "Cash" and "JazzCash", and — critically —
+ * filtering "Cash" never matches a "JazzCash" order (a plain substring test would, since
+ * "JazzCash" contains "cash"; CLAUDE.md flags this exact trap). Case-insensitive on the method
+ * name. A null/blank methodString never matches (an unpaid order carries no real payment, and
+ * Sales & Orders excludes it via excludeUnpaid anyway). Powers GET /api/orders' `paymentMethod`
+ * filter (the Dashboard "Sales by Payment Method" drill-down).
+ */
+export function orderUsedPaymentMethod(
+  methodString: string | null,
+  orderTotal: number,
+  wanted: string,
+): boolean {
+  if (!methodString || !methodString.trim()) return false;
+  const parsed = parsePaymentMethodAmounts(methodString, orderTotal, DEFAULT_PAYMENT_METHODS);
+  const target = wanted.trim().toLowerCase();
+  return Object.entries(parsed).some(([m, amt]) => amt > 0 && m.toLowerCase() === target);
 }

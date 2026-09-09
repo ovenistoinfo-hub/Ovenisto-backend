@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseDateRange, buildOrderWhere, computeCogs, displayOrderType, isLowStock, parseTimeOfDay, isWithinTimeOfDay } from '../reports.helpers.js';
+import { parseDateRange, buildOrderWhere, computeCogs, displayOrderType, isLowStock, parseTimeOfDay, isWithinTimeOfDay, splitOrderTotalByLine } from '../reports.helpers.js';
 
 describe('parseDateRange', () => {
   it('parses valid from/to into inclusive day boundaries', () => {
@@ -86,10 +86,100 @@ describe('computeCogs', () => {
   });
 });
 
+describe('splitOrderTotalByLine', () => {
+  it('splits proportionally to line gross and sums back to the total', () => {
+    expect(splitOrderTotalByLine(1000, [600, 400])).toEqual([600, 400]);
+  });
+
+  it('bakes tax/order-discount into the split by prorating the FINAL total, not the gross', () => {
+    // order total 1100 (e.g. +10% tax) over line grosses summing to 1000
+    const parts = splitOrderTotalByLine(1100, [600, 400]);
+    expect(parts).toEqual([660, 440]);
+    expect(parts.reduce((s, v) => s + v, 0)).toBe(1100);
+  });
+
+  it('absorbs rounding drift on the last positive-weight line so parts sum exactly', () => {
+    const parts = splitOrderTotalByLine(1000, [1, 1, 1]);
+    expect(parts.reduce((s, v) => s + v, 0)).toBe(1000);
+    expect(parts).toEqual([333, 333, 334]);
+  });
+
+  it('returns [total] for a single line and [] for no lines', () => {
+    expect(splitOrderTotalByLine(950, [800])).toEqual([950]);
+    expect(splitOrderTotalByLine(500, [])).toEqual([]);
+  });
+
+  it('falls back to an equal split when every line gross is <= 0 (comped order)', () => {
+    expect(splitOrderTotalByLine(300, [0, 0, 0])).toEqual([100, 100, 100]);
+  });
+
+  it('clamps an over-discounted (negative-gross) line to zero weight', () => {
+    const parts = splitOrderTotalByLine(1000, [1000, -50]);
+    expect(parts).toEqual([1000, 0]);
+    expect(parts.reduce((s, v) => s + v, 0)).toBe(1000);
+  });
+});
+
 import {
   monthBoundaries, dayBoundaries, classifyChannel, growthPct, fillChannels, groupPayments,
+  groupPaymentsWithCounts, orderUsedPaymentMethod,
   CHANNEL_ORDER,
 } from '../reports.helpers.js';
+
+describe('groupPaymentsWithCounts', () => {
+  it('counts orders per method, a split crediting (and counting) both of its methods', () => {
+    const out = groupPaymentsWithCounts([
+      { method: 'Cash', amount: 400 },
+      { method: 'Cash: Rs.1000, JazzCash: Rs.980', amount: 1980 }, // split -> both
+      { method: 'JazzCash', amount: 500 },
+    ]);
+    // Cash = 400 + 1000 = 1400 over 2 orders ; JazzCash = 980 + 500 = 1480 over 2 orders
+    expect(out).toEqual([
+      { method: 'JazzCash', amount: 1480, orders: 2 },
+      { method: 'Cash', amount: 1400, orders: 2 },
+    ]);
+  });
+
+  it('defaults a null method to Cash and still counts it; ignores zero-amount rows', () => {
+    expect(groupPaymentsWithCounts([
+      { method: null, amount: 500 },
+      { method: 'Cash', amount: 100 },
+      { method: 'Cash', amount: 0 },
+    ])).toEqual([{ method: 'Cash', amount: 600, orders: 2 }]);
+  });
+
+  it('groupPayments is the same figures without the count', () => {
+    const rows = [{ method: 'Cash', amount: 100 }, { method: 'JazzCash', amount: 250 }];
+    expect(groupPayments(rows)).toEqual([
+      { method: 'JazzCash', amount: 250 },
+      { method: 'Cash', amount: 100 },
+    ]);
+  });
+});
+
+describe('orderUsedPaymentMethod', () => {
+  it('matches a bare single-method string', () => {
+    expect(orderUsedPaymentMethod('Cash', 900, 'Cash')).toBe(true);
+    expect(orderUsedPaymentMethod('JazzCash', 900, 'JazzCash')).toBe(true);
+  });
+
+  it('does NOT match "Cash" against a "JazzCash" order (no substring trap)', () => {
+    expect(orderUsedPaymentMethod('JazzCash', 900, 'Cash')).toBe(false);
+  });
+
+  it('matches every method of a genuine split', () => {
+    const s = 'Cash: Rs.900, JazzCash: Rs.779';
+    expect(orderUsedPaymentMethod(s, 1679, 'Cash')).toBe(true);
+    expect(orderUsedPaymentMethod(s, 1679, 'JazzCash')).toBe(true);
+    expect(orderUsedPaymentMethod(s, 1679, 'EasyPaisa')).toBe(false);
+  });
+
+  it('is case-insensitive on the wanted name, and false for a null/blank string', () => {
+    expect(orderUsedPaymentMethod('JazzCash', 900, 'jazzcash')).toBe(true);
+    expect(orderUsedPaymentMethod(null, 900, 'Cash')).toBe(false);
+    expect(orderUsedPaymentMethod('   ', 900, 'Cash')).toBe(false);
+  });
+});
 
 describe('monthBoundaries', () => {
   it('returns this-month and last-month UTC ranges', () => {

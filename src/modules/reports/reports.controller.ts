@@ -9,8 +9,8 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import {
   parseDateRange, buildOrderWhere, computeCogs,
   dayBoundaries, monthBoundaries, classifyChannel, growthPct, fillChannels, groupPayments,
-  displayOrderType, isLowStock,
-  parseTimeOfDay, isWithinTimeOfDay,
+  groupPaymentsWithCounts, displayOrderType, isLowStock,
+  parseTimeOfDay, isWithinTimeOfDay, splitOrderTotalByLine,
   type CogsRecipe, type CogsItem,
 } from './reports.helpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
@@ -719,6 +719,400 @@ export const getSalesByChannel = asyncHandler(async (req: Request, res: Response
         orders:    combinedOrders,
         marginPct,
       },
+    })
+  );
+});
+
+/**
+ * GET /api/reports/sales-by-category
+ *
+ * Sale / Cost / Profit / Margin for every food category, over the same completed + cash-approved
+ * order set as getSalesByChannel (date range on createdAt, optional PKT time-of-day) — but across
+ * ALL channels, not just Dine In / Take Away / Delivery, because the question here is total
+ * food-category performance. Backs the Dashboard's "Sales by Category" section.
+ *
+ * A category figure is inherently LINE-level (the Pizza lines' revenue and COGS), unlike
+ * getSalesByChannel where a whole order sits in one channel. So each order's final `total` is
+ * split across its lines by gross-value share (splitOrderTotalByLine) and each slice is filed
+ * under that line's menu-item category; cost is the real per-line COGS. Cancelled lines
+ * (OrderItem.status !== 'active') are excluded from both the split and the buckets — a
+ * deliberate, more-correct difference from getSalesByChannel, which computes COGS over every
+ * item row. A line whose menu item has no category (or a deleted one) → "Uncategorised".
+ */
+export const getSalesByCategory = asyncHandler(async (req: Request, res: Response) => {
+  const from = req.query.from as string | undefined;
+  const to   = req.query.to   as string | undefined;
+  const { gte, lte } = parseDateRange(from, to);
+
+  const fromMin = parseTimeOfDay(req.query.fromTime as string | undefined);
+  const toMin   = parseTimeOfDay(req.query.toTime   as string | undefined);
+
+  const outletId = resolveOutletScope(req) ?? undefined;
+
+  const baseWhere = buildOrderWhere(gte, lte, outletId);
+  const orders = await prisma.order.findMany({
+    where: { ...baseWhere, status: COMPLETED as never, cashApproved: true },
+    select: {
+      id:        true,
+      total:     true,
+      createdAt: true,
+      items: {
+        where:  { status: 'active' },
+        select: {
+          menuItemId: true,
+          variantId:  true,
+          qty:        true,
+          price:      true,
+          discount:   true,
+          menuItem:   { select: { category: { select: { name: true } } } },
+        },
+      },
+    },
+  });
+
+  const filtered = orders.filter((o) => isWithinTimeOfDay(o.createdAt, fromMin, toMin));
+
+  // ── COGS inputs, loaded once across every line ────────────────────────────
+  const menuItemIds = [
+    ...new Set(
+      filtered.flatMap((o) => o.items.map((i) => i.menuItemId)).filter((x): x is string => !!x)
+    ),
+  ];
+  let recipesForCogs: CogsRecipe[] = [];
+  let priceById = new Map<string, number>();
+  if (menuItemIds.length > 0) {
+    const rawRecipes = await prisma.foodRecipe.findMany({
+      where: { menuItemId: { in: menuItemIds } },
+      select: { menuItemId: true, variantId: true, ingredientId: true, qtyPerUnit: true },
+    });
+    const ingredientIds = [
+      ...new Set(rawRecipes.map((r) => r.ingredientId).filter((id): id is string => id !== null)),
+    ];
+    const ingredients = await prisma.ingredient.findMany({
+      where: { id: { in: ingredientIds } },
+      select: { id: true, purchasePrice: true },
+    });
+    priceById = new Map(ingredients.map((i) => [i.id, Number(i.purchasePrice ?? 0)]));
+    recipesForCogs = rawRecipes
+      .filter((r): r is typeof r & { ingredientId: string } => r.ingredientId !== null)
+      .map((r) => ({
+        menuItemId:   r.menuItemId,
+        variantId:    r.variantId,
+        ingredientId: r.ingredientId,
+        qtyPerUnit:   Number(r.qtyPerUnit),
+      }));
+  }
+
+  // ── Bucket every line's revenue slice + real COGS by category ─────────────
+  const UNCATEGORISED = 'Uncategorised';
+  interface Bucket { name: string; sale: number; cost: number; orderIds: Set<string>; }
+  const buckets = new Map<string, Bucket>();
+  const bucketFor = (name: string): Bucket => {
+    let b = buckets.get(name);
+    if (!b) { b = { name, sale: 0, cost: 0, orderIds: new Set() }; buckets.set(name, b); }
+    return b;
+  };
+
+  let combinedSale = 0;
+  let combinedCost = 0;
+  const combinedOrderIds = new Set<string>();
+
+  for (const o of filtered) {
+    if (o.items.length === 0) continue;
+    const grosses = o.items.map((i) => Number(i.price) * i.qty - Number(i.discount ?? 0));
+    const saleShares = splitOrderTotalByLine(Number(o.total), grosses);
+    o.items.forEach((i, idx) => {
+      const name = i.menuItem?.category?.name ?? UNCATEGORISED;
+      const lineSale = saleShares[idx] ?? 0;
+      const lineCost = computeCogs(
+        [{ menuItemId: i.menuItemId ?? '', variantId: i.variantId ?? null, qty: i.qty }],
+        recipesForCogs, priceById,
+      );
+      const b = bucketFor(name);
+      b.sale += lineSale;
+      b.cost += lineCost;
+      b.orderIds.add(o.id);
+      combinedSale += lineSale;
+      combinedCost += lineCost;
+    });
+    combinedOrderIds.add(o.id);
+  }
+
+  // Zero-fill: every ACTIVE FoodCategory shows even with no sales this period (a category with
+  // nothing sold is a signal, not noise). The "Uncategorised" pseudo-bucket is NOT a real
+  // category, so it only appears when it actually has activity.
+  const activeCats = await prisma.foodCategory.findMany({
+    where: { status: 'active' },
+    select: { name: true, displayOrder: true },
+  });
+  const displayOrderByName = new Map(activeCats.map((c) => [c.name, c.displayOrder]));
+  for (const c of activeCats) {
+    if (!buckets.has(c.name)) bucketFor(c.name); // creates a { sale:0, cost:0, orderIds:∅ } bucket
+  }
+
+  const categories = [...buckets.values()]
+    .map((b) => {
+      const sale = Math.round(b.sale);
+      const cost = Math.round(b.cost);
+      const profit = sale - cost;
+      return {
+        name:      b.name,
+        sale,
+        cost,
+        profit,
+        orders:    b.orderIds.size,
+        marginPct: sale > 0 ? Math.round((profit / sale) * 100) : 0,
+      };
+    })
+    // Categories with sales first (by sale desc); the zero-activity ones after, in their
+    // configured display order.
+    .sort((a, b) => {
+      const aHas = a.sale > 0 ? 1 : 0;
+      const bHas = b.sale > 0 ? 1 : 0;
+      if (aHas !== bHas) return bHas - aHas;
+      if (b.sale !== a.sale) return b.sale - a.sale;
+      return (displayOrderByName.get(a.name) ?? 999) - (displayOrderByName.get(b.name) ?? 999);
+    });
+
+  const cSale = Math.round(combinedSale);
+  const cCost = Math.round(combinedCost);
+  const cProfit = cSale - cCost;
+
+  res.json(
+    ApiResponse.success({
+      from:     from!,
+      to:       to!,
+      fromTime: fromMin !== null ? (req.query.fromTime as string) : null,
+      toTime:   toMin   !== null ? (req.query.toTime   as string) : null,
+      categories,
+      combined: {
+        sale:      cSale,
+        cost:      cCost,
+        profit:    cProfit,
+        orders:    combinedOrderIds.size,
+        marginPct: cSale > 0 ? Math.round((cProfit / cSale) * 100) : 0,
+      },
+    })
+  );
+});
+
+/**
+ * GET /api/reports/sales-by-payment-method
+ *
+ * Amount collected / order count / % share per payment method, over the same completed +
+ * `cashApproved` order set as getSalesByChannel (date range on createdAt, optional PKT
+ * time-of-day), all channels. Backs the Dashboard's "Sales by Payment Method" section.
+ *
+ * Cost/Profit is meaningless per payment method, so this endpoint returns amounts only.
+ * `Order.paymentMethod` is a free-text string that can hold a split ("Cash: Rs.900, JazzCash:
+ * Rs.779") or an advance/COD shape — `groupPaymentsWithCounts` (the same canonical parser
+ * getDashboard's paymentBreakdown uses) credits each method its own parsed amount and counts it
+ * toward each method's order tally, so `Σ methods[].orders` can exceed `combined.orders`
+ * (distinct orders). `cashAmount` is the "Cash" bucket; `digitalAmount` is everything else.
+ */
+export const getSalesByPaymentMethod = asyncHandler(async (req: Request, res: Response) => {
+  const from = req.query.from as string | undefined;
+  const to   = req.query.to   as string | undefined;
+  const { gte, lte } = parseDateRange(from, to);
+
+  const fromMin = parseTimeOfDay(req.query.fromTime as string | undefined);
+  const toMin   = parseTimeOfDay(req.query.toTime   as string | undefined);
+
+  const outletId = resolveOutletScope(req) ?? undefined;
+
+  const baseWhere = buildOrderWhere(gte, lte, outletId);
+  const orders = await prisma.order.findMany({
+    where: { ...baseWhere, status: COMPLETED as never, cashApproved: true },
+    select: { paymentMethod: true, total: true, createdAt: true },
+  });
+
+  const filtered = orders.filter((o) => isWithinTimeOfDay(o.createdAt, fromMin, toMin));
+
+  const byMethod = groupPaymentsWithCounts(
+    filtered.map((o) => ({ method: o.paymentMethod, amount: Number(o.total) })),
+  );
+
+  const totalAmount = byMethod.reduce((s, m) => s + m.amount, 0);
+  const cashAmount = byMethod.find((m) => m.method.toLowerCase() === 'cash')?.amount ?? 0;
+  const digitalAmount = totalAmount - cashAmount;
+
+  // Zero-fill: every configured payment method shows even with nothing collected this period
+  // (Cash is always included). Matched case-insensitively against what the parser returned so a
+  // configured "Credit Card" and a parsed "credit card" don't become two rows.
+  const settingsRow = await prisma.settings.findFirst({ select: { paymentMethods: true } });
+  const configured = (settingsRow?.paymentMethods && settingsRow.paymentMethods.length > 0)
+    ? settingsRow.paymentMethods
+    : ['Cash', 'Credit Card', 'Account', 'JazzCash', 'EasyPaisa'];
+  const wantedMethods = [...new Set(['Cash', ...configured])];
+  const seenLower = new Set(byMethod.map((m) => m.method.toLowerCase()));
+  const zeroFilled = [
+    ...byMethod,
+    ...wantedMethods
+      .filter((w) => !seenLower.has(w.toLowerCase()))
+      .map((w) => ({ method: w, amount: 0, orders: 0 })),
+  ];
+
+  const methods = zeroFilled
+    .map((m) => ({
+      method:   m.method,
+      amount:   m.amount,
+      orders:   m.orders,
+      sharePct: totalAmount > 0 ? Math.round((m.amount / totalAmount) * 100) : 0,
+    }))
+    // amount desc — the zero-filled methods sink to the bottom, keeping configured order (stable sort)
+    .sort((a, b) => b.amount - a.amount);
+
+  res.json(
+    ApiResponse.success({
+      from:     from!,
+      to:       to!,
+      fromTime: fromMin !== null ? (req.query.fromTime as string) : null,
+      toTime:   toMin   !== null ? (req.query.toTime   as string) : null,
+      methods,
+      combined: {
+        amount:        totalAmount,
+        orders:        filtered.length,
+        cashAmount,
+        digitalAmount,
+        cashSharePct:  totalAmount > 0 ? Math.round((cashAmount / totalAmount) * 100) : 0,
+      },
+    })
+  );
+});
+
+/**
+ * GET /api/reports/top-items
+ *
+ * Best- and worst-performing menu ITEMS by profit, over the same completed + `cashApproved`
+ * order set as getSalesByChannel (date range on createdAt, optional PKT time-of-day), all
+ * channels. Backs the Dashboard's "Top & Bottom Items" section.
+ *
+ * Line-level: each order's final `total` is split across its active lines by gross-value share
+ * (splitOrderTotalByLine — same proration as getSalesByCategory, keeping Sale reconcilable with
+ * Order.total), cost is the real per-line COGS (computeCogs). Rows are aggregated by
+ * `menuItemId` — every size/variant of an item merges into one row (name from the live
+ * FoodMenuItem, falling back to the order line's stored name for a since-deleted item). A line
+ * from a deal counts toward its item with the deal-allocated revenue. Lines with no menuItemId
+ * (manual/custom entries) are skipped. `topItems` = top 10 by profit desc; `bottomItems` =
+ * bottom 10 by profit asc (loss-makers first); both drawn from the same aggregated set, so with
+ * ≤ 20 distinct items sold they overlap — the frontend hides the bottom table when
+ * totalItems ≤ 10.
+ */
+export const getTopItems = asyncHandler(async (req: Request, res: Response) => {
+  const from = req.query.from as string | undefined;
+  const to   = req.query.to   as string | undefined;
+  const { gte, lte } = parseDateRange(from, to);
+
+  const fromMin = parseTimeOfDay(req.query.fromTime as string | undefined);
+  const toMin   = parseTimeOfDay(req.query.toTime   as string | undefined);
+
+  const outletId = resolveOutletScope(req) ?? undefined;
+
+  const baseWhere = buildOrderWhere(gte, lte, outletId);
+  const orders = await prisma.order.findMany({
+    where: { ...baseWhere, status: COMPLETED as never, cashApproved: true },
+    select: {
+      total:     true,
+      createdAt: true,
+      items: {
+        where:  { status: 'active' },
+        select: {
+          menuItemId: true,
+          variantId:  true,
+          qty:        true,
+          price:      true,
+          discount:   true,
+          name:       true,
+          menuItem:   { select: { name: true } },
+        },
+      },
+    },
+  });
+
+  const filtered = orders.filter((o) => isWithinTimeOfDay(o.createdAt, fromMin, toMin));
+
+  // COGS inputs, once across every line.
+  const menuItemIds = [
+    ...new Set(
+      filtered.flatMap((o) => o.items.map((i) => i.menuItemId)).filter((x): x is string => !!x)
+    ),
+  ];
+  let recipesForCogs: CogsRecipe[] = [];
+  let priceById = new Map<string, number>();
+  if (menuItemIds.length > 0) {
+    const rawRecipes = await prisma.foodRecipe.findMany({
+      where: { menuItemId: { in: menuItemIds } },
+      select: { menuItemId: true, variantId: true, ingredientId: true, qtyPerUnit: true },
+    });
+    const ingredientIds = [
+      ...new Set(rawRecipes.map((r) => r.ingredientId).filter((id): id is string => id !== null)),
+    ];
+    const ingredients = await prisma.ingredient.findMany({
+      where: { id: { in: ingredientIds } },
+      select: { id: true, purchasePrice: true },
+    });
+    priceById = new Map(ingredients.map((i) => [i.id, Number(i.purchasePrice ?? 0)]));
+    recipesForCogs = rawRecipes
+      .filter((r): r is typeof r & { ingredientId: string } => r.ingredientId !== null)
+      .map((r) => ({
+        menuItemId:   r.menuItemId,
+        variantId:    r.variantId,
+        ingredientId: r.ingredientId,
+        qtyPerUnit:   Number(r.qtyPerUnit),
+      }));
+  }
+
+  interface ItemAgg { menuItemId: string; name: string; qty: number; sale: number; cost: number; }
+  const byItem = new Map<string, ItemAgg>();
+
+  for (const o of filtered) {
+    if (o.items.length === 0) continue;
+    const grosses = o.items.map((i) => Number(i.price) * i.qty - Number(i.discount ?? 0));
+    const saleShares = splitOrderTotalByLine(Number(o.total), grosses);
+    o.items.forEach((i, idx) => {
+      if (!i.menuItemId) return; // manual/custom line — no item to attribute to
+      let agg = byItem.get(i.menuItemId);
+      if (!agg) {
+        agg = { menuItemId: i.menuItemId, name: i.menuItem?.name ?? i.name, qty: 0, sale: 0, cost: 0 };
+        byItem.set(i.menuItemId, agg);
+      }
+      agg.qty += i.qty;
+      agg.sale += saleShares[idx] ?? 0;
+      agg.cost += computeCogs(
+        [{ menuItemId: i.menuItemId, variantId: i.variantId ?? null, qty: i.qty }],
+        recipesForCogs, priceById,
+      );
+    });
+  }
+
+  const allItems = [...byItem.values()].map((a) => {
+    const sale = Math.round(a.sale);
+    const cost = Math.round(a.cost);
+    const profit = sale - cost;
+    return {
+      menuItemId: a.menuItemId,
+      name:       a.name,
+      qty:        a.qty,
+      sale,
+      cost,
+      profit,
+      marginPct:  sale > 0 ? Math.round((profit / sale) * 100) : 0,
+    };
+  });
+
+  const N = 10;
+  const topItems = [...allItems].sort((a, b) => b.profit - a.profit).slice(0, N);
+  const bottomItems = [...allItems].sort((a, b) => a.profit - b.profit).slice(0, N);
+
+  res.json(
+    ApiResponse.success({
+      from:       from!,
+      to:         to!,
+      fromTime:   fromMin !== null ? (req.query.fromTime as string) : null,
+      toTime:     toMin   !== null ? (req.query.toTime   as string) : null,
+      topItems,
+      bottomItems,
+      totalItems: allItems.length,
     })
   );
 });

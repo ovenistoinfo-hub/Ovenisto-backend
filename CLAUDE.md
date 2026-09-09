@@ -418,6 +418,59 @@ plus a body explaining _why_ the change was made when that is not obvious.
   only ever existed at the item level. This under-costed **P&L** the same way, chain-wide.
 - **`getSalesByChannel` merges `SELF_ORDER` into its `dineIn` bucket** (2026-09-09), matching
   `GET /api/orders`'s `type=Dine In` rule — keep the two merges in sync.
+- **`splitOrderTotalByLine(orderTotal, lineGross[])`** (`reports.helpers.ts`, 2026-09-09, pure +
+  unit-tested) — prorates an order's **final** `total` (tax + discount inclusive) across its
+  lines by gross-value share; parts sum back to `Math.round(total)` exactly (last positive-weight
+  line absorbs rounding drift; all-zero grosses → equal split). Prorating the final total, not
+  the gross subtotal, keeps a per-line revenue attribution reconcilable with `getSalesByChannel`
+  (which sums `Order.total`).
+- **`GET /api/reports/sales-by-category`** (`getSalesByCategory`, route registered right after
+  `/sales-by-channel`, 2026-09-09) — per-`FoodCategory` Sale/Cost/Profit/Margin over the same
+  completed + `cashApproved` set as `getSalesByChannel` but **all channels**. Line-level: each
+  order's `total` split via `splitOrderTotalByLine`, filed under each line's
+  `menuItem.category.name` (null/deleted → `"Uncategorised"`); Cost is real per-line
+  `computeCogs`; cancelled `OrderItem`s (`status !== 'active'`) excluded from both the split and
+  the buckets — a deliberate, more-correct divergence from `getSalesByChannel`, which COGS-es
+  every item row. `combined` sums all categories = every completed sale, every channel (so it
+  will NOT equal `getSalesByChannel`'s `combined`).
+- **`resolveOrdersWhere` `category=<name>` param** (2026-09-09) → `where.items = { some: {
+  status: 'active', menuItem: { category: { name } } } }` (or `menuItemId: null` OR
+  `menuItem.categoryId: null` when name is `"Uncategorised"`); matched by category **name**, not
+  id, for readable drill-down URLs. `getOrders` then attaches per-order
+  `categorySale`/`categoryCost`/`categoryProfit` (same `splitOrderTotalByLine` proration +
+  per-line `computeCogs`, over active lines in that category only) and `getOrdersSummary`
+  aggregates just that slice — so the Sales & Orders table + its summary cards reconcile with the
+  Dashboard "Sales by Category" card.
+- **`groupPaymentsWithCounts(rows)`** (`reports.helpers.ts`, 2026-09-09) — `groupPayments` (which
+  is now a thin wrapper over it) plus a per-method `orders` count; a genuine split credits AND
+  counts toward every method it used, so `Σ orders` can exceed the input row count.
+  **`orderUsedPaymentMethod(methodStr, orderTotal, wanted)`** — split-aware "did this order use
+  method X?", via the same canonical `parsePaymentMethodAmounts`; filtering "Cash" never matches
+  a "JazzCash" order (no substring trap).
+- **`GET /api/reports/sales-by-payment-method`** (`getSalesByPaymentMethod`, route after
+  `/sales-by-category`, 2026-09-09) — amount / order count / % share per payment method +
+  `cashAmount`/`digitalAmount`/`cashSharePct`, all channels, over the same completed +
+  `cashApproved` set as `getSalesByChannel`. Amounts only — no Cost/Profit. Uses
+  `groupPaymentsWithCounts`.
+- **`resolveOrdersWhere` `paymentMethod=<name>` param** (2026-09-09) — Dashboard "Sales by
+  Payment Method" drill-down. NOT a Prisma `contains` ("Cash" ⊂ "JazzCash"): it rides the
+  existing time-of-day two-query pass (now selecting `paymentMethod`/`total` too) and keeps an
+  order when `orderUsedPaymentMethod` says that method contributed a positive amount. **No
+  per-order slice** — unlike `category`, `getOrders`/`getOrdersSummary` return whole-order
+  figures (a split order matches every method it used).
+- **`getSalesByCategory` / `getSalesByPaymentMethod` zero-fill** (2026-09-09) — `getSalesByCategory`
+  appends a Rs. 0 row for every active `FoodCategory` with no sales (`"Uncategorised"` excluded —
+  it only shows with real activity), sorted after the real rows by `displayOrder`.
+  `getSalesByPaymentMethod` reads `Settings.paymentMethods` (Cash always added, matched
+  case-insensitively so a configured "Credit Card" and a parsed "credit card" don't split) and
+  appends a Rs. 0 row for each unused one. Totals unaffected (zeros add nothing).
+- **`GET /api/reports/top-items`** (`getTopItems`, route after `/sales-by-payment-method`,
+  2026-09-09) — per-menu-item Qty/Sale/Cost/Profit/Margin, **aggregated by `menuItemId`**
+  (variants merged), all channels; `splitOrderTotalByLine` + per-line `computeCogs` (a 5th
+  inline copy of the COGS-input load). `topItems` = top 10 by profit, `bottomItems` = bottom 10
+  by profit — both sliced from the same aggregated set, so they overlap when ≤ 20 distinct items
+  sold. Name falls back to `OrderItem.name` for a deleted item; null-`menuItemId` lines skipped.
+  No new helper/tests — reuses the tested math.
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph
