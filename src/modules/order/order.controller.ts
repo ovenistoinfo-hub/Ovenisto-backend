@@ -316,9 +316,38 @@ export function computeDerivedOrderStatus(
 // ORDERS
 // ============================================================
 
+/** Convert "HH:MM" (24h) to minutes-since-midnight, or null if not provided. Throws on malformed input. */
+export function parseTimeOfDay(t: string | undefined): number | null {
+  if (!t) return null;
+  const m = /^(\d{2}):(\d{2})$/.exec(t);
+  if (!m) throw ApiError.badRequest('fromTime/toTime must be HH:MM (24h)');
+  const h = Number(m[1]), min = Number(m[2]);
+  if (h > 23 || min > 59) throw ApiError.badRequest('fromTime/toTime must be a valid 24h time');
+  return h * 60 + min;
+}
+
+/**
+ * True when createdAt's PKT wall-clock time falls in [fromMin, toMin). A missing bound defaults
+ * to the start/end of day respectively, so passing only one of fromTime/toTime still narrows
+ * correctly instead of disabling the filter entirely. Wraps past midnight when both bounds are
+ * given and fromMin > toMin (mirrors this backend's deal-schedule midnight-crossing convention).
+ */
+export function isWithinTimeOfDay(createdAt: Date, fromMin: number | null, toMin: number | null): boolean {
+  if (fromMin === null && toMin === null) return true;
+  const pkt = new Date(createdAt.getTime() + 5 * 60 * 60 * 1000);
+  const minutes = pkt.getUTCHours() * 60 + pkt.getUTCMinutes();
+  const f = fromMin ?? 0;
+  const t = toMin ?? 24 * 60;
+  if (f <= t) return minutes >= f && minutes < t;
+  return minutes >= f || minutes < t; // crosses midnight
+}
+
 /** GET /api/orders */
 export const getOrders = asyncHandler(async (req: Request, res: Response) => {
-  const { search, status, type, date, tableNumber, orderSource, page = '1', limit = '50' } = req.query;
+  const {
+    search, status, type, date, from, to, fromTime, toTime,
+    tableNumber, orderSource, page = '1', limit = '50',
+  } = req.query;
   const skip = (Number(page) - 1) * Number(limit);
 
   const where: any = {};
@@ -332,21 +361,50 @@ export const getOrders = asyncHandler(async (req: Request, res: Response) => {
     ];
   }
   if (status) {
-    const s = String(status);
-    where.status = STATUS_TO_PRISMA[s] ?? s.toUpperCase();
+    // Comma-separated list supported ("completed,cancelled") so a caller can ask for exactly a
+    // finished-orders set without changing what an absent status means — several live boards
+    // (Kitchen Panel, Order Monitor, POS, Waiter Panel) call this endpoint with no status filter
+    // and rely on PENDING/PREPARING/READY orders still coming back by default.
+    const parts = String(status).split(',').map((s) => s.trim()).filter(Boolean);
+    const mapped = parts.map((s) => STATUS_TO_PRISMA[s] ?? s.toUpperCase());
+    where.status = mapped.length > 1 ? { in: mapped } : mapped[0];
   }
   if (type) {
     const t = String(type);
-    where.type = TYPE_TO_PRISMA[t] ?? t.toUpperCase();
+    // "Dine In" also matches Self Order rows — a self-order redemption is table-based dine-in
+    // ordering by nature; the Sales & Orders page displays and filters them as one channel.
+    where.type = t === 'Dine In' ? { in: ['DINE_IN', 'SELF_ORDER'] } : (TYPE_TO_PRISMA[t] ?? t.toUpperCase());
   }
-  if (date) {
-    const d = new Date(String(date));
-    const next = new Date(d);
-    next.setDate(next.getDate() + 1);
-    where.date = { gte: d, lt: next };
+
+  // Date range: from/to (YYYY-MM-DD) supersede the legacy single `date` param, kept for backward
+  // compatibility (treated as from=to=date when from/to are absent).
+  const fromStr = (from as string | undefined) ?? (date as string | undefined);
+  const toStr = (to as string | undefined) ?? (date as string | undefined);
+  if (fromStr || toStr) {
+    const startStr = fromStr ?? toStr!;
+    const endStr = toStr ?? fromStr!;
+    const gte = new Date(`${startStr}T00:00:00.000Z`);
+    const lt = new Date(`${endStr}T00:00:00.000Z`);
+    lt.setUTCDate(lt.getUTCDate() + 1);
+    where.date = { gte, lt };
   }
+
   if (tableNumber) where.tableNumber = Number(tableNumber);
   if (orderSource) where.orderSource = String(orderSource);
+
+  // Time-of-day narrowing (optional): Order.date has no time component, so this can't be a plain
+  // where-clause — it's derived from Order.createdAt's PKT wall-clock time via a pagination-safe
+  // two-query pass (id/createdAt only, then re-query with id: {in: matchedIds}) rather than
+  // filtering the already-paginated page, which would corrupt skip/take/count.
+  const fromMin = parseTimeOfDay(fromTime as string | undefined);
+  const toMin = parseTimeOfDay(toTime as string | undefined);
+  if (fromMin !== null || toMin !== null) {
+    const candidates = await prisma.order.findMany({ where, select: { id: true, createdAt: true } });
+    const matchedIds = candidates
+      .filter((o) => isWithinTimeOfDay(o.createdAt, fromMin, toMin))
+      .map((o) => o.id);
+    where.id = { in: matchedIds };
+  }
 
   const [orders, total] = await Promise.all([
     prisma.order.findMany({
