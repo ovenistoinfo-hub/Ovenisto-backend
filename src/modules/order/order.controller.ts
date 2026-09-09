@@ -16,6 +16,7 @@ import { mapReservation } from '../reservations/reservation.controller.js';
 import { emitSelfOrderEventForOrder } from '../self-order/self-order.socket.js';
 import { revalidateDealLines, resolveOrderDiscount, withDealItemKeys } from '../deals/deal.revalidate.js';
 import { round2 } from '../deals/deal.pricing.js';
+import { computeCogs, type CogsItem, type CogsRecipe } from '../reports/reports.helpers.js';
 
 // ── Enum conversion helpers ──
 
@@ -342,13 +343,14 @@ export function isWithinTimeOfDay(createdAt: Date, fromMin: number | null, toMin
   return minutes >= f || minutes < t; // crosses midnight
 }
 
-/** GET /api/orders */
-export const getOrders = asyncHandler(async (req: Request, res: Response) => {
-  const {
-    search, status, type, date, from, to, fromTime, toTime,
-    tableNumber, orderSource, page = '1', limit = '50',
-  } = req.query;
-  const skip = (Number(page) - 1) * Number(limit);
+/**
+ * Shared filter-building for GET /api/orders and GET /api/orders/summary, so the two never
+ * silently drift apart on what search/status/type/date-range/time-of-day mean. Async because
+ * the time-of-day narrowing needs its own pagination-safe two-query pass (see the comment
+ * inline below) before the final where clause is known.
+ */
+async function resolveOrdersWhere(req: Request): Promise<any> {
+  const { search, status, type, date, from, to, fromTime, toTime, tableNumber, orderSource } = req.query;
 
   const where: any = {};
   // Outlet scope: Super Admin on "All" → no filter; otherwise restrict to the resolved outlet.
@@ -395,7 +397,7 @@ export const getOrders = asyncHandler(async (req: Request, res: Response) => {
   // Time-of-day narrowing (optional): Order.date has no time component, so this can't be a plain
   // where-clause — it's derived from Order.createdAt's PKT wall-clock time via a pagination-safe
   // two-query pass (id/createdAt only, then re-query with id: {in: matchedIds}) rather than
-  // filtering the already-paginated page, which would corrupt skip/take/count.
+  // filtering an already-paginated page, which would corrupt skip/take/count.
   const fromMin = parseTimeOfDay(fromTime as string | undefined);
   const toMin = parseTimeOfDay(toTime as string | undefined);
   if (fromMin !== null || toMin !== null) {
@@ -405,6 +407,36 @@ export const getOrders = asyncHandler(async (req: Request, res: Response) => {
       .map((o) => o.id);
     where.id = { in: matchedIds };
   }
+
+  return where;
+}
+
+/** Fetch FoodRecipe + Ingredient.purchasePrice for a set of menuItemIds, in computeCogs's
+ *  input shape. Same inline pattern reports.controller.ts's getPnlReport/getSalesByChannel
+ *  each already use — kept inline here too rather than a new cross-module DB helper. */
+async function loadCogsInputs(menuItemIds: string[]): Promise<{ recipes: CogsRecipe[]; priceById: Map<string, number> }> {
+  if (menuItemIds.length === 0) return { recipes: [], priceById: new Map() };
+  const rawRecipes = await prisma.foodRecipe.findMany({
+    where: { menuItemId: { in: menuItemIds } },
+    select: { menuItemId: true, variantId: true, ingredientId: true, qtyPerUnit: true },
+  });
+  const ingredientIds = [...new Set(rawRecipes.map((r) => r.ingredientId).filter((id): id is string => id !== null))];
+  const ingredients = await prisma.ingredient.findMany({
+    where: { id: { in: ingredientIds } },
+    select: { id: true, purchasePrice: true },
+  });
+  const priceById = new Map(ingredients.map((i) => [i.id, Number(i.purchasePrice ?? 0)]));
+  const recipes: CogsRecipe[] = rawRecipes
+    .filter((r): r is typeof r & { ingredientId: string } => r.ingredientId !== null)
+    .map((r) => ({ menuItemId: r.menuItemId, variantId: r.variantId, ingredientId: r.ingredientId, qtyPerUnit: Number(r.qtyPerUnit) }));
+  return { recipes, priceById };
+}
+
+/** GET /api/orders */
+export const getOrders = asyncHandler(async (req: Request, res: Response) => {
+  const { page = '1', limit = '50' } = req.query;
+  const skip = (Number(page) - 1) * Number(limit);
+  const where = await resolveOrdersWhere(req);
 
   const [orders, total] = await Promise.all([
     prisma.order.findMany({
@@ -431,7 +463,54 @@ export const getOrders = asyncHandler(async (req: Request, res: Response) => {
     prisma.order.count({ where }),
   ]);
 
-  res.json(ApiResponse.paginated(orders.map(mapOrderOut), Number(page), Number(limit), total));
+  // Cost/Profit per order for the Sales & Orders page's Cost/Profit columns — computed only
+  // for this one page's orders (cheap: one recipe/ingredient batch, not a per-order query).
+  const pageMenuItemIds = [
+    ...new Set(orders.flatMap((o) => o.items.map((i) => i.menuItemId)).filter((x): x is string => !!x)),
+  ];
+  const { recipes, priceById } = await loadCogsInputs(pageMenuItemIds);
+  const mapped = orders.map((o) => {
+    const out = mapOrderOut(o);
+    const cogsItems: CogsItem[] = o.items.map((i) => ({
+      menuItemId: i.menuItemId ?? '',
+      variantId: i.variantId ?? null,
+      qty: i.qty,
+    }));
+    const cost = computeCogs(cogsItems, recipes, priceById);
+    return { ...out, cost, profit: Math.round(out.total - cost) };
+  });
+
+  res.json(ApiResponse.paginated(mapped, Number(page), Number(limit), total));
+});
+
+/**
+ * GET /api/orders/summary — aggregate Sale/Cost/Profit/Margin across the ENTIRE filtered set
+ * (not one page), for the Sales & Orders page's 4 summary cards. Takes the identical filters as
+ * GET /api/orders (search/status/type/from/to/fromTime/toTime/tableNumber/orderSource) via the
+ * same resolveOrdersWhere, so the cards always total exactly what the table's filters show.
+ */
+export const getOrdersSummary = asyncHandler(async (req: Request, res: Response) => {
+  const where = await resolveOrdersWhere(req);
+
+  const orders = await prisma.order.findMany({
+    where,
+    select: { total: true, items: { select: { menuItemId: true, variantId: true, qty: true } } },
+  });
+
+  const sale = Math.round(orders.reduce((s, o) => s + Number(o.total), 0));
+
+  const menuItemIds = [
+    ...new Set(orders.flatMap((o) => o.items.map((i) => i.menuItemId)).filter((x): x is string => !!x)),
+  ];
+  const { recipes, priceById } = await loadCogsInputs(menuItemIds);
+  const cogsItems: CogsItem[] = orders.flatMap((o) =>
+    o.items.map((i) => ({ menuItemId: i.menuItemId ?? '', variantId: i.variantId ?? null, qty: i.qty }))
+  );
+  const cost = computeCogs(cogsItems, recipes, priceById);
+  const profit = sale - cost;
+  const marginPct = sale > 0 ? Math.round((profit / sale) * 100) : 0;
+
+  res.json(ApiResponse.success({ sale, cost, profit, orders: orders.length, marginPct }));
 });
 
 /** GET /api/orders/:id */

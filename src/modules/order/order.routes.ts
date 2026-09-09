@@ -7,7 +7,7 @@ import { Router } from 'express';
 import { authenticate } from '../../middleware/authenticate.js';
 import { authorize } from '../../middleware/authorize.js';
 import {
-  getOrders, getOrder, createOrder, updateOrder, updateOrderStatus, updateOrderKitchenStatus, deleteOrder,
+  getOrders, getOrdersSummary, getOrder, createOrder, updateOrder, updateOrderStatus, updateOrderKitchenStatus, deleteOrder,
   acceptSelfOrder, rejectSelfOrder, validateCoupon,
   getKitchens, createKitchen, updateKitchen, deleteKitchen,
 } from './order.controller.js';
@@ -23,6 +23,8 @@ const kitchenRoles = [
 // ── Orders router ──
 export const ordersRouter = Router();
 ordersRouter.get('/', authenticate, getOrders);
+// Registered before /:id -- otherwise Express would match "summary" as an :id value.
+ordersRouter.get('/summary', authenticate, getOrdersSummary);
 ordersRouter.get('/:id', authenticate, getOrder);
 ordersRouter.post('/', authenticate, authorize(posRoles), createOrder);
 ordersRouter.post('/validate-coupon', authenticate, authorize(posRoles), validateCoupon);
