@@ -372,10 +372,17 @@ async function resolveOrdersWhere(req: Request): Promise<any> {
     where.status = mapped.length > 1 ? { in: mapped } : mapped[0];
   }
   if (type) {
-    const t = String(type);
+    // Comma-separated list supported ("Dine In,Take Away,Delivery"), same idiom as status
+    // above — lets a caller (the Dashboard's Sales By Channel drill-down) ask for exactly
+    // those three channels without it meaning "every type" (which would also pull in
+    // Online/Foodpanda, channels that section deliberately excludes).
+    const parts = String(type).split(',').map((s) => s.trim()).filter(Boolean);
     // "Dine In" also matches Self Order rows — a self-order redemption is table-based dine-in
     // ordering by nature; the Sales & Orders page displays and filters them as one channel.
-    where.type = t === 'Dine In' ? { in: ['DINE_IN', 'SELF_ORDER'] } : (TYPE_TO_PRISMA[t] ?? t.toUpperCase());
+    const mappedTypes = [
+      ...new Set(parts.flatMap((t) => (t === 'Dine In' ? ['DINE_IN', 'SELF_ORDER'] : [TYPE_TO_PRISMA[t] ?? t.toUpperCase()]))),
+    ];
+    where.type = mappedTypes.length > 1 ? { in: mappedTypes } : mappedTypes[0];
   }
 
   // Date range: from/to (YYYY-MM-DD) supersede the legacy single `date` param, kept for backward
