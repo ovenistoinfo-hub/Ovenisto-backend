@@ -632,10 +632,13 @@ export const getSalesByChannel = asyncHandler(async (req: Request, res: Response
   };
   for (const o of filtered) {
     const display = displayOrderType(String(o.type));
-    if (display === 'Dine In')        buckets.dineIn.push(o);
-    else if (display === 'Take Away') buckets.takeaway.push(o);
-    else if (display === 'Delivery')  buckets.delivery.push(o);
-    // Online / Self Order / Foodpanda / Walk-in: intentionally excluded from this endpoint
+    // Self Order is table-based dine-in ordering by nature -- merged into Dine In here to
+    // match the Sales & Orders page's identical rule (order.controller.ts's getOrders,
+    // type=Dine In also matches SELF_ORDER). Keep the two in sync.
+    if (display === 'Dine In' || display === 'Self Order') buckets.dineIn.push(o);
+    else if (display === 'Take Away')                      buckets.takeaway.push(o);
+    else if (display === 'Delivery')                       buckets.delivery.push(o);
+    // Online / Foodpanda / Walk-in: intentionally excluded from this endpoint
   }
 
   // ── 7. Load COGS data once across all three channels ──────────────────────
