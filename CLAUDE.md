@@ -480,6 +480,14 @@ plus a body explaining _why_ the change was made when that is not obvious.
   range) — **context only, NOT subtracted** (stock bought is inventory, not a cost until
   sold/wasted). 5th inline copy of the COGS-input load. No tests (straight sums + tested
   `computeCogs`).
+- **`getExpenses` / `getAdjustments` / `getWasteRecords` gained `from`/`to`** (2026-09-11,
+  `YYYY-MM-DD`, either bound alone = one day — same convention as `resolveOrdersWhere`);
+  `getWasteRecords` also gained `reason` (exact match). First real date-range filtering either
+  endpoint has ever had — added so the Dashboard "Net Profit" section's Revenue/Food
+  Loss/Expenses rows can drill into `/sales`, `/stock/adjustments`, `/expenses` pre-filtered to
+  its exact window. `getAdjustments` (corrections) gets `from`/`to` too, purely so
+  `StockAdjustments.tsx`'s merged waste+correction table stays date-consistent — it has no
+  `reason` param.
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph

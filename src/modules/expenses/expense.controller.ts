@@ -16,13 +16,24 @@ function mapExpense(e: any) {
 }
 
 export const getExpenses = asyncHandler(async (req: Request, res: Response) => {
-  const { page = '1', limit = '20', category, search } = req.query as Record<string, string>;
+  const { page = '1', limit = '20', category, search, from, to } = req.query as Record<string, string>;
   const skip = (Number(page) - 1) * Number(limit);
 
   const where: any = {};
   if (category) where.category = category;
   if (search) {
     where.description = { contains: search, mode: 'insensitive' };
+  }
+  // Date range (YYYY-MM-DD, inclusive both ends) — same from/to convention resolveOrdersWhere
+  // uses: either bound alone is treated as a single day. Powers the Dashboard "Net Profit"
+  // section's Expenses drill-down + the page's own filter bar.
+  if (from || to) {
+    const startStr = from ?? to;
+    const endStr = to ?? from;
+    const gte = new Date(`${startStr}T00:00:00.000Z`);
+    const lt = new Date(`${endStr}T00:00:00.000Z`);
+    lt.setUTCDate(lt.getUTCDate() + 1);
+    where.date = { gte, lt };
   }
 
   const scope = resolveOutletScope(req);

@@ -34,12 +34,22 @@ const applyStockScopeFilter = (req: Request, where: any) => {
 /** GET /api/stock/adjustments */
 export const getAdjustments = asyncHandler(async (req: Request, res: Response) => {
   await autoProcessExpiredBatches();
-  const { search, warehouseId, page = '1', limit = '50' } = req.query;
+  const { search, warehouseId, page = '1', limit = '50', from, to } = req.query;
   const skip = (Number(page) - 1) * Number(limit);
 
   const where: any = {};
   if (search) where.ingredient = { name: { contains: String(search), mode: 'insensitive' } };
   if (warehouseId) where.warehouseId = String(warehouseId);
+  // Date range (YYYY-MM-DD, inclusive both ends) — keeps the correction rows date-consistent
+  // with getWasteRecords below when StockAdjustments.tsx's shared filter bar picks a range.
+  if (from || to) {
+    const startStr = (from ?? to) as string;
+    const endStr = (to ?? from) as string;
+    const gte = new Date(`${startStr}T00:00:00.000Z`);
+    const lt = new Date(`${endStr}T00:00:00.000Z`);
+    lt.setUTCDate(lt.getUTCDate() + 1);
+    where.date = { gte, lt };
+  }
   applyStockScopeFilter(req, where);
 
   const [adjustments, total] = await Promise.all([
@@ -659,12 +669,23 @@ export const updateTransferStatus = asyncHandler(async (req: Request, res: Respo
 /** GET /api/stock/waste */
 export const getWasteRecords = asyncHandler(async (req: Request, res: Response) => {
   await autoProcessExpiredBatches();
-  const { search, warehouseId, page = '1', limit = '50' } = req.query;
+  const { search, warehouseId, page = '1', limit = '50', from, to, reason } = req.query;
   const skip = (Number(page) - 1) * Number(limit);
 
   const where: any = {};
   if (search) where.itemName = { contains: String(search), mode: 'insensitive' };
   if (warehouseId) where.warehouseId = String(warehouseId);
+  if (reason) where.reason = String(reason);
+  // Date range (YYYY-MM-DD, inclusive both ends) — powers the Dashboard "Net Profit" section's
+  // Food Loss drill-down (?from=&to=[&reason=]) and StockAdjustments.tsx's own filter bar.
+  if (from || to) {
+    const startStr = (from ?? to) as string;
+    const endStr = (to ?? from) as string;
+    const gte = new Date(`${startStr}T00:00:00.000Z`);
+    const lt = new Date(`${endStr}T00:00:00.000Z`);
+    lt.setUTCDate(lt.getUTCDate() + 1);
+    where.date = { gte, lt };
+  }
   applyStockScopeFilter(req, where);
 
   const [records, total] = await Promise.all([
