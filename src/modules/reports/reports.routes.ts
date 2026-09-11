@@ -12,6 +12,7 @@ import {
   getSalesByPaymentMethod,
   getTopItems,
   getNetProfit,
+  getDealsPerformance,
 } from './reports.controller.js';
 
 const reportRoles = ['Super Admin', 'Admin', 'Manager', 'Accountant'];
@@ -28,3 +29,4 @@ reportsRouter.get('/sales-by-category', authenticate, authorize(reportRoles), ge
 reportsRouter.get('/sales-by-payment-method', authenticate, authorize(reportRoles), getSalesByPaymentMethod);
 reportsRouter.get('/top-items', authenticate, authorize(reportRoles), getTopItems);
 reportsRouter.get('/net-profit', authenticate, authorize(reportRoles), getNetProfit);
+reportsRouter.get('/deals-performance', authenticate, authorize(reportRoles), getDealsPerformance);

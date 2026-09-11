@@ -488,6 +488,68 @@ plus a body explaining _why_ the change was made when that is not obvious.
   its exact window. `getAdjustments` (corrections) gets `from`/`to` too, purely so
   `StockAdjustments.tsx`'s merged waste+correction table stays date-consistent — it has no
   `reason` param.
+- **Dashboard audit (2026-09-11)**: `getDashboard`'s `paymentBreakdown`/`topItems`/`month.{grossSale,
+  discounts,revenue,foodLoss,netProfit}` fields are now DEAD on the frontend — the three widgets
+  that read them ("Payment Methods (This Month)", "Top 10 Items (This Month)", "Financial
+  Overview (This Month)") were removed from `Dashboard.tsx` as fully superseded (the last one's
+  Net Profit tile was the known-wrong `Revenue − Expenses − Loss` calc, sitting right below the
+  correct one). The fields themselves are left in `getDashboard`'s response — not worth a backend
+  change for dead frontend fields; don't assume they're unused elsewhere without checking first.
+- **`GET /api/reports/deals-performance`** (`getDealsPerformance`, route after `/net-profit`,
+  2026-09-11) — redemption count + revenue (+ cost/profit where meaningful) per `Deal`, outlet-
+  scoped via the underlying orders (`Deal` has no `outletId` column — chain-wide catalog overlay,
+  see the Deals module's "Outlet targeting" note), date range only (via `getParams`; no
+  time-of-day, same call as Net Profit). Merges two disjoint sources in one pass over one
+  `prisma.order.findMany`:
+  - **Line-item deals** (COMBO/OPTION_COMBO/PERCENTAGE/BUY_X_GET_Y) — `OrderItem.dealId`/
+    `dealLineId` (all four types tag both, confirmed by reading `deal.revalidate.ts`; one
+    `dealLineId` = one redemption). Revenue = `splitOrderTotalByLine` share (computed over ALL of
+    the order's items, same as `getTopItems`, so a deal line's share is correct even when the
+    order also has non-deal lines); Cost = `computeCogs` per line. 6th inline copy of the
+    COGS-input load.
+  - **Order-level deals** (PROMO_CODE/MIN_SPEND) — `Order.appliedDealId` (one matching order = one
+    redemption, Revenue = the whole `Order.total`, not prorated). **No Cost/Profit** — not tied to
+    specific items, and the discount amount isn't cleanly recoverable (`Order.discount` merges
+    manual + deal discount into one figure — see the Deals money-contract section). `appliedDealCode`
+    set → `PROMO_CODE` type label, null → `MIN_SPEND` (same switch `resolveOrderDiscount` uses).
+  `Deal.type` isn't stored on Order/OrderItem, so it's looked up separately (`prisma.deal.findMany`
+  by the collected line-deal ids only) after the aggregation pass; a since-deleted deal (`dealId`/
+  `appliedDealId` are plain strings, never a formal FK) keeps its stored name with a generic
+  `LINE_DEAL`/`ORDER_DEAL` type fallback. Returns `rows` (sorted by redemptions desc),
+  `totalRedemptions`, `totalRevenue`, `mostUsed`, `activeDealsCount`. No tests (straight
+  aggregation + already-tested `computeCogs`/`splitOrderTotalByLine`).
+- **`resolveOrdersWhere` (`order.controller.ts`) gained `deal`** (added 2026-09-11, for the
+  Deals Performance row drill-down): `deal=<dealId>` keeps only orders where that deal was
+  redeemed — `{ OR: [{ items: { some: { dealId } } }, { appliedDealId: dealId }] }`, pushed onto
+  `where.AND` (not assigned to `where.OR` directly) so it composes correctly alongside the
+  `search` param's own top-level `OR`. Matched by id, same reasoning as `getDealsPerformance`.
+  No per-order slice (unlike `category`) — both `getOrders` and `getOrdersSummary` inherit it
+  automatically through the shared `resolveOrdersWhere`, no extra code in either.
+- **`deal=` now DOES slice Sale/Cost/Profit** (added 2026-09-11, superseding the "no slice" note
+  above) — `getOrders` gained a `dealFilter` branch (checked before `categoryFilter`, same
+  precedence in `getOrdersSummary`'s new `if (dealFilter)` early-return block, mirroring its
+  `categoryFilter` branch's shape). Per matching order: line-item deal (`items.some(dealId ===
+  ...)`) → `splitOrderTotalByLine` + per-line `computeCogs`, same method as category; order-level
+  deal (`appliedDealId === ...`) → whole-order total/cost, no slice possible (the discount isn't
+  tied to specific lines). These two routes are mutually exclusive per order (see the
+  single-discount-per-order fix below), so no order ever needs both computed.
+- **Single-discount-per-order fix, `createOrder`/`updateOrder` (2026-09-11)**: added a
+  `hasLineDeal = revalidatedItems.some(i => !!i.dealId)` guard before both endpoints' existing
+  `resolveOrderDiscount` call. When true: `resolveOrderDiscount` is skipped (`orderDiscount =
+  null`), manual `discount` is forced to `0`, and — new in `createOrder` specifically — an
+  explicitly-typed `dealCode` throws `ApiError.badRequest('Cannot apply a coupon — this order
+  already has a deal applied')` immediately, before the revalidated-items COGS/subtotal work
+  even runs. `updateOrder`'s equivalent guard only throws when `explicitCode && codeToApply` (a
+  NEW code typed on THIS edit) — a merely carried-over `appliedDealCode` from before the edit
+  added a line-item deal silently drops instead, reusing the existing try/catch's `if
+  (explicitCode) throw` split. `forceRecompute` (createOrder) / the always-executed block
+  (updateOrder) now also fires purely off `hasLineDeal`, not just `Boolean(orderDiscount)`, so a
+  line-item-deal order's subtotal/discount/total are always server-recomputed rather than
+  trusting the client even when no order-level deal was ever in play.
+- **`toDealForPricing` (`deal.revalidate.ts`) is now exported** — previously module-private,
+  needed by `reports.controller.ts`'s `getDealsPerformance` to recompute an order-level deal's
+  historical discount via `computeOrderDiscount` (see the frontend guide's mirror of this note,
+  or the root CLAUDE.md Deals section, for the full `discount` field writeup).
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph

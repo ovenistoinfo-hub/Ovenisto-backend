@@ -350,7 +350,7 @@ export function isWithinTimeOfDay(createdAt: Date, fromMin: number | null, toMin
  * inline below) before the final where clause is known.
  */
 async function resolveOrdersWhere(req: Request): Promise<any> {
-  const { search, status, type, date, from, to, fromTime, toTime, tableNumber, orderSource, excludeUnpaid, category, paymentMethod } = req.query;
+  const { search, status, type, date, from, to, fromTime, toTime, tableNumber, orderSource, excludeUnpaid, category, paymentMethod, deal } = req.query;
 
   const where: any = {};
   // Outlet scope: Super Admin on "All" → no filter; otherwise restrict to the resolved outlet.
@@ -411,6 +411,20 @@ async function resolveOrdersWhere(req: Request): Promise<any> {
     where.items = catName === 'Uncategorised'
       ? { some: { status: 'active', OR: [{ menuItemId: null }, { menuItem: { categoryId: null } }] } }
       : { some: { status: 'active', menuItem: { category: { name: catName } } } };
+  }
+
+  // Deal filter (Dashboard "Deals Performance" drill-down): keep only orders where this deal
+  // was redeemed — either a line-item deal (OrderItem.dealId — Combo/Option Combo/% Discount/
+  // Buy X Get Y all tag it, per deal.revalidate.ts) or an order-level deal (Order.appliedDealId
+  // — Promo Code/Min Spend). Matched by id, not name: a deal name isn't guaranteed unique across
+  // a deleted+recreated deal, and getDealsPerformance's own rows already key by dealId.
+  // where.AND (not where.OR) so it composes correctly alongside the `search` OR-clause above.
+  if (deal) {
+    const dealId = String(deal);
+    where.AND = [
+      ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
+      { OR: [{ items: { some: { dealId } } }, { appliedDealId: dealId }] },
+    ];
   }
 
   if (excludeUnpaid === 'true') {
@@ -517,6 +531,15 @@ export const getOrders = asyncHandler(async (req: Request, res: Response) => {
   // table + summary cards can show category-scoped figures that reconcile to the Dashboard's
   // "Sales by Category" card — an order spanning Pizza + Coke contributes only its Pizza part.
   const categoryFilter = req.query.category ? String(req.query.category) : null;
+  // Same idea as category, for the Deals Performance drill-down. A matching order got here via
+  // EXACTLY ONE of two disjoint routes (an order can't carry both a line-item deal and an
+  // order-level one — see the single-discount-per-order rule in createOrder/updateOrder):
+  //   - a line-item deal (some OrderItem.dealId === dealFilter) -> slice to just those lines,
+  //     same method as category (splitOrderTotalByLine + per-line computeCogs).
+  //   - an order-level deal (Order.appliedDealId === dealFilter, Promo Code/Min Spend) -> the
+  //     deal discounts the WHOLE order, so "this deal's data" IS the whole order's Sale/Cost/
+  //     Profit — no slice.
+  const dealFilter = req.query.deal ? String(req.query.deal) : null;
   const mapped = orders.map((o) => {
     const out = mapOrderOut(o);
     const cogsItems: CogsItem[] = o.items.map((i) => ({
@@ -526,9 +549,32 @@ export const getOrders = asyncHandler(async (req: Request, res: Response) => {
     }));
     const cost = computeCogs(cogsItems, recipes, priceById);
     const base = { ...out, cost, profit: Math.round(out.total - cost) };
+    const active = o.items.filter((i) => i.status === 'active');
+
+    if (dealFilter) {
+      const dealLines = active.filter((i) => i.dealId === dealFilter);
+      if (dealLines.length > 0) {
+        const grosses = active.map((i) => Number(i.price) * i.qty - Number(i.discount ?? 0));
+        const shares = splitOrderTotalByLine(Number(o.total), grosses);
+        let dSale = 0;
+        let dCost = 0;
+        active.forEach((i, idx) => {
+          if (i.dealId !== dealFilter) return;
+          dSale += shares[idx] ?? 0;
+          dCost += computeCogs(
+            [{ menuItemId: i.menuItemId ?? '', variantId: i.variantId ?? null, qty: i.qty }],
+            recipes, priceById,
+          );
+        });
+        return { ...base, dealSale: Math.round(dSale), dealCost: Math.round(dCost), dealProfit: Math.round(dSale - dCost) };
+      }
+      if (o.appliedDealId === dealFilter) {
+        return { ...base, dealSale: Math.round(out.total), dealCost: cost, dealProfit: Math.round(out.total - cost) };
+      }
+    }
+
     if (!categoryFilter) return base;
 
-    const active = o.items.filter((i) => i.status === 'active');
     const grosses = active.map((i) => Number(i.price) * i.qty - Number(i.discount ?? 0));
     const shares = splitOrderTotalByLine(Number(o.total), grosses);
     let catSale = 0;
@@ -561,6 +607,61 @@ export const getOrders = asyncHandler(async (req: Request, res: Response) => {
 export const getOrdersSummary = asyncHandler(async (req: Request, res: Response) => {
   const where = await resolveOrdersWhere(req);
   const categoryFilter = req.query.category ? String(req.query.category) : null;
+  const dealFilter = req.query.deal ? String(req.query.deal) : null;
+
+  if (dealFilter) {
+    // Same idea as category below, but per-order the match came from exactly one of two
+    // disjoint routes (see getOrders' identical comment for why they're mutually exclusive): a
+    // line-item deal -> slice to just those lines; an order-level deal (Order.appliedDealId,
+    // Promo Code/Min Spend) -> the deal discounts the whole order, so the whole order counts.
+    const dealOrders = await prisma.order.findMany({
+      where,
+      select: {
+        total: true,
+        appliedDealId: true,
+        items: {
+          where: { status: 'active' },
+          select: { menuItemId: true, variantId: true, qty: true, price: true, discount: true, dealId: true },
+        },
+      },
+    });
+    const dealMenuItemIds = [
+      ...new Set(dealOrders.flatMap((o) => o.items.map((i) => i.menuItemId)).filter((x): x is string => !!x)),
+    ];
+    const { recipes: dealRecipes, priceById: dealPrices } = await loadCogsInputs(dealMenuItemIds);
+    let dSale = 0;
+    let dCost = 0;
+    let matchedOrders = 0;
+    for (const o of dealOrders) {
+      const dealLines = o.items.filter((i) => i.dealId === dealFilter);
+      if (dealLines.length > 0) {
+        const grosses = o.items.map((i) => Number(i.price) * i.qty - Number(i.discount ?? 0));
+        const shares = splitOrderTotalByLine(Number(o.total), grosses);
+        o.items.forEach((i, idx) => {
+          if (i.dealId !== dealFilter) return;
+          dSale += shares[idx] ?? 0;
+          dCost += computeCogs(
+            [{ menuItemId: i.menuItemId ?? '', variantId: i.variantId ?? null, qty: i.qty }],
+            dealRecipes, dealPrices,
+          );
+        });
+        matchedOrders += 1;
+      } else if (o.appliedDealId === dealFilter) {
+        dSale += Number(o.total);
+        dCost += computeCogs(
+          o.items.map((i) => ({ menuItemId: i.menuItemId ?? '', variantId: i.variantId ?? null, qty: i.qty })),
+          dealRecipes, dealPrices,
+        );
+        matchedOrders += 1;
+      }
+    }
+    const sale = Math.round(dSale);
+    const cost = Math.round(dCost);
+    const profit = sale - cost;
+    const marginPct = sale > 0 ? Math.round((profit / sale) * 100) : 0;
+    res.json(ApiResponse.success({ sale, cost, profit, orders: matchedOrders, marginPct }));
+    return;
+  }
 
   if (categoryFilter) {
     // Category-scoped totals: sum only each order's slice for this category (revenue prorated
@@ -714,6 +815,16 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   ]);
   const revalidatedItems = withDealItemKeys(revalidatedRaw);
 
+  // An order carrying a line-item deal (Combo/Option Combo/%Discount/Buy X Get Y — any
+  // OrderItem.dealId set) is already priced at the deal's rate. No FURTHER discount stacks on
+  // top of that: no order-level deal (Promo Code/Minimum Spend) and no manual "extra discount".
+  // An explicitly-typed coupon in this situation is rejected outright rather than silently
+  // dropped — the staff/customer actively tried to apply one and needs to know why it didn't.
+  const hasLineDeal = revalidatedItems.some((i: any) => !!i.dealId);
+  if (hasLineDeal && dealCode) {
+    throw ApiError.badRequest('Cannot apply a coupon — this order already has a deal applied');
+  }
+
   // Order-level discount (Promo Code / Minimum Spend) — the one part of this
   // order's money that IS re-derived server-side (see this file's known gap
   // note on item price/discount/total otherwise being trusted as sent).
@@ -722,23 +833,26 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   // that becomes order.subtotal, not a fully independent re-price.
   const itemsGross = revalidatedItems.reduce((s: number, i: any) => s + Number(i.price) * Number(i.qty), 0);
   const itemsDiscount = revalidatedItems.reduce((s: number, i: any) => s + Number(i.discount ?? 0), 0);
-  const orderDiscount = await resolveOrderDiscount(prisma, {
+  const netItemsSubtotal = round2(itemsGross - itemsDiscount);
+  const orderDiscount = hasLineDeal ? null : await resolveOrderDiscount(prisma, {
     enteredCode: dealCode,
     outletId: scope,
     orderType: type,
-    subtotal: round2(itemsGross - itemsDiscount),
+    subtotal: netItemsSubtotal,
   });
 
-  // Only override the client-sent totals when a coupon/min-spend actually
-  // applied — every other order keeps behaving exactly as it did. When one
-  // does, it STACKS with whatever order-level discount the client already
-  // sent (POS's own manual "extra discount" field) rather than replacing
-  // it — dropping a staff-entered discount because a Minimum Spend deal
-  // also happened to match would silently undercharge or overcharge the
-  // customer relative to what the staff intended.
-  const netItemsSubtotal = round2(itemsGross - itemsDiscount);
-  const finalDiscount = orderDiscount ? round2((discount ?? 0) + orderDiscount.amount) : discount ?? 0;
-  const finalTotal = orderDiscount ? round2(netItemsSubtotal - finalDiscount + Number(tax ?? 0)) : total;
+  // Override the client-sent totals whenever EITHER a coupon/min-spend actually applied OR a
+  // line-item deal is present (forcing the manual discount to 0 in that case) — every other
+  // order keeps trusting the client as before. When an order-level deal applies with no
+  // line-item deal present, it still STACKS with whatever manual "extra discount" the client
+  // sent (POS's own field) rather than replacing it — dropping a staff-entered discount because
+  // a Minimum Spend deal also happened to match would silently undercharge/overcharge the
+  // customer relative to what the staff intended. That stacking behavior is unchanged; only the
+  // line-item-deal case is new.
+  const forceRecompute = Boolean(orderDiscount) || hasLineDeal;
+  const manualDiscount = hasLineDeal ? 0 : Number(discount ?? 0);
+  const finalDiscount = orderDiscount ? round2(manualDiscount + orderDiscount.amount) : round2(manualDiscount);
+  const finalTotal = forceRecompute ? round2(netItemsSubtotal - finalDiscount + Number(tax ?? 0)) : total;
 
   const order = await prisma.order.create({
     data: {
@@ -748,7 +862,7 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
       customerName: customerName || null,
       phone: phone || null,
       type: prismaType as any,
-      subtotal: orderDiscount ? netItemsSubtotal : subtotal ?? 0,
+      subtotal: forceRecompute ? netItemsSubtotal : subtotal ?? 0,
       discount: finalDiscount,
       tax: tax ?? 0,
       total: finalTotal,
@@ -898,26 +1012,38 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
       const itemsDiscount = revalidatedItems.reduce((s: number, i: any) => s + Number(i.discount ?? 0), 0);
       const netItemsSubtotal = round2(itemsGross - itemsDiscount);
 
-      let orderDiscount: Awaited<ReturnType<typeof resolveOrderDiscount>> = null;
-      try {
-        orderDiscount = await resolveOrderDiscount(tx, {
-          enteredCode: codeToApply,
-          outletId: scope ?? existing.outletId,
-          orderType: type ?? existing.type,
-          subtotal: netItemsSubtotal,
-        });
-      } catch (err) {
-        // A code the caller just typed that doesn't apply is a real error the
-        // staff member needs to see. A carried-over one that stopped
-        // qualifying (the edit dropped the order below its minimum spend) is
-        // not — the coupon simply comes off, and the edit goes through.
-        if (explicitCode) throw err;
-        orderDiscount = null;
+      // Same rule createOrder enforces: a line-item deal (Combo/Option Combo/%Discount/Buy X
+      // Get Y) already prices these items, so no order-level deal or manual discount stacks on
+      // top. Reject only when a NEW code was explicitly typed on THIS edit (the staff/customer
+      // actively tried); a merely carried-over code silently comes off instead, same as the
+      // existing "stopped qualifying" convention below.
+      const hasLineDeal = revalidatedItems.some((i: any) => !!i.dealId);
+      if (hasLineDeal && explicitCode && codeToApply) {
+        throw ApiError.badRequest('Cannot apply a coupon — this order already has a deal applied');
       }
 
-      // Stacks with whatever manual order-level discount the client sent
-      // (POS's own "extra discount" field) — never replaces it.
-      const manualDiscount = Number(discount ?? 0);
+      let orderDiscount: Awaited<ReturnType<typeof resolveOrderDiscount>> = null;
+      if (!hasLineDeal) {
+        try {
+          orderDiscount = await resolveOrderDiscount(tx, {
+            enteredCode: codeToApply,
+            outletId: scope ?? existing.outletId,
+            orderType: type ?? existing.type,
+            subtotal: netItemsSubtotal,
+          });
+        } catch (err) {
+          // A code the caller just typed that doesn't apply is a real error the
+          // staff member needs to see. A carried-over one that stopped
+          // qualifying (the edit dropped the order below its minimum spend) is
+          // not — the coupon simply comes off, and the edit goes through.
+          if (explicitCode) throw err;
+          orderDiscount = null;
+        }
+      }
+
+      // Stacks with whatever manual order-level discount the client sent (POS's own "extra
+      // discount" field) — never replaces it. Forced to 0 once a line-item deal is present.
+      const manualDiscount = hasLineDeal ? 0 : Number(discount ?? 0);
       dataToUpdate.subtotal = netItemsSubtotal;
       dataToUpdate.discount = orderDiscount ? round2(manualDiscount + orderDiscount.amount) : round2(manualDiscount);
       dataToUpdate.total = round2(netItemsSubtotal - dataToUpdate.discount + Number(tax ?? existing.tax));

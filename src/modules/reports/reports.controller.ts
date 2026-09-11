@@ -16,6 +16,8 @@ import {
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { autoProcessExpiredBatches } from '../stock/autoExpiry.js';
 import { getActiveBalances } from '../cash-settlement/cash-settlement.service.js';
+import { toDealForPricing } from '../deals/deal.revalidate.js';
+import { computeOrderDiscount } from '../deals/deal.pricing.js';
 
 const COMPLETED = 'COMPLETED'; // Prisma OrderStatus enum value for completed orders
 
@@ -1236,6 +1238,196 @@ export const getNetProfit = asyncHandler(async (req: Request, res: Response) => 
       netMarginPct: rev > 0 ? Math.round((netProfit / rev) * 100) : 0,
       expenseByCategory,
       wasteByReason,
+    })
+  );
+});
+
+/**
+ * GET /api/reports/deals-performance
+ *
+ * Redemption count + revenue (+ cost/profit where meaningful) per Deal, over one date range
+ * (no time-of-day, same choice as Net Profit — deal usage isn't hourly-sensitive), outlet-scoped
+ * via the underlying orders (Deal itself has no outletId — it's a chain-wide catalog overlay,
+ * see "Outlet targeting" in the Deals section of CLAUDE.md).
+ *
+ * Two disjoint sources merge into one table:
+ *   - Line-item deals (COMBO/OPTION_COMBO/PERCENTAGE/BUY_X_GET_Y) tag OrderItem.dealId/
+ *     dealLineId — one dealLineId = one redemption. Revenue is that line's proportional share of
+ *     Order.total (splitOrderTotalByLine, same method Top & Bottom Items uses, computed over ALL
+ *     of the order's items so shares still sum to Order.total when an order mixes deal and
+ *     non-deal lines); Cost via computeCogs. These rows carry Cost/Profit/Margin.
+ *   - Order-level deals (PROMO_CODE/MIN_SPEND) tag Order.appliedDealId — one such order = one
+ *     redemption, Revenue = the whole Order.total (not prorated, it's genuinely order-level). No
+ *     Cost/Profit: an order-level discount isn't tied to specific menu items, and the exact
+ *     discount amount isn't cleanly recoverable either — Order.discount merges manual + deal
+ *     discount into one figure app-wide (see the Deals "money contract" in CLAUDE.md) — so these
+ *     rows are revenue/usage only, never a savings figure. `appliedDealCode` set = PROMO_CODE,
+ *     null = MIN_SPEND (the same switch resolveOrderDiscount uses).
+ *
+ * `Deal.type` isn't stored on Order/OrderItem, so it's looked up separately for line-deal rows
+ * only (order-level rows already know their type from appliedDealCode). dealId/appliedDealId are
+ * plain strings, never a formal FK — a since-deleted deal still reports correctly by its stored
+ * name, just falls back to a generic type label since its live type can no longer be read.
+ */
+export const getDealsPerformance = asyncHandler(async (req: Request, res: Response) => {
+  const { gte, lte, outletId } = getParams(req);
+  const completedWhere = { ...buildOrderWhere(gte, lte, outletId), status: COMPLETED as never, cashApproved: true };
+
+  const orders = await prisma.order.findMany({
+    where: completedWhere,
+    select: {
+      total: true,
+      subtotal: true,
+      type: true,
+      appliedDealId: true,
+      appliedDealName: true,
+      appliedDealCode: true,
+      items: {
+        where: { status: 'active' },
+        select: {
+          menuItemId: true, variantId: true, qty: true, price: true, discount: true,
+          dealId: true, dealName: true, dealLineId: true,
+        },
+      },
+    },
+  });
+
+  // COGS inputs, once across every line (same inline pattern getTopItems/getNetProfit use —
+  // kept inline so reports.helpers.ts stays DB-free for its pure unit tests).
+  const menuItemIds = [
+    ...new Set(orders.flatMap((o) => o.items.map((i) => i.menuItemId)).filter((x): x is string => !!x)),
+  ];
+  let recipesForCogs: CogsRecipe[] = [];
+  let priceById = new Map<string, number>();
+  if (menuItemIds.length > 0) {
+    const rawRecipes = await prisma.foodRecipe.findMany({
+      where: { menuItemId: { in: menuItemIds } },
+      select: { menuItemId: true, variantId: true, ingredientId: true, qtyPerUnit: true },
+    });
+    const ingredientIds = [...new Set(rawRecipes.map((r) => r.ingredientId).filter((id): id is string => id !== null))];
+    const ingredients = await prisma.ingredient.findMany({
+      where: { id: { in: ingredientIds } },
+      select: { id: true, purchasePrice: true },
+    });
+    priceById = new Map(ingredients.map((i) => [i.id, Number(i.purchasePrice ?? 0)]));
+    recipesForCogs = rawRecipes
+      .filter((r): r is typeof r & { ingredientId: string } => r.ingredientId !== null)
+      .map((r) => ({ menuItemId: r.menuItemId, variantId: r.variantId, ingredientId: r.ingredientId, qtyPerUnit: Number(r.qtyPerUnit) }));
+  }
+
+  interface DealAgg {
+    dealId: string; name: string; type: string | null;
+    lineRedemptions: Set<string>; orderRedemptions: number;
+    revenue: number; cost: number; discount: number; isLineDeal: boolean;
+  }
+  const byDeal = new Map<string, DealAgg>();
+  const getAgg = (dealId: string, name: string): DealAgg => {
+    let agg = byDeal.get(dealId);
+    if (!agg) {
+      agg = { dealId, name, type: null, lineRedemptions: new Set(), orderRedemptions: 0, revenue: 0, cost: 0, discount: 0, isLineDeal: false };
+      byDeal.set(dealId, agg);
+    }
+    return agg;
+  };
+  // Orders whose deal is order-level (Promo Code/Min Spend) — their discount amount can't be
+  // read off Order.discount (it may also include a stacked manual discount), so it's recomputed
+  // below via computeOrderDiscount against each order's own subtotal/type, grouped per deal.
+  const orderDealOrders = new Map<string, { subtotal: number; type: string }[]>();
+
+  for (const o of orders) {
+    if (o.items.length > 0) {
+      const grosses = o.items.map((i) => Number(i.price) * i.qty - Number(i.discount ?? 0));
+      const saleShares = splitOrderTotalByLine(Number(o.total), grosses);
+      o.items.forEach((i, idx) => {
+        if (!i.dealId || !i.dealLineId) return;
+        const agg = getAgg(i.dealId, i.dealName ?? 'Deal');
+        agg.isLineDeal = true;
+        agg.lineRedemptions.add(i.dealLineId as string);
+        agg.revenue += saleShares[idx] ?? 0;
+        agg.discount += Number(i.discount ?? 0);
+        if (i.menuItemId) {
+          agg.cost += computeCogs(
+            [{ menuItemId: i.menuItemId, variantId: i.variantId ?? null, qty: i.qty }],
+            recipesForCogs, priceById,
+          );
+        }
+      });
+    }
+    if (o.appliedDealId) {
+      const agg = getAgg(o.appliedDealId, o.appliedDealName ?? 'Deal');
+      agg.type = o.appliedDealCode ? 'PROMO_CODE' : 'MIN_SPEND';
+      agg.orderRedemptions += 1;
+      agg.revenue += Number(o.total);
+      const list = orderDealOrders.get(o.appliedDealId) ?? [];
+      list.push({ subtotal: Number(o.subtotal), type: o.type as string });
+      orderDealOrders.set(o.appliedDealId, list);
+    }
+  }
+
+  const lineDealIds = [...byDeal.values()].filter((a) => a.isLineDeal).map((a) => a.dealId);
+  if (lineDealIds.length > 0) {
+    const liveDeals = await prisma.deal.findMany({ where: { id: { in: lineDealIds } }, select: { id: true, type: true } });
+    const typeById = new Map(liveDeals.map((d) => [d.id, d.type as string]));
+    for (const agg of byDeal.values()) {
+      if (agg.isLineDeal) agg.type = typeById.get(agg.dealId) ?? agg.type;
+    }
+  }
+
+  // Order-level deal discount: recomputed via the SAME computeOrderDiscount function
+  // resolveOrderDiscount uses at checkout, against each redeeming order's own subtotal/type —
+  // NOT read off Order.discount, which stays possibly a manual+deal sum for any order that
+  // predates the single-discount-per-order rule (or one where a Min Spend/Promo Code applied
+  // with no line-item deal, where manual discount can still legitimately stack alongside it).
+  // Uses the DEAL'S CURRENT config (percent/flat amount) — if a deal's discount was edited after
+  // some of these orders were placed, their recomputed figure reflects today's config, not
+  // necessarily what was actually charged at the time.
+  if (orderDealOrders.size > 0) {
+    const orderDealIds = [...orderDealOrders.keys()];
+    const orderDeals = await prisma.deal.findMany({ where: { id: { in: orderDealIds } } });
+    for (const deal of orderDeals) {
+      const agg = byDeal.get(deal.id);
+      const redemptions = orderDealOrders.get(deal.id);
+      if (!agg || !redemptions) continue;
+      const dealForPricing = toDealForPricing(deal);
+      for (const r of redemptions) {
+        const outcome = computeOrderDiscount(dealForPricing, r.type, r.subtotal);
+        if (outcome.valid) agg.discount += outcome.amount ?? 0;
+      }
+    }
+  }
+
+  const rows = [...byDeal.values()]
+    .map((a) => {
+      const revenue = Math.round(a.revenue);
+      const cost = a.isLineDeal ? Math.round(a.cost) : null;
+      const profit = cost !== null ? revenue - cost : null;
+      return {
+        dealId: a.dealId,
+        name: a.name,
+        type: a.type ?? (a.isLineDeal ? 'LINE_DEAL' : 'ORDER_DEAL'),
+        redemptions: a.lineRedemptions.size + a.orderRedemptions,
+        revenue,
+        cost,
+        profit,
+        marginPct: profit !== null && revenue > 0 ? Math.round((profit / revenue) * 100) : null,
+        discount: Math.round(a.discount),
+      };
+    })
+    .sort((x, y) => y.redemptions - x.redemptions);
+
+  const totalRedemptions = rows.reduce((s, r) => s + r.redemptions, 0);
+  const totalRevenue = Math.round(rows.reduce((s, r) => s + r.revenue, 0));
+  const activeDealsCount = await prisma.deal.count({ where: { isActive: true, status: 'active' } });
+
+  res.json(
+    ApiResponse.success({
+      from: req.query.from as string,
+      to: req.query.to as string,
+      rows,
+      totalRedemptions,
+      totalRevenue,
+      mostUsed: rows[0] ? { name: rows[0].name, redemptions: rows[0].redemptions } : null,
+      activeDealsCount,
     })
   );
 });

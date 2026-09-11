@@ -48,7 +48,10 @@ export interface IncomingOrderItem {
   dealRole?: 'buy' | 'get' | null;
 }
 
-function toDealForPricing(deal: any): DealForPricing {
+/** Exported for reports.controller.ts's getDealsPerformance, which recomputes what a PROMO_CODE/
+ *  MIN_SPEND deal's discount amount was for a historical order (via computeOrderDiscount) rather
+ *  than reading Order.discount, which can also include a manual discount stacked on top. */
+export function toDealForPricing(deal: any): DealForPricing {
   return {
     id: deal.id,
     type: deal.type,
