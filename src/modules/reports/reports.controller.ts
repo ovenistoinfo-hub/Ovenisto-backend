@@ -1116,3 +1116,126 @@ export const getTopItems = asyncHandler(async (req: Request, res: Response) => {
     })
   );
 });
+
+/**
+ * GET /api/reports/net-profit
+ *
+ * The full bottom line for the Dashboard's "Net Profit" section, over one date range (no
+ * time-of-day — expenses and waste aren't hourly), outlet-scoped:
+ *
+ *   Net Profit = Revenue − COGS − Food Loss − Expenses
+ *
+ * This is the first place in the app that subtracts ALL FOUR. getPnlReport does
+ * Revenue − COGS − Expenses (no waste); getDashboard's financial-overview netProfit does
+ * Revenue − Expenses − Food Loss (no COGS). Both are kept as-is; this endpoint is the correct one.
+ *   - Revenue   = Σ Order.total  (COMPLETED + cashApproved)
+ *   - COGS      = computeCogs over every sold line's recipe ingredients (same engine as P&L)
+ *   - Food Loss = Σ WasteRecord.cost  (expired / damaged / wasted stock — the Stock
+ *                 Adjustments/Waste page; StockAdjustment type=correction rows are NOT waste)
+ *   - Expenses  = Σ Expense.amount  (rent / salary / utilities — the Expenses page)
+ *
+ * `purchases` (Σ Purchase.total for received purchases in range) is returned for CONTEXT only —
+ * it is NOT subtracted. Buying stock is inventory (an asset); it becomes a cost as it is
+ * consumed (COGS) or wasted (Food Loss), not when it is bought. Shown as a separate tile so the
+ * user can see stock-buying activity alongside the bottom line.
+ */
+export const getNetProfit = asyncHandler(async (req: Request, res: Response) => {
+  const { gte, lte, outletId } = getParams(req);
+  const completedWhere = { ...buildOrderWhere(gte, lte, outletId), status: COMPLETED as never, cashApproved: true };
+
+  const [completed, expenseRows, wasteRows, purchaseRows] = await Promise.all([
+    prisma.order.findMany({
+      where: completedWhere,
+      select: { total: true, items: { select: { menuItemId: true, variantId: true, qty: true } } },
+    }),
+    prisma.expense.findMany({
+      where: { ...(outletId ? { outletId } : {}), date: { gte, lte } },
+      select: { amount: true, category: true },
+    }),
+    prisma.wasteRecord.findMany({
+      where: { ...(outletId ? { outletId } : {}), date: { gte, lte } },
+      select: { cost: true, reason: true },
+    }),
+    prisma.purchase.findMany({
+      where: { ...(outletId ? { outletId } : {}), date: { gte, lte }, status: { not: 'pending' } },
+      select: { total: true },
+    }),
+  ]);
+
+  const revenue = completed.reduce((s, o) => s + Number(o.total), 0);
+
+  // COGS — same inline load pattern getPnlReport / getSalesByChannel use (kept inline so
+  // reports.helpers.ts stays DB-free for its pure unit tests).
+  const menuItemIds = [
+    ...new Set(completed.flatMap((o) => o.items.map((i) => i.menuItemId)).filter((x): x is string => !!x)),
+  ];
+  let cogs = 0;
+  if (menuItemIds.length > 0) {
+    const recipes = await prisma.foodRecipe.findMany({
+      where: { menuItemId: { in: menuItemIds } },
+      select: { menuItemId: true, variantId: true, ingredientId: true, qtyPerUnit: true },
+    });
+    const ingredientIds = [...new Set(recipes.map((r) => r.ingredientId).filter((id): id is string => id !== null))];
+    const ingredients = await prisma.ingredient.findMany({
+      where: { id: { in: ingredientIds } },
+      select: { id: true, purchasePrice: true },
+    });
+    const priceById = new Map(ingredients.map((i) => [i.id, Number(i.purchasePrice ?? 0)]));
+    const recipesForCogs = recipes
+      .filter((r): r is typeof r & { ingredientId: string } => r.ingredientId !== null)
+      .map((r) => ({
+        menuItemId: r.menuItemId,
+        variantId: r.variantId,
+        ingredientId: r.ingredientId,
+        qtyPerUnit: Number(r.qtyPerUnit),
+      }));
+    cogs = computeCogs(completed.flatMap((o) => o.items), recipesForCogs, priceById);
+  }
+
+  const expenses = Math.round(expenseRows.reduce((s, e) => s + Number(e.amount), 0));
+  const foodLoss = Math.round(wasteRows.reduce((s, w) => s + Number(w.cost ?? 0), 0));
+  const purchases = Math.round(purchaseRows.reduce((s, p) => s + Number(p.total ?? 0), 0));
+
+  const expCatMap = new Map<string, number>();
+  for (const e of expenseRows) {
+    const name = e.category ?? 'Uncategorized';
+    expCatMap.set(name, (expCatMap.get(name) ?? 0) + Number(e.amount));
+  }
+  const expenseByCategory = [...expCatMap.entries()]
+    .map(([name, value]) => ({ name, value: Math.round(value) }))
+    .filter((r) => r.value > 0)
+    .sort((a, b) => b.value - a.value);
+
+  const wasteReasonMap = new Map<string, number>();
+  for (const w of wasteRows) {
+    const name = w.reason?.trim() || 'Unspecified';
+    wasteReasonMap.set(name, (wasteReasonMap.get(name) ?? 0) + Number(w.cost ?? 0));
+  }
+  const wasteByReason = [...wasteReasonMap.entries()]
+    .map(([name, value]) => ({ name, value: Math.round(value) }))
+    .filter((r) => r.value > 0)
+    .sort((a, b) => b.value - a.value);
+
+  const rev = Math.round(revenue);
+  const grossProfit = rev - cogs;
+  const netProfit = grossProfit - foodLoss - expenses;
+
+  res.json(
+    ApiResponse.success({
+      from: req.query.from as string,
+      to: req.query.to as string,
+      revenue: rev,
+      cogs,
+      grossProfit,
+      foodLoss,
+      expenses,
+      netProfit,
+      /** Context only — NOT subtracted from netProfit. See the handler doc-comment. */
+      purchases,
+      grossMarginPct: rev > 0 ? Math.round((grossProfit / rev) * 100) : 0,
+      netMarginPct: rev > 0 ? Math.round((netProfit / rev) * 100) : 0,
+      expenseByCategory,
+      wasteByReason,
+    })
+  );
+});

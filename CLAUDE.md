@@ -471,6 +471,15 @@ plus a body explaining _why_ the change was made when that is not obvious.
   by profit — both sliced from the same aggregated set, so they overlap when ≤ 20 distinct items
   sold. Name falls back to `OrderItem.name` for a deleted item; null-`menuItemId` lines skipped.
   No new helper/tests — reuses the tested math.
+- **`GET /api/reports/net-profit`** (`getNetProfit`, route after `/top-items`, 2026-09-11) —
+  **Net Profit = Revenue − COGS − Food Loss (Σ `WasteRecord.cost`) − Expenses (Σ `Expense.amount`)**,
+  outlet-scoped, date range only (via `getParams`; no time-of-day). The ONLY calc that subtracts
+  all four — `getPnlReport` omits Food Loss, `getDashboard.netProfit` omits COGS; both unchanged.
+  Also returns `grossProfit`/`grossMarginPct`/`netMarginPct`, `expenseByCategory`, `wasteByReason`
+  (both value-desc, positive-only), and `purchases` (Σ `Purchase.total`, `status != 'pending'`, in
+  range) — **context only, NOT subtracted** (stock bought is inventory, not a cost until
+  sold/wasted). 5th inline copy of the COGS-input load. No tests (straight sums + tested
+  `computeCogs`).
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph
