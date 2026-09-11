@@ -550,6 +550,16 @@ plus a body explaining _why_ the change was made when that is not obvious.
   needed by `reports.controller.ts`'s `getDealsPerformance` to recompute an order-level deal's
   historical discount via `computeOrderDiscount` (see the frontend guide's mirror of this note,
   or the root CLAUDE.md Deals section, for the full `discount` field writeup).
+- **`GET /api/reports/sales-by-staff` (`getSalesByStaff`, route after `/deals-performance`,
+  2026-09-11)** — Orders/Sale/Cost/Profit/Margin per `Order.staffId` (`staffName` + "Unassigned"
+  fallback when null), date range + optional PKT time-of-day (same `parseTimeOfDay`/
+  `isWithinTimeOfDay` pattern as `getSalesByChannel`). `source` per row = distinct
+  `Order.orderSource` values joined with " / ". Yet another inline COGS-input-load copy. No
+  tests.
+- **`resolveOrdersWhere` gained `staffId`** (2026-09-11, for the above section's row/bar
+  drill-down) — a one-line `if (staffId) where.staffId = String(staffId);`, no OR-composition
+  needed (unlike `deal`) since it's a plain equality that composes fine with `search`'s own
+  top-level `where.OR`.
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph

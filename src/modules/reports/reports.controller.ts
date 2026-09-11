@@ -1431,3 +1431,127 @@ export const getDealsPerformance = asyncHandler(async (req: Request, res: Respon
     })
   );
 });
+
+/**
+ * GET /api/reports/sales-by-staff
+ *
+ * Orders/Sale/Cost/Profit/Margin per staff member (`Order.staffId`/`staffName`) — the Dashboard's
+ * "Sales by Staff" section (7th filterable section; date range + optional PKT time-of-day, same
+ * pattern as Sales By Channel — shift-based analysis benefits from the time window). Same
+ * completed + cashApproved order set as every other "Sales by X" endpoint, all channels.
+ * Outlet-scoped like everything else here — staff themselves are already pinned to one outlet.
+ *
+ * Grouped by `staffId` when present; a null `staffId` (a historical order predating staff
+ * attribution, or one placed with no logged-in user) falls back to grouping by `staffName`
+ * under an "Unassigned" bucket — `staffId` on that row stays `null`, so the frontend knows not to
+ * offer a drill-down for it (no id to filter `/api/orders?staffId=` by).
+ *
+ * `source` is which ordering surface(s) that staff member's orders in this window came through
+ * (`Order.orderSource`) — usually one (a Cashier's orders are "POS", a Waiter's are "Waiter"),
+ * joined with " / " on the rare login that used more than one surface in the same window.
+ */
+export const getSalesByStaff = asyncHandler(async (req: Request, res: Response) => {
+  const from = req.query.from as string | undefined;
+  const to = req.query.to as string | undefined;
+  const { gte, lte } = parseDateRange(from, to);
+  const fromMin = parseTimeOfDay(req.query.fromTime as string | undefined);
+  const toMin = parseTimeOfDay(req.query.toTime as string | undefined);
+  const outletId = resolveOutletScope(req) ?? undefined;
+
+  const baseWhere = buildOrderWhere(gte, lte, outletId);
+  const orders = await prisma.order.findMany({
+    where: { ...baseWhere, status: COMPLETED as never, cashApproved: true },
+    select: {
+      staffId: true, staffName: true, orderSource: true, total: true, createdAt: true,
+      items: { select: { menuItemId: true, variantId: true, qty: true } },
+    },
+  });
+  const filtered = orders.filter((o) => isWithinTimeOfDay(o.createdAt, fromMin, toMin));
+
+  // COGS inputs, once across every line (same inline pattern every other "Sales by X" /
+  // getTopItems / getNetProfit / getDealsPerformance endpoint uses).
+  const menuItemIds = [
+    ...new Set(filtered.flatMap((o) => o.items.map((i) => i.menuItemId)).filter((x): x is string => !!x)),
+  ];
+  let recipesForCogs: CogsRecipe[] = [];
+  let priceById = new Map<string, number>();
+  if (menuItemIds.length > 0) {
+    const rawRecipes = await prisma.foodRecipe.findMany({
+      where: { menuItemId: { in: menuItemIds } },
+      select: { menuItemId: true, variantId: true, ingredientId: true, qtyPerUnit: true },
+    });
+    const ingredientIds = [...new Set(rawRecipes.map((r) => r.ingredientId).filter((id): id is string => id !== null))];
+    const ingredients = await prisma.ingredient.findMany({
+      where: { id: { in: ingredientIds } },
+      select: { id: true, purchasePrice: true },
+    });
+    priceById = new Map(ingredients.map((i) => [i.id, Number(i.purchasePrice ?? 0)]));
+    recipesForCogs = rawRecipes
+      .filter((r): r is typeof r & { ingredientId: string } => r.ingredientId !== null)
+      .map((r) => ({ menuItemId: r.menuItemId, variantId: r.variantId, ingredientId: r.ingredientId, qtyPerUnit: Number(r.qtyPerUnit) }));
+  }
+
+  interface StaffAgg {
+    staffId: string | null; name: string;
+    orders: number; sale: number; cost: number; sources: Set<string>;
+  }
+  const byStaff = new Map<string, StaffAgg>();
+  for (const o of filtered) {
+    const key = o.staffId ?? `__unassigned__:${o.staffName ?? 'Unknown'}`;
+    let agg = byStaff.get(key);
+    if (!agg) {
+      agg = { staffId: o.staffId ?? null, name: o.staffName ?? 'Unassigned', orders: 0, sale: 0, cost: 0, sources: new Set() };
+      byStaff.set(key, agg);
+    }
+    agg.orders += 1;
+    agg.sale += Number(o.total);
+    agg.cost += computeCogs(
+      o.items.map((i) => ({ menuItemId: i.menuItemId ?? '', variantId: i.variantId ?? null, qty: i.qty })),
+      recipesForCogs, priceById,
+    );
+    if (o.orderSource) agg.sources.add(o.orderSource);
+  }
+
+  const SOURCE_LABELS: Record<string, string> = {
+    pos: 'POS', waiter: 'Waiter', 'self-order': 'Self-Order', website: 'Website', foodpanda: 'Foodpanda', phone: 'Phone',
+  };
+  const rows = [...byStaff.values()]
+    .map((a) => {
+      const sale = Math.round(a.sale);
+      const cost = Math.round(a.cost);
+      const profit = sale - cost;
+      return {
+        staffId: a.staffId,
+        name: a.name,
+        orders: a.orders,
+        sale,
+        cost,
+        profit,
+        marginPct: sale > 0 ? Math.round((profit / sale) * 100) : 0,
+        source: [...a.sources].map((s) => SOURCE_LABELS[s] ?? s).join(' / ') || '—',
+      };
+    })
+    .sort((x, y) => y.sale - x.sale);
+
+  const totalSale = Math.round(rows.reduce((s, r) => s + r.sale, 0));
+  const totalCost = Math.round(rows.reduce((s, r) => s + r.cost, 0));
+  const totalProfit = totalSale - totalCost;
+  const totalOrders = rows.reduce((s, r) => s + r.orders, 0);
+
+  res.json(
+    ApiResponse.success({
+      from: from!,
+      to: to!,
+      fromTime: fromMin !== null ? (req.query.fromTime as string) : null,
+      toTime: toMin !== null ? (req.query.toTime as string) : null,
+      rows,
+      combined: {
+        sale: totalSale,
+        cost: totalCost,
+        profit: totalProfit,
+        orders: totalOrders,
+        marginPct: totalSale > 0 ? Math.round((totalProfit / totalSale) * 100) : 0,
+      },
+    })
+  );
+});

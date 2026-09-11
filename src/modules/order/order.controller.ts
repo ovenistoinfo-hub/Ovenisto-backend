@@ -350,7 +350,7 @@ export function isWithinTimeOfDay(createdAt: Date, fromMin: number | null, toMin
  * inline below) before the final where clause is known.
  */
 async function resolveOrdersWhere(req: Request): Promise<any> {
-  const { search, status, type, date, from, to, fromTime, toTime, tableNumber, orderSource, excludeUnpaid, category, paymentMethod, deal } = req.query;
+  const { search, status, type, date, from, to, fromTime, toTime, tableNumber, orderSource, excludeUnpaid, category, paymentMethod, deal, staffId } = req.query;
 
   const where: any = {};
   // Outlet scope: Super Admin on "All" → no filter; otherwise restrict to the resolved outlet.
@@ -400,6 +400,10 @@ async function resolveOrdersWhere(req: Request): Promise<any> {
 
   if (tableNumber) where.tableNumber = Number(tableNumber);
   if (orderSource) where.orderSource = String(orderSource);
+  // Staff filter (Dashboard "Sales by Staff" drill-down) — a plain equality on Order.staffId,
+  // already indexed. No slice needed (unlike category/deal): a staff member's Sale/Cost/Profit
+  // is inherently whole-order, same reasoning as the `type`/channel filter needing none either.
+  if (staffId) where.staffId = String(staffId);
 
   // Category filter (Dashboard "Sales by Category" drill-down): keep only orders that have at
   // least one ACTIVE line whose menu item belongs to this category. Matched by category NAME
