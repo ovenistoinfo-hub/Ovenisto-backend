@@ -82,12 +82,25 @@ function checkPurchaseAccess(req: Request, purchase: PurchaseOutletShape) {
 }
 
 export const getPurchases = asyncHandler(async (req: Request, res: Response) => {
-  const { page = '1', limit = '20', supplierId, status } = req.query as Record<string, string>;
+  const { page = '1', limit = '20', supplierId, status, from, to } = req.query as Record<string, string>;
   const skip = (Number(page) - 1) * Number(limit);
 
   const where: any = {};
   if (supplierId) where.supplierId = supplierId;
   if (status) where.status = status;
+  // Date range (YYYY-MM-DD, inclusive both ends) — same from/to convention getExpenses uses:
+  // either bound alone is treated as a single day. Purchase.date is a plain @db.Date column (no
+  // time component), so plain UTC-midnight boundaries are correct here — unlike Order.createdAt,
+  // there's no PKT/UTC ambiguity to shift for. Powers the Dashboard "Purchases & Supplier Spend"
+  // section's drill-down + this page's own filter bar.
+  if (from || to) {
+    const startStr = from ?? to;
+    const endStr = to ?? from;
+    const gte = new Date(`${startStr}T00:00:00.000Z`);
+    const lt = new Date(`${endStr}T00:00:00.000Z`);
+    lt.setUTCDate(lt.getUTCDate() + 1);
+    where.date = { gte, lt };
+  }
 
   const scope = resolveOutletScope(req);
   if (req.user?.role === 'Super Admin') {

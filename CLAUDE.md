@@ -560,6 +560,49 @@ plus a body explaining _why_ the change was made when that is not obvious.
   drill-down) — a one-line `if (staffId) where.staffId = String(staffId);`, no OR-composition
   needed (unlike `deal`) since it's a plain equality that composes fine with `search`'s own
   top-level `where.OR`.
+- **`reports.helpers.ts`'s `parseDateRange(from, to)` was comparing UTC midnight against a real
+  UTC timestamp when it should compare PKT midnight (fixed 2026-09-12)** — `from`/`to` are PKT
+  calendar-date strings, but `gte`/`lte` were built as literal `${date}T00:00:00.000Z`/
+  `T23:59:59.999Z`, i.e. UTC midnight, then compared against `Order.createdAt` (a genuine UTC
+  instant). Since PKT = UTC+5, any order placed 00:00–05:00 PKT landed in UTC's *previous*
+  calendar day and was silently excluded from that PKT day's report window everywhere this
+  function is used — `getSalesReport`/`getPnlReport` (via `getParams`), `getSalesByChannel`,
+  `getSalesByCategory`, `getSalesByPaymentMethod`, `getTopItems`, `getNetProfit`/
+  `getDealsPerformance` (via `getParams`), `getSalesByStaff` — i.e. every `/api/reports/*`
+  date-range endpoint, all seven Dashboard sections. Same bug class as this file's own
+  `AttendanceRecord.date` PKT-string note above; `parseDateRange` just hadn't been shifted like
+  that pattern requires. Fixed by subtracting 5h from both `gte`/`lte` after building them;
+  `reports.helpers.test.ts`'s boundary-parsing test updated to assert the shifted values.
+- **Three more `/api/reports/*` endpoints (2026-09-12), all date-range only**:
+  `getSalesByOutlet` (Sale/Cost/Profit/Margin per `Outlet`, same completed+cashApproved set as
+  `getSalesByChannel`); `getCancellationRequestsReport` (counts by status + `byReason`/`byStaff`,
+  both capped top 8 — an inconsistency with the "by X" endpoints above, which don't cap);
+  `getPurchasesBySupplier` (groups `Purchase` by supplier over `Purchase.date` — a plain
+  `@db.Date` column, so **no PKT shift**, plain UTC-midnight boundaries, same as `getExpenses`;
+  reuses `getPurchases`' outlet-scoping OR-clause, not a plain `where.outletId`, since
+  `Purchase.outletId` alone isn't reliably populated; `rows` NOT capped server-side, matching
+  `getSalesByStaff`/`getSalesByOutlet`'s convention).
+- **`listCancellationRequests` (`cancellation-request.controller.ts`) gained `from`/`to`/
+  `reason`/`responsibleUserId`** (2026-09-12) — `from`/`to` reuse `reports.helpers.ts`'s
+  `parseDateRange` (imported cross-module) via the `getExpenses`-style `from ?? to`/`to ?? from`
+  optional-bound trick, since `OrderCancellationRequest.createdAt` is a real UTC timestamp like
+  `Order.createdAt` and needs the identical PKT shift.
+- **`getPurchases` (`purchase.controller.ts`) gained `from`/`to`** (2026-09-12) — plain
+  UTC-midnight boundaries (`Purchase.date` is `@db.Date`, `Expense.date`-style, not
+  `parseDateRange`'s PKT-shifted convention).
+- **Two more `/api/reports/*` endpoints (2026-09-12)**: `getExpensesBreakdown` (`Expense` rows
+  by category — zero-filled against `FIXED_EXPENSE_CATEGORIES` — and by day, zero-filled across
+  the range; plain UTC-midnight, `Expense.date` is `@db.Date`) and `getWasteBreakdown` (same
+  shape for `WasteRecord`, zero-filled against `FIXED_WASTE_REASONS`). **`getWasteBreakdown`
+  deliberately mirrors `stock.controller.ts`'s `getWasteRecords` date-boundary convention (plain
+  UTC-midnight), not this file's own `getNetProfit`** — even though `WasteRecord.date` is a real
+  `DateTime` (`@default(now())`, no `@db.Date`) — because its Dashboard section's drill-down
+  lands on `/stock/adjustments?from=&to=[&reason=]`, which `getWasteRecords` renders; matching it
+  keeps totals reconcilable with that page. `getNetProfit`'s own `wasteRows` query keeps its
+  existing PKT-shifted `parseDateRange` call unchanged — a known, pre-existing inconsistency
+  between the two, not introduced here. `getWasteBreakdown` also takes optional `warehouseId`/
+  `reason` (additive to the base `resolveOutletScope` filter, NOT `stock.controller.ts`'s
+  role-based `applyStockScopeFilter`) so `StockAdjustments.tsx`'s own summary tiles can reuse it.
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph

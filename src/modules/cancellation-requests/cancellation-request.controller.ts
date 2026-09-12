@@ -6,6 +6,7 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { executeCancellation, validateCancellationTargets, mapOrderOut } from '../order/order.controller.js';
 import { emitOrderEvent, emitCancellationRequestEvent } from '../../socket.js';
+import { parseDateRange } from '../reports/reports.helpers.js';
 
 // Fetched via prisma.user.findUnique — Prisma returns the raw UserRole enum member
 // (e.g. 'SUPER_ADMIN'), NOT the @map'd display string. req.user!.role (from the JWT,
@@ -223,14 +224,33 @@ export const createCancellationRequest = asyncHandler(async (req: Request, res: 
   return res.status(201).json(ApiResponse.created(mapRequestOut(request), 'Cancellation request sent for approval'));
 });
 
-/** GET /api/cancellation-requests */
+/**
+ * GET /api/cancellation-requests
+ *
+ * `from`/`to`/`reason`/`responsibleUserId` (added for the Dashboard "Cancellation Requests"
+ * section's drill-down) are all optional — omitting them keeps this the same unbounded approver
+ * inbox it always was. Date filtering reuses `parseDateRange` (same PKT-correct day-boundary
+ * shift `reports.helpers.ts` uses for every /api/reports/* endpoint) rather than a third inline
+ * copy — `OrderCancellationRequest.createdAt` is a real UTC timestamp, so naive UTC-midnight
+ * boundaries would misattribute a 00:00-05:00 PKT request to the previous day, same as the
+ * bug that endpoint had. Either bound alone means "just that one day" (same convention as
+ * `resolveOrdersWhere`/`getExpenses`).
+ */
 export const listCancellationRequests = asyncHandler(async (req: Request, res: Response) => {
-  const { status } = req.query as { status?: string };
+  const { status, from, to, reason, responsibleUserId } = req.query as {
+    status?: string; from?: string; to?: string; reason?: string; responsibleUserId?: string;
+  };
   const scope = resolveOutletScope(req);
 
   const where: Record<string, unknown> = {};
   if (scope) where.outletId = scope;
   if (status) where.status = status;
+  if (reason) where.reason = reason;
+  if (responsibleUserId) where.responsibleUserId = responsibleUserId;
+  if (from || to) {
+    const { gte, lte } = parseDateRange(from ?? to, to ?? from);
+    where.createdAt = { gte, lte };
+  }
 
   const requests = await prisma.orderCancellationRequest.findMany({
     where,

@@ -5,6 +5,7 @@
 import type { Request, Response } from 'express';
 import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
+import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import {
   parseDateRange, buildOrderWhere, computeCogs,
@@ -1552,6 +1553,592 @@ export const getSalesByStaff = asyncHandler(async (req: Request, res: Response) 
         orders: totalOrders,
         marginPct: totalSale > 0 ? Math.round((totalProfit / totalSale) * 100) : 0,
       },
+    })
+  );
+});
+
+/**
+ * GET /api/reports/sales-by-outlet
+ *
+ * Orders/Sale/Cost/Profit/Margin per Outlet, over the same completed + cashApproved order set as
+ * getSalesByChannel (date range + optional PKT time-of-day), all channels — a chain-wide branch
+ * comparison. Meaningful only when resolveOutletScope returns null (Super Admin viewing "All
+ * Outlets") — every other role/selection is pinned to one outlet by buildOrderWhere, so this
+ * endpoint just returns a single row for them; harmless, but the frontend section is gated to
+ * Super Admin + outletId==="all" since a one-row "comparison" has no value.
+ */
+export const getSalesByOutlet = asyncHandler(async (req: Request, res: Response) => {
+  const from = req.query.from as string | undefined;
+  const to = req.query.to as string | undefined;
+  const { gte, lte } = parseDateRange(from, to);
+  const fromMin = parseTimeOfDay(req.query.fromTime as string | undefined);
+  const toMin = parseTimeOfDay(req.query.toTime as string | undefined);
+  const outletId = resolveOutletScope(req) ?? undefined;
+
+  const baseWhere = buildOrderWhere(gte, lte, outletId);
+  const orders = await prisma.order.findMany({
+    where: { ...baseWhere, status: COMPLETED as never, cashApproved: true },
+    select: {
+      outletId: true, total: true, createdAt: true,
+      items: { select: { menuItemId: true, variantId: true, qty: true } },
+    },
+  });
+  const filtered = orders.filter((o) => isWithinTimeOfDay(o.createdAt, fromMin, toMin));
+
+  const menuItemIds = [
+    ...new Set(filtered.flatMap((o) => o.items.map((i) => i.menuItemId)).filter((x): x is string => !!x)),
+  ];
+  let recipesForCogs: CogsRecipe[] = [];
+  let priceById = new Map<string, number>();
+  if (menuItemIds.length > 0) {
+    const rawRecipes = await prisma.foodRecipe.findMany({
+      where: { menuItemId: { in: menuItemIds } },
+      select: { menuItemId: true, variantId: true, ingredientId: true, qtyPerUnit: true },
+    });
+    const ingredientIds = [...new Set(rawRecipes.map((r) => r.ingredientId).filter((id): id is string => id !== null))];
+    const ingredients = await prisma.ingredient.findMany({
+      where: { id: { in: ingredientIds } },
+      select: { id: true, purchasePrice: true },
+    });
+    priceById = new Map(ingredients.map((i) => [i.id, Number(i.purchasePrice ?? 0)]));
+    recipesForCogs = rawRecipes
+      .filter((r): r is typeof r & { ingredientId: string } => r.ingredientId !== null)
+      .map((r) => ({ menuItemId: r.menuItemId, variantId: r.variantId, ingredientId: r.ingredientId, qtyPerUnit: Number(r.qtyPerUnit) }));
+  }
+
+  interface OutletAgg { outletId: string | null; orders: number; sale: number; cost: number; }
+  const byOutlet = new Map<string, OutletAgg>();
+  for (const o of filtered) {
+    const key = o.outletId ?? '__none__';
+    let agg = byOutlet.get(key);
+    if (!agg) {
+      agg = { outletId: o.outletId, orders: 0, sale: 0, cost: 0 };
+      byOutlet.set(key, agg);
+    }
+    agg.orders += 1;
+    agg.sale += Number(o.total);
+    agg.cost += computeCogs(
+      o.items.map((i) => ({ menuItemId: i.menuItemId ?? '', variantId: i.variantId ?? null, qty: i.qty })),
+      recipesForCogs, priceById,
+    );
+  }
+
+  const outletIds = [...byOutlet.values()].map((a) => a.outletId).filter((id): id is string => !!id);
+  const outlets = outletIds.length > 0
+    ? await prisma.outlet.findMany({ where: { id: { in: outletIds } }, select: { id: true, name: true } })
+    : [];
+  const nameById = new Map(outlets.map((o) => [o.id, o.name]));
+
+  const rows = [...byOutlet.values()]
+    .map((a) => {
+      const sale = Math.round(a.sale);
+      const cost = Math.round(a.cost);
+      const profit = sale - cost;
+      return {
+        outletId: a.outletId,
+        name: a.outletId ? (nameById.get(a.outletId) ?? 'Unknown Outlet') : 'No Outlet',
+        orders: a.orders,
+        sale,
+        cost,
+        profit,
+        marginPct: sale > 0 ? Math.round((profit / sale) * 100) : 0,
+      };
+    })
+    .sort((x, y) => y.sale - x.sale);
+
+  const totalSale = Math.round(rows.reduce((s, r) => s + r.sale, 0));
+  const totalCost = Math.round(rows.reduce((s, r) => s + r.cost, 0));
+  const totalProfit = totalSale - totalCost;
+  const totalOrders = rows.reduce((s, r) => s + r.orders, 0);
+
+  res.json(
+    ApiResponse.success({
+      from: from!,
+      to: to!,
+      fromTime: fromMin !== null ? (req.query.fromTime as string) : null,
+      toTime: toMin !== null ? (req.query.toTime as string) : null,
+      rows,
+      combined: {
+        sale: totalSale,
+        cost: totalCost,
+        profit: totalProfit,
+        orders: totalOrders,
+        marginPct: totalSale > 0 ? Math.round((totalProfit / totalSale) * 100) : 0,
+      },
+    })
+  );
+});
+
+/**
+ * GET /api/reports/cancellation-requests
+ *
+ * Backs the Dashboard's "Cancellation Requests" section — date range only (a cancellation is a
+ * discrete event, not hourly, same reasoning as Deals Performance/Net Profit). Counts/amounts
+ * over `OrderCancellationRequest.createdAt` (the request's filing time, not the order's), outlet-
+ * scoped. Headline counts (approved/rejected/pending) cover every request in range regardless of
+ * status, but the reason/staff breakdowns and the money totals are computed over APPROVED
+ * requests only — a pending or rejected request never actually refunded anything or penalised
+ * anyone, so including them would overstate real loss. `responsibleUserId` is the staff member
+ * marked accountable for the incident (see `cancellation-request.controller.ts`'s `approveRequest`
+ * — only set/penalised on approval), not `requestedById` (whoever filed the request, often a
+ * different person like a manager on the staff member's behalf).
+ */
+export const getCancellationRequestsReport = asyncHandler(async (req: Request, res: Response) => {
+  const from = req.query.from as string | undefined;
+  const to = req.query.to as string | undefined;
+  const { gte, lte } = parseDateRange(from, to);
+  const outletId = resolveOutletScope(req) ?? undefined;
+
+  const where: any = { createdAt: { gte, lte } };
+  if (outletId) where.outletId = outletId;
+
+  const requests = await prisma.orderCancellationRequest.findMany({
+    where,
+    select: {
+      reason: true,
+      refundAmount: true,
+      penaltyAmount: true,
+      status: true,
+      responsibleUserId: true,
+      responsibleUser: { select: { name: true } },
+    },
+  });
+
+  const approved = requests.filter((r) => r.status === 'approved');
+  const rejected = requests.filter((r) => r.status === 'rejected').length;
+  const pending = requests.filter((r) => r.status === 'pending').length;
+  const totalRefunded = Math.round(approved.reduce((s, r) => s + Number(r.refundAmount), 0));
+  const totalPenalties = Math.round(approved.reduce((s, r) => s + Number(r.penaltyAmount), 0));
+
+  const byReasonMap = new Map<string, { count: number; refunded: number }>();
+  for (const r of approved) {
+    const key = r.reason || 'Unspecified';
+    const cur = byReasonMap.get(key) ?? { count: 0, refunded: 0 };
+    cur.count += 1;
+    cur.refunded += Number(r.refundAmount);
+    byReasonMap.set(key, cur);
+  }
+  const byReason = [...byReasonMap.entries()]
+    .map(([reason, v]) => ({ reason, count: v.count, refunded: Math.round(v.refunded) }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8);
+
+  const byStaffMap = new Map<string, { id: string; name: string; count: number; penalty: number }>();
+  for (const r of approved) {
+    if (!r.responsibleUserId) continue;
+    const cur = byStaffMap.get(r.responsibleUserId) ?? { id: r.responsibleUserId, name: r.responsibleUser?.name ?? 'Unknown', count: 0, penalty: 0 };
+    cur.count += 1;
+    cur.penalty += Number(r.penaltyAmount);
+    byStaffMap.set(r.responsibleUserId, cur);
+  }
+  const byStaff = [...byStaffMap.values()]
+    .map((v) => ({ ...v, penalty: Math.round(v.penalty) }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8);
+
+  res.json(
+    ApiResponse.success({
+      from: from!,
+      to: to!,
+      totalRequests: requests.length,
+      approved: approved.length,
+      rejected,
+      pending,
+      totalRefunded,
+      totalPenalties,
+      byReason,
+      byStaff,
+    })
+  );
+});
+
+/**
+ * GET /api/reports/purchases-by-supplier
+ *
+ * Backs the Dashboard's "Purchases & Supplier Spend" section — date range only (a purchase is a
+ * discrete event, not hourly). Groups `Purchase` rows by supplier over `Purchase.date` (a plain
+ * `@db.Date` column, unlike `Order.createdAt` — no PKT shift needed here, plain UTC-midnight
+ * boundaries are correct, same as `getExpenses`). Uses the identical outlet-scoping OR-clause
+ * `getPurchases` uses (Super Admin -> MAIN-warehouse/chain-wide rows; branch role -> their
+ * outlet's warehouse rows OR outlet-tagged no-warehouse rows) rather than a plain
+ * `where.outletId = scope`, since `Purchase.outletId` alone isn't reliably populated for every
+ * row — see `getPurchases`'s own comment for why. Unlike the Sales-side "by X" endpoints, `rows`
+ * here is NOT capped at top 8 — every supplier with activity in range is returned (frontend caps
+ * the chart only), matching `getSalesByStaff`/`getSalesByOutlet`'s convention.
+ */
+export const getPurchasesBySupplier = asyncHandler(async (req: Request, res: Response) => {
+  const from = req.query.from as string | undefined;
+  const to = req.query.to as string | undefined;
+
+  const where: any = {};
+  if (from || to) {
+    const startStr = from ?? to!;
+    const endStr = to ?? from!;
+    const gte = new Date(`${startStr}T00:00:00.000Z`);
+    const lt = new Date(`${endStr}T00:00:00.000Z`);
+    lt.setUTCDate(lt.getUTCDate() + 1);
+    where.date = { gte, lt };
+  }
+
+  const scope = resolveOutletScope(req);
+  if (req.user?.role === 'Super Admin') {
+    where.OR = [
+      { warehouse: { outletId: null } },
+      { AND: [{ warehouseId: null }, { outletId: null }] },
+    ];
+  } else if (scope) {
+    where.OR = [
+      { warehouse: { outletId: scope } },
+      { AND: [{ warehouseId: null }, { outletId: scope }] },
+    ];
+  }
+
+  const purchases = await prisma.purchase.findMany({
+    where,
+    select: {
+      supplierId: true,
+      supplier: { select: { name: true } },
+      total: true,
+      paid: true,
+      due: true,
+    },
+  });
+
+  interface SupplierAgg { id: string; name: string; count: number; total: number; paid: number; due: number }
+  const bySupplier = new Map<string, SupplierAgg>();
+  for (const p of purchases) {
+    const key = p.supplierId ?? '__none__';
+    const cur = bySupplier.get(key) ?? {
+      id: p.supplierId ?? '',
+      name: p.supplier?.name ?? 'No Supplier',
+      count: 0, total: 0, paid: 0, due: 0,
+    };
+    cur.count += 1;
+    cur.total += Number(p.total ?? 0);
+    cur.paid += Number(p.paid ?? 0);
+    cur.due += Number(p.due ?? 0);
+    bySupplier.set(key, cur);
+  }
+  const rows = [...bySupplier.values()]
+    .map((s) => ({ ...s, total: Math.round(s.total), paid: Math.round(s.paid), due: Math.round(s.due) }))
+    .sort((a, b) => b.total - a.total);
+
+  const totalAmount = Math.round(purchases.reduce((s, p) => s + Number(p.total ?? 0), 0));
+  const totalPaid = Math.round(purchases.reduce((s, p) => s + Number(p.paid ?? 0), 0));
+  const totalDue = Math.round(purchases.reduce((s, p) => s + Number(p.due ?? 0), 0));
+
+  res.json(
+    ApiResponse.success({
+      from: from ?? null,
+      to: to ?? null,
+      purchaseCount: purchases.length,
+      supplierCount: bySupplier.size,
+      totalAmount,
+      totalPaid,
+      totalDue,
+      rows,
+    })
+  );
+});
+
+/** Fixed category list Expenses.tsx offers — zero-filled the same way getSalesByCategory /
+ *  getSalesByPaymentMethod zero-fill their own rows, so an inactive category still shows as
+ *  Rs. 0 rather than being silently absent. "Uncategorized" is NOT in this list — like
+ *  getNetProfit's own expenseByCategory map, it only appears when it has real activity. */
+const FIXED_EXPENSE_CATEGORIES = ['Utilities', 'Rent', 'Salary', 'Maintenance', 'Marketing', 'Misc'];
+
+/**
+ * GET /api/reports/expenses-breakdown
+ *
+ * Backs the Dashboard's "Expenses Breakdown & Trends" section — date range only (an expense is a
+ * discrete, day-granularity record, not hourly; same reasoning as Net Profit/Purchases by
+ * Supplier). Over `Expense.date` — a plain `@db.Date` column like `Purchase.date`, so plain
+ * UTC-midnight boundaries are correct here with no PKT shift (unlike `parseDateRange`'s
+ * `Order.createdAt` handling — see that function's doc comment for why the two differ).
+ *
+ * Two views over the same rows: `byCategory` (zero-filled against the fixed list) feeds the
+ * category chart/table and each row's drill-down into `/expenses?category=`; `trend` is one
+ * point per calendar day in the range (zero-filled so the line chart has no gaps), feeding the
+ * trend chart and each point's drill-down into `/expenses?from=<day>&to=<day>`.
+ */
+export const getExpensesBreakdown = asyncHandler(async (req: Request, res: Response) => {
+  const from = req.query.from as string | undefined;
+  const to = req.query.to as string | undefined;
+
+  const where: any = {};
+  if (from || to) {
+    const startStr = from ?? to!;
+    const endStr = to ?? from!;
+    const gte = new Date(`${startStr}T00:00:00.000Z`);
+    const lt = new Date(`${endStr}T00:00:00.000Z`);
+    lt.setUTCDate(lt.getUTCDate() + 1);
+    where.date = { gte, lt };
+  }
+
+  const scope = resolveOutletScope(req);
+  if (scope) where.outletId = scope;
+
+  const rows = await prisma.expense.findMany({
+    where,
+    select: { amount: true, category: true, date: true },
+  });
+
+  const totalAmount = Math.round(rows.reduce((s, e) => s + Number(e.amount), 0));
+  const totalCount = rows.length;
+
+  const catMap = new Map<string, { amount: number; count: number }>();
+  for (const e of rows) {
+    const name = e.category ?? 'Uncategorized';
+    const cur = catMap.get(name) ?? { amount: 0, count: 0 };
+    cur.amount += Number(e.amount);
+    cur.count += 1;
+    catMap.set(name, cur);
+  }
+  for (const name of FIXED_EXPENSE_CATEGORIES) {
+    if (!catMap.has(name)) catMap.set(name, { amount: 0, count: 0 });
+  }
+  const byCategory = [...catMap.entries()]
+    .map(([name, v]) => ({ name, amount: Math.round(v.amount), count: v.count }))
+    .filter((r) => r.amount > 0 || FIXED_EXPENSE_CATEGORIES.includes(r.name))
+    .sort((a, b) => b.amount - a.amount);
+
+  const dayMap = new Map<string, number>();
+  for (const e of rows) {
+    const key = e.date.toISOString().slice(0, 10);
+    dayMap.set(key, (dayMap.get(key) ?? 0) + Number(e.amount));
+  }
+  const trend: { date: string; amount: number }[] = [];
+  if (from || to) {
+    const startStr = from ?? to!;
+    const endStr = to ?? from!;
+    const cursor = new Date(`${startStr}T00:00:00.000Z`);
+    const end = new Date(`${endStr}T00:00:00.000Z`);
+    while (cursor.getTime() <= end.getTime()) {
+      const key = cursor.toISOString().slice(0, 10);
+      trend.push({ date: key, amount: Math.round(dayMap.get(key) ?? 0) });
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+  }
+
+  const avgPerDay = Math.round(totalAmount / (trend.length || 1));
+
+  res.json(
+    ApiResponse.success({
+      from: from ?? null,
+      to: to ?? null,
+      totalAmount,
+      totalCount,
+      avgPerDay,
+      byCategory,
+      trend,
+    })
+  );
+});
+
+/** Fixed reason list StockAdjustments.tsx offers — same zero-fill convention as
+ *  FIXED_EXPENSE_CATEGORIES above. "Unspecified" (blank reason) and any dynamic reason not on
+ *  this list (e.g. the auto-expiry system's "Expired (auto waste)" string) only appear with real
+ *  activity, same as getNetProfit's own wasteByReason map. */
+const FIXED_WASTE_REASONS = ['Expired', 'Spoiled', 'Overcooked', 'Accidental', 'Damaged', 'Other'];
+
+/**
+ * GET /api/reports/waste-breakdown
+ *
+ * Backs the Dashboard's "Waste / Food Loss Trends" section — date range only, same shape as
+ * Expenses Breakdown above (a discrete daily record, not hourly). Also backs
+ * StockAdjustments.tsx's own summary tiles, which additionally pass `warehouseId`/`reason` so
+ * those tiles stay in sync with that page's own dropdowns (both optional, ignored when absent).
+ *
+ * Deliberately mirrors stock.controller.ts's own getWasteRecords date-boundary convention (plain
+ * UTC-midnight) rather than this file's own getNetProfit — even though WasteRecord.date is a real
+ * DateTime (not @db.Date like Expense/Purchase), because this section's row/chart drill-down
+ * lands on /stock/adjustments?from=&to=[&reason=], which getWasteRecords itself renders. Matching
+ * getWasteRecords keeps this section's totals reconcilable with what that destination page
+ * actually shows; matching getNetProfit's PKT-shifted parseDateRange instead would silently
+ * disagree with it for any waste record logged 00:00-05:00 PKT. getNetProfit's own wasteRows
+ * query is left exactly as-is — this is a known, pre-existing inconsistency between the two, not
+ * introduced here.
+ */
+export const getWasteBreakdown = asyncHandler(async (req: Request, res: Response) => {
+  const from = req.query.from as string | undefined;
+  const to = req.query.to as string | undefined;
+  // Optional -- StockAdjustments.tsx's own summary tiles pass these to stay in sync with the
+  // page's warehouse/reason dropdowns; the Dashboard section never sends either, so its query
+  // behavior is unchanged.
+  const warehouseId = req.query.warehouseId as string | undefined;
+  const reason = req.query.reason as string | undefined;
+
+  const where: any = {};
+  if (from || to) {
+    const startStr = from ?? to!;
+    const endStr = to ?? from!;
+    const gte = new Date(`${startStr}T00:00:00.000Z`);
+    const lt = new Date(`${endStr}T00:00:00.000Z`);
+    lt.setUTCDate(lt.getUTCDate() + 1);
+    where.date = { gte, lt };
+  }
+  if (warehouseId) where.warehouseId = warehouseId;
+  if (reason) where.reason = reason;
+
+  const scope = resolveOutletScope(req);
+  if (scope) where.outletId = scope;
+
+  const rows = await prisma.wasteRecord.findMany({
+    where,
+    select: { cost: true, reason: true, date: true },
+  });
+
+  const totalAmount = Math.round(rows.reduce((s, w) => s + Number(w.cost ?? 0), 0));
+  const totalCount = rows.length;
+
+  const reasonMap = new Map<string, { amount: number; count: number }>();
+  for (const w of rows) {
+    const name = w.reason?.trim() || 'Unspecified';
+    const cur = reasonMap.get(name) ?? { amount: 0, count: 0 };
+    cur.amount += Number(w.cost ?? 0);
+    cur.count += 1;
+    reasonMap.set(name, cur);
+  }
+  for (const name of FIXED_WASTE_REASONS) {
+    if (!reasonMap.has(name)) reasonMap.set(name, { amount: 0, count: 0 });
+  }
+  const byReason = [...reasonMap.entries()]
+    .map(([name, v]) => ({ name, amount: Math.round(v.amount), count: v.count }))
+    .filter((r) => r.amount > 0 || FIXED_WASTE_REASONS.includes(r.name))
+    .sort((a, b) => b.amount - a.amount);
+
+  const dayMap = new Map<string, number>();
+  for (const w of rows) {
+    const key = w.date.toISOString().slice(0, 10);
+    dayMap.set(key, (dayMap.get(key) ?? 0) + Number(w.cost ?? 0));
+  }
+  const trend: { date: string; amount: number }[] = [];
+  if (from || to) {
+    const startStr = from ?? to!;
+    const endStr = to ?? from!;
+    const cursor = new Date(`${startStr}T00:00:00.000Z`);
+    const end = new Date(`${endStr}T00:00:00.000Z`);
+    while (cursor.getTime() <= end.getTime()) {
+      const key = cursor.toISOString().slice(0, 10);
+      trend.push({ date: key, amount: Math.round(dayMap.get(key) ?? 0) });
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+  }
+
+  const avgPerDay = Math.round(totalAmount / (trend.length || 1));
+
+  res.json(
+    ApiResponse.success({
+      from: from ?? null,
+      to: to ?? null,
+      totalAmount,
+      totalCount,
+      avgPerDay,
+      byReason,
+      trend,
+    })
+  );
+});
+
+const ATTENDANCE_STATUSES = ['present', 'late', 'halfday', 'absent'] as const;
+
+/**
+ * GET /api/reports/attendance
+ *
+ * Backs the Dashboard's "Attendance / HR Analytics" section — date range only (a day-granularity
+ * record, not hourly). **`AttendanceRecord.date` is a plain `String` "YYYY-MM-DD" (a PKT calendar
+ * date), not a `DateTime`** — unlike every other date-range endpoint in this file, this does NOT
+ * go through `parseDateRange` (which builds UTC `Date` boundaries for a real timestamp column like
+ * `Order.createdAt`) and does NOT need any PKT shift: `from`/`to` are compared directly against
+ * the string field via Prisma's lexicographic `gte`/`lte`, exactly like `getAllAttendance`
+ * (`attendance.controller.ts`) already does for its own `startDate`/`endDate` params. See
+ * CLAUDE.md's "PKT Timezone Pattern" section's `AttendanceRecord.date` note.
+ *
+ * Counts by status — `present`/`late`/`halfday`/`absent` (the schema comment only lists three,
+ * but `correctAttendance`'s zod enum and the frontend both use `halfday` too; `getDashboard`'s
+ * own `attendanceToday` silently drops it into neither present/late/absent — this endpoint
+ * buckets it explicitly instead of losing it the same way) — plus total overtime minutes and a
+ * per-staff breakdown (NOT capped server-side, matching `getSalesByStaff`/`getSalesByOutlet`'s
+ * convention) and a daily trend (zero-filled across every day in range, one stacked point per
+ * status, for the section's chart).
+ */
+export const getAttendanceAnalytics = asyncHandler(async (req: Request, res: Response) => {
+  const from = req.query.from as string | undefined;
+  const to = req.query.to as string | undefined;
+  if (!from || !to) throw ApiError.badRequest('from and to are required (YYYY-MM-DD)');
+
+  const where: any = { date: { gte: from, lte: to } };
+  const scope = resolveOutletScope(req);
+  if (scope) where.outletId = scope;
+
+  const rows = await prisma.attendanceRecord.findMany({
+    where,
+    select: {
+      userId: true, date: true, status: true, overtimeMinutes: true,
+      user: { select: { name: true, role: true } },
+    },
+  });
+
+  const totalOvertimeMinutes = rows.reduce((s, r) => s + (r.overtimeMinutes ?? 0), 0);
+  const counts = { present: 0, late: 0, halfday: 0, absent: 0 };
+  for (const r of rows) {
+    if ((ATTENDANCE_STATUSES as readonly string[]).includes(r.status)) {
+      counts[r.status as keyof typeof counts] += 1;
+    }
+  }
+  const totalRecords = rows.length;
+  const attendanceRate = totalRecords > 0
+    ? Math.round(((counts.present + counts.late + counts.halfday) / totalRecords) * 100)
+    : 0;
+
+  interface StaffAgg {
+    userId: string; name: string; role: string;
+    present: number; late: number; halfday: number; absent: number; overtimeMinutes: number;
+  }
+  const byStaffMap = new Map<string, StaffAgg>();
+  for (const r of rows) {
+    const cur = byStaffMap.get(r.userId) ?? {
+      userId: r.userId, name: r.user?.name ?? 'Unknown', role: r.user?.role ?? '',
+      present: 0, late: 0, halfday: 0, absent: 0, overtimeMinutes: 0,
+    };
+    if ((ATTENDANCE_STATUSES as readonly string[]).includes(r.status)) {
+      cur[r.status as keyof typeof counts] += 1;
+    }
+    cur.overtimeMinutes += r.overtimeMinutes ?? 0;
+    byStaffMap.set(r.userId, cur);
+  }
+  const byStaff = [...byStaffMap.values()].sort((a, b) => (b.present + b.late) - (a.present + a.late));
+
+  const dayMap = new Map<string, { present: number; late: number; halfday: number; absent: number }>();
+  for (const r of rows) {
+    const cur = dayMap.get(r.date) ?? { present: 0, late: 0, halfday: 0, absent: 0 };
+    if ((ATTENDANCE_STATUSES as readonly string[]).includes(r.status)) {
+      cur[r.status as keyof typeof counts] += 1;
+    }
+    dayMap.set(r.date, cur);
+  }
+  const trend: { date: string; present: number; late: number; halfday: number; absent: number }[] = [];
+  const cursor = new Date(`${from}T00:00:00.000Z`);
+  const end = new Date(`${to}T00:00:00.000Z`);
+  while (cursor.getTime() <= end.getTime()) {
+    const key = cursor.toISOString().slice(0, 10);
+    const c = dayMap.get(key) ?? { present: 0, late: 0, halfday: 0, absent: 0 };
+    trend.push({ date: key, ...c });
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  res.json(
+    ApiResponse.success({
+      from, to,
+      totalRecords,
+      present: counts.present,
+      late: counts.late,
+      halfday: counts.halfday,
+      absent: counts.absent,
+      attendanceRate,
+      totalOvertimeMinutes,
+      byStaff,
+      trend,
     })
   );
 });

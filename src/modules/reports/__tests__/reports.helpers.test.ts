@@ -2,10 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { parseDateRange, buildOrderWhere, computeCogs, displayOrderType, isLowStock, parseTimeOfDay, isWithinTimeOfDay, splitOrderTotalByLine } from '../reports.helpers.js';
 
 describe('parseDateRange', () => {
-  it('parses valid from/to into inclusive day boundaries', () => {
+  it('parses valid from/to into inclusive PKT day boundaries (UTC-5h from the raw date strings)', () => {
     const { gte, lte } = parseDateRange('2026-06-01', '2026-06-07');
-    expect(gte.toISOString()).toBe('2026-06-01T00:00:00.000Z');
-    expect(lte.toISOString()).toBe('2026-06-07T23:59:59.999Z');
+    expect(gte.toISOString()).toBe('2026-05-31T19:00:00.000Z');
+    expect(lte.toISOString()).toBe('2026-06-07T18:59:59.999Z');
   });
 
   it('throws on missing from', () => {

@@ -14,6 +14,12 @@ import {
   getNetProfit,
   getDealsPerformance,
   getSalesByStaff,
+  getSalesByOutlet,
+  getCancellationRequestsReport,
+  getPurchasesBySupplier,
+  getExpensesBreakdown,
+  getWasteBreakdown,
+  getAttendanceAnalytics,
 } from './reports.controller.js';
 
 const reportRoles = ['Super Admin', 'Admin', 'Manager', 'Accountant'];
@@ -32,3 +38,9 @@ reportsRouter.get('/top-items', authenticate, authorize(reportRoles), getTopItem
 reportsRouter.get('/net-profit', authenticate, authorize(reportRoles), getNetProfit);
 reportsRouter.get('/deals-performance', authenticate, authorize(reportRoles), getDealsPerformance);
 reportsRouter.get('/sales-by-staff', authenticate, authorize(reportRoles), getSalesByStaff);
+reportsRouter.get('/sales-by-outlet', authenticate, authorize(reportRoles), getSalesByOutlet);
+reportsRouter.get('/cancellation-requests', authenticate, authorize(reportRoles), getCancellationRequestsReport);
+reportsRouter.get('/purchases-by-supplier', authenticate, authorize(reportRoles), getPurchasesBySupplier);
+reportsRouter.get('/expenses-breakdown', authenticate, authorize(reportRoles), getExpensesBreakdown);
+reportsRouter.get('/waste-breakdown', authenticate, authorize(reportRoles), getWasteBreakdown);
+reportsRouter.get('/attendance', authenticate, authorize(reportRoles), getAttendanceAnalytics);

@@ -17,7 +17,15 @@ export interface DateRange {
   lte: Date;
 }
 
-/** Parse inclusive from/to (YYYY-MM-DD) into UTC day boundaries. Throws ApiError on invalid input. */
+/**
+ * Parse inclusive from/to (YYYY-MM-DD) into UTC instants bounding that PKT calendar-day range.
+ * `from`/`to` are PKT wall-clock dates (the frontend derives them from the browser's local
+ * clock), but `Order.createdAt` is a real UTC timestamp — so the window is shifted -5h (PKT =
+ * UTC+5) to land on true PKT midnight, not UTC midnight. Without this shift, any order placed
+ * between 00:00-05:00 PKT is misattributed to the previous calendar day everywhere under
+ * /api/reports/* (see CLAUDE.md's "PKT Timezone Pattern" — the same class of bug documented
+ * there for attendance/leave dates). Throws ApiError on invalid input.
+ */
 export function parseDateRange(from: string | undefined, to: string | undefined): DateRange {
   if (!from || !to) {
     throw ApiError.badRequest('from and to are required (YYYY-MM-DD)');
@@ -27,7 +35,8 @@ export function parseDateRange(from: string | undefined, to: string | undefined)
   if (isNaN(gte.getTime()) || isNaN(lte.getTime())) {
     throw ApiError.badRequest('from and to must be valid dates (YYYY-MM-DD)');
   }
-  return { gte, lte };
+  const PKT_OFFSET_MS = 5 * 60 * 60 * 1000;
+  return { gte: new Date(gte.getTime() - PKT_OFFSET_MS), lte: new Date(lte.getTime() - PKT_OFFSET_MS) };
 }
 
 /** Build a Prisma `where` for orders: date range, plus outletId only when a specific outlet is chosen. */
