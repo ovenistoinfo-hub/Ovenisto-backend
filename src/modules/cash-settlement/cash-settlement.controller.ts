@@ -49,7 +49,7 @@ export const getSettlementHistoryController = asyncHandler(async (req: Request, 
     throw ApiError.unauthorized('User not authenticated');
   }
 
-  let { staffId, role, page, limit, date } = req.query as Record<string, string>;
+  let { staffId, role, page, limit, date, from, to } = req.query as Record<string, string>;
 
   // Non-managers may only view their own settlement history
   if (!managerRoles.includes(req.user.role as string)) {
@@ -71,6 +71,8 @@ export const getSettlementHistoryController = asyncHandler(async (req: Request, 
     page: page ? Number(page) : undefined,
     limit: limit ? Number(limit) : undefined,
     date,
+    from,
+    to,
   });
   return res.json(
     ApiResponse.paginated(

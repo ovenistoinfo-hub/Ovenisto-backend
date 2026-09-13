@@ -448,6 +448,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
     deliveryActive,
     pendingCancellations,
     cashHubBalances,
+    cashSettlementsToday,
     perfOrders,
   ] = await Promise.all([
     prisma.order.groupBy({
@@ -497,6 +498,13 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
       where: { status: 'pending', ...outletFilter },
     }),
     getActiveBalances(outletId ?? null),
+    // "Today" (PKT) settlements, so the Dashboard's live Cash Hub zone can mirror the Cash
+    // Hub page's "Total Settled Today" / "Today Net Difference" tiles exactly, not just the
+    // still-uncleared balance — the two screens must agree on every one of these 4 numbers.
+    prisma.cashSettlement.findMany({
+      where: { createdAt: { gte: day.gte, lte: day.lte }, ...(outletId ? { outletId } : {}) },
+      select: { totalActual: true, cashDifference: true },
+    }),
     prisma.order.findMany({
       where: { ...outletFilter, ...onlyCompleted, createdAt: { gte: sixtyDaysAgo, lte: day.lte } },
       select: { total: true, createdAt: true },
@@ -527,6 +535,20 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
   const cashHub = {
     totalUnsettled: Math.round(cashHubBalances.reduce((s, b) => s + b.totalExpected, 0)),
     staffCount: cashHubBalances.length,
+    totalSettledToday: Math.round(cashSettlementsToday.reduce((s, r) => s + Number(r.totalActual ?? 0), 0)),
+    todayNetDifference: Math.round(cashSettlementsToday.reduce((s, r) => s + Number(r.cashDifference ?? 0), 0)),
+    // Top holders only (not the full roster) — this zone is a live-glance summary that links
+    // through to the Cash Hub page for the complete table, same convention as every other
+    // operational zone tile on this dashboard.
+    topStaff: [...cashHubBalances]
+      .sort((a, b) => b.totalExpected - a.totalExpected)
+      .slice(0, 5)
+      .map((b) => ({
+        staffId: b.staffId,
+        staffName: b.staffName,
+        staffRole: b.staffRole,
+        totalExpected: Math.round(b.totalExpected),
+      })),
   };
 
   const perfLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -2139,6 +2161,507 @@ export const getAttendanceAnalytics = asyncHandler(async (req: Request, res: Res
       totalOvertimeMinutes,
       byStaff,
       trend,
+    })
+  );
+});
+
+const FIXED_RESERVATION_STATUSES = ['pending', 'confirmed', 'seated', 'completed', 'cancelled', 'noShow'];
+
+/**
+ * GET /api/reports/reservations
+ *
+ * Backs the Dashboard's "Reservations Analytics" section — date range only. Also backs
+ * `Reservations.tsx`'s own analytics tiles, which additionally pass `status` so those tiles
+ * stay in sync with that page's own status dropdown (optional, ignored when absent — the
+ * Dashboard section never sends it).
+ * **`Reservation.date` is a plain `DateTime @db.Date` column (calendar day, no time
+ * component)** — same class as `Purchase.date`/`Expense.date`, NOT a real timestamp like
+ * `Order.createdAt`. So this uses plain UTC-midnight boundaries (the `getExpenses`/
+ * `getPurchasesBySupplier` convention), NOT `parseDateRange`'s PKT-shifted one.
+ *
+ * Zero-fills all six stored status values (pending/confirmed/seated/completed/cancelled/
+ * noShow) — `Reservations.tsx` now has a "Mark No-Show" action for it (added same day as this
+ * status param), so this count is no longer permanently zero.
+ */
+export const getReservationAnalytics = asyncHandler(async (req: Request, res: Response) => {
+  const from = req.query.from as string | undefined;
+  const to = req.query.to as string | undefined;
+  // Optional -- Reservations.tsx's own analytics tiles pass this to stay in sync with the
+  // page's status dropdown; the Dashboard section never sends it.
+  const status = req.query.status as string | undefined;
+
+  const where: any = {};
+  if (from || to) {
+    const startStr = from ?? to!;
+    const endStr = to ?? from!;
+    const gte = new Date(`${startStr}T00:00:00.000Z`);
+    const lt = new Date(`${endStr}T00:00:00.000Z`);
+    lt.setUTCDate(lt.getUTCDate() + 1);
+    where.date = { gte, lt };
+  }
+  if (status) where.status = status;
+
+  const scope = resolveOutletScope(req);
+  if (scope) where.outletId = scope;
+
+  const rows = await prisma.reservation.findMany({
+    where,
+    select: { date: true, status: true, guestCount: true },
+  });
+
+  const totalReservations = rows.length;
+  const totalGuests = rows.reduce((s, r) => s + (r.guestCount ?? 0), 0);
+
+  const statusMap = new Map<string, { count: number; guests: number }>();
+  for (const r of rows) {
+    const cur = statusMap.get(r.status) ?? { count: 0, guests: 0 };
+    cur.count += 1;
+    cur.guests += r.guestCount ?? 0;
+    statusMap.set(r.status, cur);
+  }
+  for (const s of FIXED_RESERVATION_STATUSES) {
+    if (!statusMap.has(s)) statusMap.set(s, { count: 0, guests: 0 });
+  }
+  const byStatus = [...statusMap.entries()]
+    .map(([status, v]) => ({ status, count: v.count, guests: v.guests }))
+    .sort((a, b) => b.count - a.count);
+
+  const cancelledCount = statusMap.get('cancelled')?.count ?? 0;
+  const noShowCount = statusMap.get('noShow')?.count ?? 0;
+  const cancelRate = totalReservations > 0 ? Math.round((cancelledCount / totalReservations) * 100) : 0;
+  const noShowRate = totalReservations > 0 ? Math.round((noShowCount / totalReservations) * 100) : 0;
+
+  const dayMap = new Map<string, number>();
+  for (const r of rows) {
+    const key = r.date.toISOString().slice(0, 10);
+    dayMap.set(key, (dayMap.get(key) ?? 0) + 1);
+  }
+  const trend: { date: string; count: number }[] = [];
+  if (from || to) {
+    const startStr = from ?? to!;
+    const endStr = to ?? from!;
+    const cursor = new Date(`${startStr}T00:00:00.000Z`);
+    const end = new Date(`${endStr}T00:00:00.000Z`);
+    while (cursor.getTime() <= end.getTime()) {
+      const key = cursor.toISOString().slice(0, 10);
+      trend.push({ date: key, count: dayMap.get(key) ?? 0 });
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+  }
+
+  res.json(
+    ApiResponse.success({
+      from: from ?? null,
+      to: to ?? null,
+      totalReservations,
+      totalGuests,
+      cancelledCount,
+      cancelRate,
+      noShowCount,
+      noShowRate,
+      byStatus,
+      trend,
+    })
+  );
+});
+
+/**
+ * GET /api/reports/delivery
+ *
+ * Backs the Dashboard's "Delivery / Rider Performance" section — date range only.
+ * **`DeliveryAssignment.assignedAt`/`deliveredAt` are real UTC `DateTime` columns**, unlike
+ * `Reservation.date`/`Purchase.date`/`Expense.date`'s plain `@db.Date` — so this uses
+ * `parseDateRange`'s PKT-shifted window, the SAME convention as `Order.createdAt`-based
+ * endpoints (`getSalesByChannel` etc.), not the plain-UTC-midnight one those three use.
+ *
+ * **`DeliveryAssignment` has no `outletId` column at all** — scope is derived via the linked
+ * order's outlet (`order: { outletId: scope }`), matching `delivery.controller.ts`'s own
+ * `getAssignments`/`getDeliveryDashboard` convention (root CLAUDE.md's "assignments via
+ * order.outletId" note under Outlet Scoping).
+ *
+ * Population is completed deliveries (`status: 'delivered'`, `deliveredAt` in range) —
+ * analogous to every Sales-side endpoint's "completed" filter. `returned` (failed) assignments
+ * have no delivery timestamp of their own, so they're counted separately by `assignedAt` in
+ * range instead, as a headline count only (no rider/trend breakdown — the "how many deliveries
+ * failed" number, not a full second report). Delivery duration (`deliveredAt − assignedAt`, in
+ * minutes) is a brand-new computation — neither `delivery.controller.ts` handler tracks or
+ * stores it today.
+ */
+export const getDeliveryPerformance = asyncHandler(async (req: Request, res: Response) => {
+  const from = req.query.from as string;
+  const to = req.query.to as string;
+  const { gte, lte } = parseDateRange(from, to);
+
+  const scope = resolveOutletScope(req);
+  const outletFilter = scope ? { order: { outletId: scope } } : {};
+
+  const [delivered, returnedCount] = await Promise.all([
+    prisma.deliveryAssignment.findMany({
+      where: { status: 'delivered', deliveredAt: { gte, lte }, ...outletFilter },
+      select: {
+        riderId: true, assignedAt: true, deliveredAt: true, commissionEarned: true,
+        rider: { select: { name: true } },
+      },
+    }),
+    prisma.deliveryAssignment.count({
+      where: { status: 'returned', assignedAt: { gte, lte }, ...outletFilter },
+    }),
+  ]);
+
+  const totalDeliveries = delivered.length;
+  const totalCommission = Math.round(delivered.reduce((s, d) => s + Number(d.commissionEarned ?? 0), 0));
+  const durationsMin = delivered
+    .filter((d) => d.deliveredAt)
+    .map((d) => (d.deliveredAt!.getTime() - d.assignedAt.getTime()) / 60000);
+  const avgDeliveryMinutes = durationsMin.length > 0
+    ? Math.round(durationsMin.reduce((s, v) => s + v, 0) / durationsMin.length)
+    : 0;
+
+  interface RiderAgg { riderId: string; name: string; deliveries: number; commission: number; totalMinutes: number }
+  const byRiderMap = new Map<string, RiderAgg>();
+  for (const d of delivered) {
+    const cur = byRiderMap.get(d.riderId) ?? { riderId: d.riderId, name: d.rider?.name ?? 'Unknown', deliveries: 0, commission: 0, totalMinutes: 0 };
+    cur.deliveries += 1;
+    cur.commission += Number(d.commissionEarned ?? 0);
+    if (d.deliveredAt) cur.totalMinutes += (d.deliveredAt.getTime() - d.assignedAt.getTime()) / 60000;
+    byRiderMap.set(d.riderId, cur);
+  }
+  const byRider = [...byRiderMap.values()]
+    .map((r) => ({
+      riderId: r.riderId,
+      name: r.name,
+      deliveries: r.deliveries,
+      commission: Math.round(r.commission),
+      avgMinutes: r.deliveries > 0 ? Math.round(r.totalMinutes / r.deliveries) : 0,
+    }))
+    .sort((a, b) => b.deliveries - a.deliveries);
+
+  // Daily trend, zero-filled — bucketed by PKT calendar day (deliveredAt +5h) since it's a real
+  // UTC instant, same shift isWithinTimeOfDay/parseDateRange use elsewhere in this file.
+  const dayMap = new Map<string, number>();
+  for (const d of delivered) {
+    const pkt = new Date(d.deliveredAt!.getTime() + 5 * 60 * 60 * 1000);
+    const key = pkt.toISOString().slice(0, 10);
+    dayMap.set(key, (dayMap.get(key) ?? 0) + 1);
+  }
+  const trend: { date: string; count: number }[] = [];
+  const cursor = new Date(`${from}T00:00:00.000Z`);
+  const end = new Date(`${to}T00:00:00.000Z`);
+  while (cursor.getTime() <= end.getTime()) {
+    const key = cursor.toISOString().slice(0, 10);
+    trend.push({ date: key, count: dayMap.get(key) ?? 0 });
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  res.json(
+    ApiResponse.success({
+      from,
+      to,
+      totalDeliveries,
+      totalCommission,
+      avgDeliveryMinutes,
+      returnedCount,
+      byRider,
+      trend,
+    })
+  );
+});
+
+/**
+ * GET /api/reports/cash-settlements
+ *
+ * Backs the Dashboard's "Cash Hub Settlement Trends" section — date range only.
+ * **`CashSettlement.createdAt` is a real UTC `DateTime`** (no separate `settledAt` column), so
+ * this uses `parseDateRange`'s PKT-shifted window, same convention as `Order.createdAt`-based
+ * endpoints — NOT the plain-`@db.Date` convention Reservation/Purchase/Expense use.
+ *
+ * **`CashSettlement.outletId` lives directly on the model** (nullable) — unlike
+ * `DeliveryAssignment`, no join through a relation is needed to scope it.
+ *
+ * This is intentionally a different question from `getDashboard`'s `cashHub` field: that one is
+ * a LIVE snapshot of currently-uncleared balances (via `getActiveBalances`, no date range, no
+ * `CashSettlement` query at all); this endpoint reports on settlements that have ALREADY
+ * happened in a historical window. No per-order channel breakdown ("POS Counter"/"Waiter
+ * Panel"/etc.) — that tag is computed live inside `getActiveBalances` and is never persisted
+ * onto `CashSettlement` itself, so reconstructing it here would mean joining back through every
+ * settled order; out of scope for this section, which reports on the settlement records
+ * directly (per-staff amounts/differences/counts + a daily trend).
+ */
+export const getCashSettlementTrends = asyncHandler(async (req: Request, res: Response) => {
+  const from = req.query.from as string;
+  const to = req.query.to as string;
+  const { gte, lte } = parseDateRange(from, to);
+
+  const where: any = { createdAt: { gte, lte } };
+  const scope = resolveOutletScope(req);
+  if (scope) where.outletId = scope;
+
+  const rows = await prisma.cashSettlement.findMany({
+    where,
+    select: { staffId: true, staffName: true, totalActual: true, cashDifference: true, createdAt: true },
+  });
+
+  const totalSettlements = rows.length;
+  const totalAmount = Math.round(rows.reduce((s, r) => s + Number(r.totalActual ?? 0), 0));
+  const totalDifference = Math.round(rows.reduce((s, r) => s + Number(r.cashDifference ?? 0), 0));
+
+  interface StaffAgg { staffId: string; name: string; count: number; totalAmount: number; totalDifference: number }
+  const byStaffMap = new Map<string, StaffAgg>();
+  for (const r of rows) {
+    const cur = byStaffMap.get(r.staffId) ?? { staffId: r.staffId, name: r.staffName, count: 0, totalAmount: 0, totalDifference: 0 };
+    cur.count += 1;
+    cur.totalAmount += Number(r.totalActual ?? 0);
+    cur.totalDifference += Number(r.cashDifference ?? 0);
+    byStaffMap.set(r.staffId, cur);
+  }
+  const byStaff = [...byStaffMap.values()]
+    .map((s) => ({ ...s, totalAmount: Math.round(s.totalAmount), totalDifference: Math.round(s.totalDifference) }))
+    .sort((a, b) => b.totalAmount - a.totalAmount);
+
+  // Daily trend, zero-filled — bucketed by PKT calendar day (createdAt +5h) since it's a real
+  // UTC instant, same shift parseDateRange itself uses.
+  const dayMap = new Map<string, number>();
+  for (const r of rows) {
+    const pkt = new Date(r.createdAt.getTime() + 5 * 60 * 60 * 1000);
+    const key = pkt.toISOString().slice(0, 10);
+    dayMap.set(key, (dayMap.get(key) ?? 0) + Number(r.totalActual ?? 0));
+  }
+  const trend: { date: string; amount: number }[] = [];
+  const cursor = new Date(`${from}T00:00:00.000Z`);
+  const end = new Date(`${to}T00:00:00.000Z`);
+  while (cursor.getTime() <= end.getTime()) {
+    const key = cursor.toISOString().slice(0, 10);
+    trend.push({ date: key, amount: Math.round(dayMap.get(key) ?? 0) });
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  res.json(
+    ApiResponse.success({
+      from,
+      to,
+      totalSettlements,
+      totalAmount,
+      totalDifference,
+      byStaff,
+      trend,
+    })
+  );
+});
+
+/**
+ * GET /api/reports/customer-analytics
+ *
+ * Backs the Dashboard's "Customer Analytics" section — date range only (customer acquisition
+ * isn't hourly). Distinct from the existing fixed-window "Customer Intelligence" zone
+ * (`topCustomers` = this month, `customerActivity` = this week, both in `getDashboard`) — this
+ * is the filterable, date-ranged version, same relationship `getCashSettlementTrends` has to
+ * `getDashboard`'s live `cashHub` snapshot.
+ *
+ * "Who counts as a customer" mirrors `customer.controller.ts`'s `getCustomerStatsMap` dedup key
+ * exactly (customerId > clean phone (7+ digits, not a dummy placeholder) > lower-cased name),
+ * because `Customer` rows and `Order.customerId` can both be missing/inconsistent for
+ * historical orders — an order with no name or the literal "walk-in" name is excluded, same as
+ * that function. `Order.createdAt` is a real UTC `DateTime`, so `parseDateRange`'s PKT shift
+ * applies (not the plain-`@db.Date` convention).
+ *
+ * New vs Returning is judged against each customer's REAL first-ever order (all-time, not just
+ * within the requested window) — so this fetches every identifiable-customer completed order,
+ * outlet-scoped, with no date filter of its own, then buckets in JS. `Customer` itself is
+ * chain-wide with no reliable `outletId` (see root CLAUDE.md's Outlet Scoping section), so this
+ * scopes via `Order.outletId` like every other Deal/Customer-adjacent report in this file.
+ */
+export const getCustomerAnalytics = asyncHandler(async (req: Request, res: Response) => {
+  const from = req.query.from as string;
+  const to = req.query.to as string;
+  const { gte, lte } = parseDateRange(from, to);
+  const scope = resolveOutletScope(req) ?? undefined;
+  const outletFilter = scope ? { outletId: scope } : {};
+
+  const orders = await prisma.order.findMany({
+    where: { ...outletFilter, status: COMPLETED as never, cashApproved: true },
+    select: { customerId: true, customerName: true, phone: true, total: true, createdAt: true },
+  });
+
+  const keyOf = (o: { customerId: string | null; customerName: string | null; phone: string | null }): string | null => {
+    if (!o.customerName || o.customerName.toLowerCase() === 'walk-in') return null;
+    if (o.customerId) return `id:${o.customerId}`;
+    const cleanPhone = o.phone ? o.phone.replace(/\D/g, '') : '';
+    const isDummy = !cleanPhone || cleanPhone === '00000000000' || cleanPhone === '11111111111' || cleanPhone === '12345678901';
+    if (!isDummy && cleanPhone.length >= 7) return `phone:${cleanPhone}`;
+    return `name:${o.customerName.toLowerCase().trim()}`;
+  };
+
+  interface CustAgg {
+    key: string; customerId: string | null; name: string; firstOrderAt: Date;
+    ordersInRange: number; spentInRange: number;
+  }
+  const byKey = new Map<string, CustAgg>();
+  for (const o of orders) {
+    const key = keyOf(o);
+    if (!key) continue;
+    let agg = byKey.get(key);
+    if (!agg) {
+      agg = { key, customerId: o.customerId, name: o.customerName!, firstOrderAt: o.createdAt, ordersInRange: 0, spentInRange: 0 };
+      byKey.set(key, agg);
+    }
+    if (o.createdAt < agg.firstOrderAt) agg.firstOrderAt = o.createdAt;
+    if (!agg.customerId && o.customerId) agg.customerId = o.customerId;
+    if (o.createdAt >= gte && o.createdAt <= lte) {
+      agg.ordersInRange += 1;
+      agg.spentInRange += Number(o.total);
+    }
+  }
+
+  const activeInRange = [...byKey.values()].filter((a) => a.ordersInRange > 0);
+  const newCustomers = activeInRange.filter((a) => a.firstOrderAt >= gte && a.firstOrderAt <= lte);
+  const returningCustomers = activeInRange.filter((a) => a.firstOrderAt < gte);
+
+  const totalOrders = activeInRange.reduce((s, a) => s + a.ordersInRange, 0);
+  const totalRevenue = Math.round(activeInRange.reduce((s, a) => s + a.spentInRange, 0));
+  const avgOrderValue = totalOrders > 0 ? Math.round(totalRevenue / totalOrders) : 0;
+
+  const topCustomers = [...activeInRange]
+    .sort((a, b) => b.spentInRange - a.spentInRange)
+    .slice(0, 10)
+    .map((a) => ({
+      customerId: a.customerId,
+      name: a.name,
+      orders: a.ordersInRange,
+      spent: Math.round(a.spentInRange),
+      isNew: a.firstOrderAt >= gte && a.firstOrderAt <= lte,
+    }));
+
+  // Daily NEW-customer trend, PKT-bucketed & zero-filled — same convention as every other
+  // real-DateTime-based Dashboard trend in this file (createdAt +5h before bucketing).
+  const dayMap = new Map<string, number>();
+  for (const a of newCustomers) {
+    const pkt = new Date(a.firstOrderAt.getTime() + 5 * 60 * 60 * 1000);
+    const key = pkt.toISOString().slice(0, 10);
+    dayMap.set(key, (dayMap.get(key) ?? 0) + 1);
+  }
+  const trend: { date: string; newCustomers: number }[] = [];
+  const cursor = new Date(`${from}T00:00:00.000Z`);
+  const end = new Date(`${to}T00:00:00.000Z`);
+  while (cursor.getTime() <= end.getTime()) {
+    const key = cursor.toISOString().slice(0, 10);
+    trend.push({ date: key, newCustomers: dayMap.get(key) ?? 0 });
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  res.json(
+    ApiResponse.success({
+      from,
+      to,
+      totalCustomersActive: activeInRange.length,
+      newCustomers: newCustomers.length,
+      returningCustomers: returningCustomers.length,
+      totalOrders,
+      totalRevenue,
+      avgOrderValue,
+      repeatRatePct: activeInRange.length > 0 ? Math.round((returningCustomers.length / activeInRange.length) * 100) : 0,
+      topCustomers,
+      trend,
+    })
+  );
+});
+
+/**
+ * GET /api/reports/sales-timing
+ *
+ * Backs the Dashboard's "Order Timing & Patterns" section — date range only (an hour-of-day or
+ * weekday pattern isn't meaningful over a time-of-day sub-window). Promotes the old fixed-window
+ * "Customer Intelligence" charts (Peak Hours: this week; Order Type Trend: this week;
+ * Day-of-Week Performance: last 60 days, all still baked into `getDashboard`, now dead code on
+ * the frontend) into a real filterable section, and fixes a bug found while doing it: those three
+ * charts bucketed by hour/weekday using `new Date(o.createdAt).getUTCHours()` /
+ * `.getUTCDay()` directly — but `Order.createdAt` is a real UTC timestamp and PKT is UTC+5, so an
+ * order placed after ~19:00 PKT was bucketed into the wrong UTC hour/weekday (the exact bug class
+ * this file's `parseDateRange` note already documents for date *ranges*; this is the same bug
+ * hitting hour/weekday *buckets*). Fixed here by shifting `createdAt` +5h before reading
+ * `getUTCHours()`/`getUTCDay()`, same convention as every other real-DateTime trend bucket in
+ * this file. `getDashboard`'s own `peakHours`/`orderTypeTrend`/`dayOfWeekPerformance` fields are
+ * left exactly as-is (unfixed, still fixed-window) since nothing on the frontend reads them
+ * anymore — not worth the risk of touching that large shared function for dead fields.
+ *
+ * "Orders by Channel" replaces the old Online/Offline split with the same Dine In / Take Away /
+ * Delivery three-way bucketing `getSalesByChannel` uses (`displayOrderType` + the Self-Order→Dine
+ * In merge) — requested so this section's channel language matches Sales By Channel elsewhere on
+ * this dashboard instead of introducing a second, different channel taxonomy. Online/Foodpanda/
+ * Walk-in orders are excluded from this one chart only (same exclusion `getSalesByChannel`
+ * applies) — Peak Hours and Day-of-Week Performance are NOT channel-filtered, they're a
+ * whole-restaurant timing question, same scope the original two had.
+ */
+export const getSalesTiming = asyncHandler(async (req: Request, res: Response) => {
+  const from = req.query.from as string;
+  const to = req.query.to as string;
+  const { gte, lte } = parseDateRange(from, to);
+  const outletId = resolveOutletScope(req) ?? undefined;
+
+  const baseWhere = buildOrderWhere(gte, lte, outletId);
+  const orders = await prisma.order.findMany({
+    where: { ...baseWhere, status: COMPLETED as never, cashApproved: true },
+    select: { type: true, total: true, createdAt: true },
+  });
+
+  const PKT_MS = 5 * 60 * 60 * 1000;
+  const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+  // Peak Hours — 24 PKT-hour buckets, all channels, across the whole range.
+  const peakHours = Array.from({ length: 24 }, (_, hour) => ({ hour, orders: 0, revenue: 0 }));
+  // Day-of-Week Performance — Mon..Sun PKT-weekday buckets, all channels, across the whole range.
+  const dowTotals = [0, 0, 0, 0, 0, 0, 0];
+  const dowCounts = [0, 0, 0, 0, 0, 0, 0];
+  for (const o of orders) {
+    const pkt = new Date(o.createdAt.getTime() + PKT_MS);
+    const hour = pkt.getUTCHours();
+    peakHours[hour].orders += 1;
+    peakHours[hour].revenue += Number(o.total);
+
+    const dow = (pkt.getUTCDay() + 6) % 7; // Mon=0..Sun=6
+    dowTotals[dow] += Number(o.total);
+    dowCounts[dow] += 1;
+  }
+  for (const p of peakHours) p.revenue = Math.round(p.revenue);
+  const dayOfWeek = WEEKDAY_LABELS.map((label, i) => ({
+    label,
+    orderCount: dowCounts[i],
+    avgSales: dowCounts[i] > 0 ? Math.round(dowTotals[i] / dowCounts[i]) : 0,
+  }));
+
+  // Orders by Channel — daily, zero-filled, Dine In / Take Away / Delivery only (Online/
+  // Foodpanda/Walk-in excluded, matching getSalesByChannel's own scope).
+  const dayMap = new Map<string, { dineIn: number; takeaway: number; delivery: number }>();
+  for (const o of orders) {
+    const display = displayOrderType(String(o.type));
+    let bucket: 'dineIn' | 'takeaway' | 'delivery' | null = null;
+    if (display === 'Dine In' || display === 'Self Order') bucket = 'dineIn';
+    else if (display === 'Take Away') bucket = 'takeaway';
+    else if (display === 'Delivery') bucket = 'delivery';
+    if (!bucket) continue;
+
+    const pkt = new Date(o.createdAt.getTime() + PKT_MS);
+    const key = pkt.toISOString().slice(0, 10);
+    const cur = dayMap.get(key) ?? { dineIn: 0, takeaway: 0, delivery: 0 };
+    cur[bucket] += 1;
+    dayMap.set(key, cur);
+  }
+  const byChannelTrend: { date: string; dineIn: number; takeaway: number; delivery: number }[] = [];
+  const cursor = new Date(`${from}T00:00:00.000Z`);
+  const end = new Date(`${to}T00:00:00.000Z`);
+  while (cursor.getTime() <= end.getTime()) {
+    const key = cursor.toISOString().slice(0, 10);
+    const cur = dayMap.get(key) ?? { dineIn: 0, takeaway: 0, delivery: 0 };
+    byChannelTrend.push({ date: key, ...cur });
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  res.json(
+    ApiResponse.success({
+      from,
+      to,
+      peakHours,
+      dayOfWeek,
+      byChannelTrend,
     })
   );
 });

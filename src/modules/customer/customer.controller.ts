@@ -6,9 +6,18 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import { parseDateRange } from '../reports/reports.helpers.js';
 
-async function getCustomerStatsMap() {
+/**
+ * `gte`/`lte` are optional — when given, stats are scoped to just that window (Orders/Total
+ * Spent/Due FOR THAT PERIOD, not lifetime) instead of every order ever placed. Added so the
+ * Customers page can align with the Dashboard's date-ranged "Customer Analytics" section
+ * (`reports.controller.ts`'s `getCustomerAnalytics`) — previously this always scanned the
+ * customer's entire order history with no way to ask "what did they spend this month".
+ */
+async function getCustomerStatsMap(gte?: Date, lte?: Date) {
   const orders = await prisma.order.findMany({
+    where: gte && lte ? { createdAt: { gte, lte } } : {},
     select: {
       customerId: true,
       customerName: true,
@@ -82,7 +91,7 @@ function validateAndFormatPhone(phone: string | null | undefined, required = fal
   return `${digits.slice(0, 4)}-${digits.slice(4)}`;
 }
 
-function mapCustomerWithStats(c: any, statsMap?: Record<string, any>) {
+function mapCustomerWithStats(c: any, statsMap?: Record<string, any>, periodActive = false) {
   const cleanPhone = c.phone ? c.phone.replace(/\D/g, '') : '';
   const isDummy = !cleanPhone || cleanPhone === '00000000000' || cleanPhone === '11111111111' || cleanPhone === '12345678901';
 
@@ -94,17 +103,19 @@ function mapCustomerWithStats(c: any, statsMap?: Record<string, any>) {
 
   const formattedPhone = formatPakistaniPhone(c.phone);
 
+  // When a period filter is active, a customer with no matching stat had zero orders in that
+  // window -- show 0, never fall back to their lifetime totals (that would misreport the period).
   return {
     ...c,
     phone: formattedPhone || c.phone,
-    totalOrders: stat ? stat.totalOrders : (c.totalOrders || 0),
-    totalSpent: stat ? Math.round(stat.totalSpent) : Number(c.totalSpent || 0),
-    outstandingDue: stat ? Math.round(stat.outstandingDue) : Number(c.outstandingDue || 0),
+    totalOrders: stat ? stat.totalOrders : (periodActive ? 0 : (c.totalOrders || 0)),
+    totalSpent: stat ? Math.round(stat.totalSpent) : (periodActive ? 0 : Number(c.totalSpent || 0)),
+    outstandingDue: stat ? Math.round(stat.outstandingDue) : (periodActive ? 0 : Number(c.outstandingDue || 0)),
   };
 }
 
 export const getCustomers = asyncHandler(async (req: Request, res: Response) => {
-  const { search, customerType, page = '1', limit = '100' } = req.query as Record<string, string>;
+  const { search, customerType, page = '1', limit = '100', from, to } = req.query as Record<string, string>;
   const skip = (Number(page) - 1) * Number(limit);
 
   const where: any = {};
@@ -118,12 +129,18 @@ export const getCustomers = asyncHandler(async (req: Request, res: Response) => 
   }
   if (customerType) where.customerType = customerType;
 
+  // Optional activity-window filter (the Dashboard's "Customer Analytics" drill-down, and
+  // Customers.tsx's own new date-range bar) -- when set, only customers with at least one order
+  // in that window are shown, and their Orders/Total Spent/Due reflect that window, not lifetime.
+  const periodActive = Boolean(from || to);
+  const range = periodActive ? parseDateRange(from, to) : null;
+
   const [data, statsMap] = await Promise.all([
     prisma.customer.findMany({
       where,
       orderBy: { name: 'asc' },
     }),
-    getCustomerStatsMap(),
+    getCustomerStatsMap(range?.gte, range?.lte),
   ]);
 
   const deduplicatedMap = new Map<string, any>();
@@ -144,11 +161,26 @@ export const getCustomers = asyncHandler(async (req: Request, res: Response) => 
     }
   }
 
-  const uniqueList = Array.from(deduplicatedMap.values());
+  let uniqueList = Array.from(deduplicatedMap.values());
+
+  if (periodActive) {
+    uniqueList = uniqueList.filter((c) => {
+      const cleanPhone = c.phone ? c.phone.replace(/\D/g, '') : '';
+      const isDummy = !cleanPhone || cleanPhone === '00000000000' || cleanPhone === '11111111111' || cleanPhone === '12345678901';
+      const stat = statsMap[`id:${c.id}`] ||
+        (!isDummy && cleanPhone.length >= 7 ? statsMap[`phone:${cleanPhone}`] : null) ||
+        statsMap[`name:${c.name.toLowerCase().trim()}`];
+      return !!stat && stat.totalOrders > 0;
+    });
+  }
+
   const total = uniqueList.length;
   const pagedList = uniqueList.slice(skip, skip + Number(limit));
 
-  return res.json(ApiResponse.paginated(pagedList.map((c) => mapCustomerWithStats(c, statsMap)), Number(page), Number(limit), total));
+  return res.json(ApiResponse.paginated(
+    pagedList.map((c) => mapCustomerWithStats(c, statsMap, periodActive)),
+    Number(page), Number(limit), total
+  ));
 });
 
 export const getCustomer = asyncHandler(async (req: Request, res: Response) => {

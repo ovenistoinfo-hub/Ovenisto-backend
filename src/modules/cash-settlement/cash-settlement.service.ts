@@ -774,6 +774,13 @@ export async function getSettlementHistory(
     page?: number;
     limit?: number;
     date?: string;
+    /** Date-range alternative to `date` (a single exact day) — added for the Dashboard's Cash
+     *  Hub Settlement Trends drill-down. Unlike `date` (naive server-local midnight, a
+     *  pre-existing quirk left as-is), this is PKT-shifted to match reports.helpers.ts's
+     *  parseDateRange convention, since CashSettlement.createdAt is a real UTC timestamp like
+     *  Order.createdAt. Takes priority over `date` when both are somehow given. */
+    from?: string;
+    to?: string;
   }
 ) {
   const page = Number(params.page) || 1;
@@ -812,7 +819,14 @@ export async function getSettlementHistory(
     where.staffRole = { equals: params.role, mode: 'insensitive' };
   }
 
-  if (params.date) {
+  if (params.from || params.to) {
+    const PKT_OFFSET_MS = 5 * 60 * 60 * 1000;
+    const startStr = params.from ?? params.to!;
+    const endStr = params.to ?? params.from!;
+    const gte = new Date(new Date(`${startStr}T00:00:00.000Z`).getTime() - PKT_OFFSET_MS);
+    const lte = new Date(new Date(`${endStr}T23:59:59.999Z`).getTime() - PKT_OFFSET_MS);
+    where.createdAt = { gte, lte };
+  } else if (params.date) {
     const startDate = new Date(params.date);
     startDate.setHours(0, 0, 0, 0);
     const endDate = new Date(params.date);

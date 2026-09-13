@@ -5,6 +5,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope, resolveCreateOutlet } from '../../middleware/outletScope.js';
 import { emitOrderEvent, emitReservationEvent } from '../../socket.js';
+import { revalidateDealLines, type IncomingOrderItem } from '../deals/deal.revalidate.js';
 
 export function mapReservation(r: any) {
   return {
@@ -200,8 +201,15 @@ export const convertReservationToOrder = asyncHandler(async (req: Request, res: 
     };
     const prismaType = typeMap[existing.orderType || 'Dine In'] || 'DINE_IN';
 
+    // A pre-order can be booked days/weeks ahead — a deal's price, config, or existence may
+    // have changed by fulfillment time, so its lines get the SAME server-side revalidation
+    // createOrder/updateOrder already run (deal.revalidate.ts's revalidateDealLines), not a
+    // blind copy of whatever the picker computed at booking time. Plain (non-deal) lines pass
+    // through unchanged. dealGroupId/dealRole are validation-only and never persisted to
+    // OrderItem (matching order.controller.ts's own convention) — only dealId/dealName/
+    // dealLineId carry through.
     const rawItems = Array.isArray(existing.preOrderItems) ? (existing.preOrderItems as any[]) : [];
-    const itemsToCreate = rawItems.map((item: any) => ({
+    const incomingItems: IncomingOrderItem[] = rawItems.map((item: any) => ({
       menuItemId: item.menuItemId || null,
       variantId: item.variantId || null,
       name: item.name || 'Custom Item',
@@ -210,6 +218,25 @@ export const convertReservationToOrder = asyncHandler(async (req: Request, res: 
       discount: item.discount ?? 0,
       modifiers: item.modifiers || [],
       notes: item.notes || null,
+      dealId: item.dealId || null,
+      dealName: item.dealName || null,
+      dealLineId: item.dealLineId || null,
+      dealGroupId: item.dealGroupId || null,
+      dealRole: item.dealRole || null,
+    }));
+    const revalidatedItems = await revalidateDealLines(tx, existing.orderType || 'Dine In', incomingItems);
+    const itemsToCreate = revalidatedItems.map((item) => ({
+      menuItemId: item.menuItemId || null,
+      variantId: item.variantId || null,
+      name: item.name || 'Custom Item',
+      price: item.price ?? 0,
+      qty: item.qty ?? 1,
+      discount: item.discount ?? 0,
+      modifiers: item.modifiers || [],
+      notes: item.notes || null,
+      dealId: item.dealId || null,
+      dealName: item.dealName || null,
+      dealLineId: item.dealLineId || null,
     }));
 
     const order = await tx.order.create({

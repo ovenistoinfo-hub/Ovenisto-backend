@@ -603,6 +603,57 @@ plus a body explaining _why_ the change was made when that is not obvious.
   between the two, not introduced here. `getWasteBreakdown` also takes optional `warehouseId`/
   `reason` (additive to the base `resolveOutletScope` filter, NOT `stock.controller.ts`'s
   role-based `applyStockScopeFilter`) so `StockAdjustments.tsx`'s own summary tiles can reuse it.
+- **Four more `/api/reports/*` endpoints completing the Dashboard's report catalog
+  (2026-09-12/13)**, each requiring its own PKT-column-shape check before writing the
+  aggregation (see this file's PKT Timezone Pattern note above):
+  - `getAttendanceAnalytics` (`/attendance`) — `AttendanceRecord.date` is a plain
+    `String "YYYY-MM-DD"` (PKT), so a direct string range comparison, no `Date` math and no PKT
+    shift at all.
+  - `getReservationAnalytics` (`/reservations`) — `Reservation.date` is a plain `@db.Date`
+    column, plain UTC-midnight boundaries, no PKT shift (like `getExpenses`/`getPurchasesBySupplier`).
+    Gained an optional `status` filter 2026-09-13 for `Reservations.tsx`'s own reuse of this same
+    endpoint (see below).
+  - `getDeliveryPerformance` (`/delivery`) — `DeliveryAssignment.assignedAt`/`deliveredAt` ARE
+    real UTC `DateTime` columns, PKT-shifted `parseDateRange`. `DeliveryAssignment` has **no
+    `outletId` column** — scope via `order: { outletId: scope }`. Population is `status:
+    'delivered'`; `returned` deliveries counted separately as a headline-only figure. Delivery
+    duration (`deliveredAt − assignedAt`) is a brand-new computation nowhere else in the app.
+  - `getCashSettlementTrends` (`/cash-settlements`) — `CashSettlement.createdAt` is a real UTC
+    `DateTime` (PKT-shifted), `CashSettlement.outletId` lives directly on the model (no join,
+    unlike `DeliveryAssignment`). Different question from `getDashboard`'s live `cashHub` field
+    (a snapshot of currently-uncleared balances via `getActiveBalances`, no `CashSettlement`
+    query) — this reports on settlements that already happened.
+  - The `cashSettlement:` socket event had **no branch at all** in the frontend's
+    `invalidateCacheForEvents` before this (not even a partial fix like the others) — fixed
+    alongside `reservation:`/`delivery:`, which had the same gap.
+- **`customer.controller.ts`'s `getCustomers` gained optional `from`/`to`** (2026-09-13) — when
+  set, `getCustomerStatsMap(gte, lte)` scopes the Orders/Total Spent/Due computation to that
+  window instead of every order ever placed, and the returned list is filtered to customers with
+  at least one order in it (`mapCustomerWithStats` gained a `periodActive` flag so a customer
+  with no matching stat shows 0, never a lifetime fallback). Added so `Customers.tsx` could get
+  real date-range filtering — see the frontend guide for the client-side duplicate-stats bug this
+  surfaced and removed.
+- **`GET /api/reports/customer-analytics`** (added 2026-09-13) — New vs Returning judged against
+  each customer's REAL first-ever order (an all-time, outlet-scoped fetch, not just the requested
+  window): an active-in-range customer whose first order predates the window is "returning", one
+  whose first order falls inside it is "new". "Who counts as a customer" mirrors
+  `getCustomerStatsMap`'s dedup key exactly (customerId > clean phone (7+ digits, no dummy
+  placeholders) > lower-cased name) — an order with no name or the literal "walk-in" is excluded,
+  same as that function.
+- **`GET /api/reports/sales-timing`** (added 2026-09-13) — promotes `getDashboard`'s old
+  fixed-window "Customer Intelligence" charts (Peak Hours: this week; Order Type Trend: this
+  week; Day-of-Week Performance: last 60 days — all still computed inside `getDashboard`, now
+  dead/unread on the frontend, deliberately left alone rather than risk touching that large
+  shared function for dead fields) into a real filterable section. Two fixes landed with the
+  promotion: (1) Peak Hours/Day-of-Week bucketing used to read `getUTCHours()`/`getUTCDay()`
+  directly off `Order.createdAt` with **no PKT shift** — the exact bug class this file's PKT
+  Timezone Pattern note warns about, just never applied to hour/weekday buckets before; fixed by
+  shifting `createdAt` +5h first. (2) "Order Type Trend" (Online/Offline) was replaced with
+  "Orders by Channel" — the same Dine In/Take Away/Delivery three-way bucketing
+  `getSalesByChannel` uses (Self-Order merged into Dine In), so this endpoint's channel language
+  matches `getSalesByChannel` instead of introducing a second taxonomy. Online/Foodpanda/Walk-in
+  orders are excluded from the channel-trend part only; Peak Hours and Day-of-Week stay
+  whole-restaurant (not channel-filtered), matching the originals' scope.
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph
