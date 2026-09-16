@@ -73,6 +73,17 @@ export interface CogsRecipe {
  * exactly what made a Self-Order (which always sends a real variantId once a size is picked) line
  * report Rs. 0 cost while a POS "Add Without Extras" line (variantId: null) for the same pizza
  * costed correctly. Missing price -> 0. No matching recipe at all -> 0.
+ *
+ * Returns the RAW (unrounded) figure -- deliberately, so a caller that sums several calls (one
+ * per order/line/channel/etc., the common pattern across this file's dozen-plus call sites)
+ * accumulates the true fractional values and rounds exactly ONCE at final output. Rounding here
+ * per-call and again at the caller's total double-rounds, and two report endpoints that group the
+ * SAME underlying orders at different granularities (e.g. Sales By Channel calling this 3x, once
+ * per channel bucket, vs Sales by Outlet calling this once per order) drift apart by a few rupees
+ * purely from where the rounding happened -- caught 2026-09-16 as a real Rs. 3 Cost/Profit
+ * mismatch between those two Dashboard sections' Total rows, which the "same order set" contract
+ * they both document says should agree exactly. Every existing caller already wraps its own final
+ * number in Math.round(); if you add a new one, do the same at the point you emit the number.
  */
 export function computeCogs(
   items: CogsItem[],
@@ -91,7 +102,7 @@ export function computeCogs(
       total += r.qtyPerUnit * item.qty * price;
     }
   }
-  return Math.round(total);
+  return total;
 }
 
 /**

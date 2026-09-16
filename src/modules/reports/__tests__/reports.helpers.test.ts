@@ -84,6 +84,18 @@ describe('computeCogs', () => {
     // base: 2 * 1 * 10 = 20 ; large extra: 1 * 1 * 20 = 20 ; total = 40
     expect(computeCogs(items, recipes, priceById)).toBe(40);
   });
+
+  it('returns the raw fractional total, NOT internally rounded', () => {
+    // Regression for the 2026-09-16 fix: computeCogs used to Math.round() its own return value,
+    // so two report endpoints that sum several calls at different groupings (once per order vs
+    // once per channel/category/staff bucket) rounded at different points and drifted apart by a
+    // few rupees on the same underlying orders. Callers now accumulate the raw total across calls
+    // and round exactly once at their own final output.
+    const items = [{ menuItemId: 'm1', variantId: null, qty: 1 }];
+    const recipes = [{ menuItemId: 'm1', variantId: null, ingredientId: 'i1', qtyPerUnit: 1 }];
+    const priceById = new Map([['i1', 10.4]]);
+    expect(computeCogs(items, recipes, priceById)).toBeCloseTo(10.4);
+  });
 });
 
 describe('splitOrderTotalByLine', () => {

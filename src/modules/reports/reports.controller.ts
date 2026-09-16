@@ -134,12 +134,13 @@ export const getPnlReport = asyncHandler(async (req: Request, res: Response) => 
 
   const expensesAreRestaurantWide = false;   // expenses are now outlet-scoped (Phase B3)
 
+  const roundedCogs = Math.round(cogs);
   res.json(
     ApiResponse.success({
       revenue: Math.round(revenue),
-      cogs,
+      cogs: roundedCogs,
       expenses: Math.round(expenses),
-      netProfit: Math.round(revenue - cogs - expenses),
+      netProfit: Math.round(revenue - roundedCogs - expenses),
       expenseByCategory,
       expensesAreRestaurantWide,
     })
@@ -714,7 +715,7 @@ export const getSalesByChannel = asyncHandler(async (req: Request, res: Response
       }))
     );
     const sale   = Math.round(bucket.reduce((s, o) => s + Number(o.total), 0));
-    const cost   = computeCogs(items, recipesForCogs, priceById);
+    const cost   = Math.round(computeCogs(items, recipesForCogs, priceById));
     const profit = sale - cost;
     return { sale, cost, profit, orders: bucket.length };
   };
@@ -1242,7 +1243,8 @@ export const getNetProfit = asyncHandler(async (req: Request, res: Response) => 
     .sort((a, b) => b.value - a.value);
 
   const rev = Math.round(revenue);
-  const grossProfit = rev - cogs;
+  const roundedCogs = Math.round(cogs);
+  const grossProfit = rev - roundedCogs;
   const netProfit = grossProfit - foodLoss - expenses;
 
   res.json(
@@ -1250,7 +1252,7 @@ export const getNetProfit = asyncHandler(async (req: Request, res: Response) => 
       from: req.query.from as string,
       to: req.query.to as string,
       revenue: rev,
-      cogs,
+      cogs: roundedCogs,
       grossProfit,
       foodLoss,
       expenses,

@@ -551,7 +551,7 @@ export const getOrders = asyncHandler(async (req: Request, res: Response) => {
       variantId: i.variantId ?? null,
       qty: i.qty,
     }));
-    const cost = computeCogs(cogsItems, recipes, priceById);
+    const cost = Math.round(computeCogs(cogsItems, recipes, priceById));
     const base = { ...out, cost, profit: Math.round(out.total - cost) };
     const active = o.items.filter((i) => i.status === 'active');
 
@@ -730,7 +730,7 @@ export const getOrdersSummary = asyncHandler(async (req: Request, res: Response)
   const cogsItems: CogsItem[] = orders.flatMap((o) =>
     o.items.map((i) => ({ menuItemId: i.menuItemId ?? '', variantId: i.variantId ?? null, qty: i.qty }))
   );
-  const cost = computeCogs(cogsItems, recipes, priceById);
+  const cost = Math.round(computeCogs(cogsItems, recipes, priceById));
   const profit = sale - cost;
   const marginPct = sale > 0 ? Math.round((profit / sale) * 100) : 0;
 
@@ -787,11 +787,35 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
     customerName, phone, customerId, type, subtotal, discount, tax, total,
     paymentMethod, tableNumber, deliveryAddress, riderId, staffName,
     items, isFutureSale, scheduledDate, scheduledTime, futureNotes, advancePayment,
-    isUrgent, customerType, orderSource, cashApproved, dealCode,
+    isUrgent, customerType, orderSource, cashApproved, dealCode, clientRequestId,
   } = req.body;
 
   if (!items?.length) throw ApiError.badRequest('Order must have at least one item');
   if (total === undefined || total === null) throw ApiError.badRequest('Total is required');
+
+  // Idempotency for the offline order queue (POS/WaiterPanel): a client that timed out waiting
+  // for a response (but whose request actually landed) will resend the identical order with the
+  // same clientRequestId. Returning the already-created row here — instead of creating a second
+  // one — is what makes that resend safe; every normal (non-queued) create sends no
+  // clientRequestId at all and skips this entirely.
+  if (clientRequestId) {
+    const existingOrder = await prisma.order.findUnique({
+      where: { clientRequestId },
+      include: {
+        items: {
+          include: {
+            menuItem: {
+              select: { category: { select: { name: true } } },
+            },
+          },
+        },
+      },
+    });
+    if (existingOrder) {
+      res.status(200).json(ApiResponse.success(mapOrderOut(existingOrder), 'Order already exists'));
+      return;
+    }
+  }
 
   const prismaType = TYPE_TO_PRISMA[type] ?? 'WALKIN';
   const prismaStatus = isFutureSale ? 'SCHEDULED' : 'PENDING';
@@ -890,6 +914,7 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
       isUrgent: isUrgent ?? false,
       customerType: customerType || null,
       orderSource: orderSource || 'pos',
+      clientRequestId: clientRequestId || null,
       ...(cashApproved !== undefined ? { cashApproved: Boolean(cashApproved) } : { cashApproved: effectiveCashApproved }),
       items: {
         create: revalidatedItems.map((item: any) => ({
