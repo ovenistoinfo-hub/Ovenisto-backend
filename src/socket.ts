@@ -172,7 +172,13 @@ export function emitCallWaiterEvent(payload: unknown, outletId: string): void {
 export type DeliveryEventType =
   | 'delivery:assigned'
   | 'delivery:status_updated'
-  | 'delivery:collected';
+  | 'delivery:collected'
+  | 'delivery:order_ready';
+
+/** Returns the Socket.IO room for a delivery rider. */
+export function riderRoom(riderId: string): string {
+  return `rider:${riderId}`;
+}
 
 /**
  * Push a delivery change to the outlet room so Delivery Management and Rider Portal update live.
@@ -185,3 +191,22 @@ export function emitDeliveryEvent(
 ): void {
   emitToOutlets(event, payload, outletIds);
 }
+
+/**
+ * Push an event to a specific rider's room.
+ * Best-effort and non-throwing — a socket failure must never break the HTTP request.
+ */
+export function emitToRider(
+  riderId: string,
+  event: string,
+  payload: unknown
+): void {
+  try {
+    const io = getIO();
+    if (!io) return;
+    io.to(riderRoom(riderId)).emit(event, payload);
+  } catch {
+    // Real-time delivery is non-critical; swallow so the API response is unaffected.
+  }
+}
+

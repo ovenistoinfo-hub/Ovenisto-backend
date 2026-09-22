@@ -40,6 +40,7 @@ import { penaltiesRouter } from '../modules/penalties/penalty.routes.js';
 import { selfOrderRouter } from '../modules/self-order/self-order.routes.js';
 import { cashSettlementRouter } from '../modules/cash-settlement/cash-settlement.routes.js';
 import { dealRouter } from '../modules/deals/deal.routes.js';
+import { notificationRouter } from '../modules/notifications/notification.routes.js';
 
 const router = Router();
 
@@ -156,6 +157,7 @@ router.use('/cash-settlements', cashSettlementRouter);
 
 // Phase 8: Delivery
 router.use('/delivery', deliveryRouter);
+router.use('/notifications', notificationRouter);
 
 // Phase 9: HR & Staff
 router.use('/attendance', attendanceRouter);

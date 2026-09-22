@@ -164,6 +164,16 @@ export function parsePaymentMethodAmounts(
   return result;
 }
 
+export function nonZeroMethods(amounts: Record<string, number>): Record<string, number> {
+  const result: Record<string, number> = {};
+  for (const [m, amt] of Object.entries(amounts)) {
+    if (amt > 0) {
+      result[m] = amt;
+    }
+  }
+  return result;
+}
+
 export function mapOrder(o: any) {
   return {
     id: o.id,
@@ -345,7 +355,12 @@ export async function getActiveBalances(outletScope: string | null) {
         // shown in Cash Hub so a mixed-role login's sales stay distinguishable, and used
         // by createSettlement to route each order to its correct settlement field
         // per-order instead of guessing once for the whole batch.
-        group.orders.push({ ...mapOrder(orderObj), staffAmount: amount, channel });
+        group.orders.push({
+          ...mapOrder(orderObj),
+          staffAmount: amount,
+          channel,
+          methods: nonZeroMethods(parsedAmounts),
+        });
       }
     }
   };

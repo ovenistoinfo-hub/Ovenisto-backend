@@ -17,6 +17,7 @@ import jwt from 'jsonwebtoken';
 import { prisma } from '../config/database.js';
 import { env } from '../config/env.js';
 import type { JwtPayload } from '../types/index.js';
+import { riderRoom } from '../socket.js';
 
 // Same mapping as authenticate.ts — room logic must compare against the same
 // role strings the rest of the app uses ('Super Admin', not 'SUPER_ADMIN').
@@ -68,6 +69,20 @@ export async function socketAuth(
       socket.join(`outlet:${user.outletId}`);
     }
     // else: no outlet, no room — receives nothing, which is correct.
+
+    if (role === 'Rider') {
+      try {
+        const rider = await prisma.deliveryRider.findUnique({
+          where: { userId: user.id },
+          select: { id: true },
+        });
+        if (rider) {
+          socket.join(riderRoom(rider.id));
+        }
+      } catch {
+        // Joining rider room is best-effort; failure must never fail authentication.
+      }
+    }
 
     next();
   } catch {

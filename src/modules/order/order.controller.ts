@@ -9,7 +9,7 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { emitOrderEvent, emitTableEvent, emitReservationEvent, emitDeliveryEvent } from '../../socket.js';
+import { emitOrderEvent, emitTableEvent, emitReservationEvent, emitDeliveryEvent, emitToRider } from '../../socket.js';
 import { fifoDrawdown } from '../stock/dough.helpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
@@ -17,6 +17,7 @@ import { emitSelfOrderEventForOrder } from '../self-order/self-order.socket.js';
 import { revalidateDealLines, resolveOrderDiscount, withDealItemKeys } from '../deals/deal.revalidate.js';
 import { round2 } from '../deals/deal.pricing.js';
 import { computeCogs, splitOrderTotalByLine, orderUsedPaymentMethod, type CogsItem, type CogsRecipe } from '../reports/reports.helpers.js';
+import { sendPushToUser } from '../notifications/push.service.js';
 
 // ── Enum conversion helpers ──
 
@@ -1502,6 +1503,45 @@ export async function runOrderStatusPostEffects(
 ): Promise<any> {
   const statusUpdated = mapOrderOut(order);
 
+  if (newPrismaStatus === 'READY') {
+    try {
+      const activeAssignments = await prismaClient.deliveryAssignment.findMany({
+        where: {
+          orderId: order.id,
+          status: { in: ['pending', 'accepted'] },
+        },
+        select: {
+          id: true,
+          riderId: true,
+          rider: { select: { userId: true } },
+        },
+      });
+      for (const a of activeAssignments) {
+        emitToRider(a.riderId, 'delivery:order_ready', {
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          assignmentId: a.id,
+          riderId: a.riderId,
+          outletId: order.outletId,
+          status: 'ready',
+        });
+        if (a.rider?.userId) {
+          sendPushToUser(a.rider.userId, {
+            title: 'Order Ready',
+            body: `Order ${order.orderNumber} is ready for pickup`,
+            data: {
+              orderId: order.id,
+              assignmentId: a.id,
+              type: 'order_ready',
+            },
+          });
+        }
+      }
+    } catch {
+      // Best-effort non-throwing
+    }
+  }
+
   if (newPrismaStatus === 'COMPLETED') {
     const updatedReservations = await prismaClient.reservation.findMany({
       where: {
@@ -2263,6 +2303,43 @@ export const deleteKitchen = asyncHandler(async (req: Request, res: Response) =>
     });
     emitOrderEvent('order:updated', mapOrderOut(updated));
     promoted.push(o.orderNumber);
+
+    try {
+      const activeAssignments = await prisma.deliveryAssignment.findMany({
+        where: {
+          orderId: o.id,
+          status: { in: ['pending', 'accepted'] },
+        },
+        select: {
+          id: true,
+          riderId: true,
+          rider: { select: { userId: true } },
+        },
+      });
+      for (const a of activeAssignments) {
+        emitToRider(a.riderId, 'delivery:order_ready', {
+          orderId: o.id,
+          orderNumber: o.orderNumber,
+          assignmentId: a.id,
+          riderId: a.riderId,
+          outletId: o.outletId,
+          status: 'ready',
+        });
+        if (a.rider?.userId) {
+          sendPushToUser(a.rider.userId, {
+            title: 'Order Ready',
+            body: `Order ${o.orderNumber} is ready for pickup`,
+            data: {
+              orderId: o.id,
+              assignmentId: a.id,
+              type: 'order_ready',
+            },
+          });
+        }
+      }
+    } catch {
+      // Best-effort non-throwing
+    }
   }
 
   res.json(ApiResponse.success(

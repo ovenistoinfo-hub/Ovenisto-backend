@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveEventRooms } from '../socket.js';
+import { resolveEventRooms, riderRoom } from '../socket.js';
 
 describe('resolveEventRooms', () => {
   it('two distinct outlets → both rooms + super-admin', () => {
@@ -34,3 +34,10 @@ describe('resolveEventRooms', () => {
     expect(resolveEventRooms([])).toEqual(['super-admin']);
   });
 });
+
+describe('riderRoom', () => {
+  it('returns rider:<riderId>', () => {
+    expect(riderRoom('r-123')).toBe('rider:r-123');
+  });
+});
+

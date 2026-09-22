@@ -197,7 +197,7 @@ plus a body explaining _why_ the change was made when that is not obvious.
 - **`ApiError` style is per-file, not global.** Some controllers use the constructor
   `throw new ApiError('msg', 404)`; others use statics `ApiError.notFound('msg')`. Match whatever the
   file you're editing already uses — don't introduce the other style.
-- **`vitest` covers 11 `*.test.ts` files (growing)**, all colocated in a module's `__tests__/` dir,
+- **`vitest` covers 19 `*.test.ts` files (growing)**, all colocated in a module's `__tests__/` dir,
   all pure-logic unit tests against exported helpers with mocked `Request` objects — never a real
   DB/Prisma call or an actual Express handler invocation. A file named `*.controller.test.ts` can
   still just be testing one pure exported helper, not real controller/integration/DB testing —
@@ -654,6 +654,38 @@ plus a body explaining _why_ the change was made when that is not obvious.
   matches `getSalesByChannel` instead of introducing a second taxonomy. Online/Foodpanda/Walk-in
   orders are excluded from the channel-trend part only; Peak Hours and Day-of-Week stay
   whole-restaurant (not channel-filtered), matching the originals' scope.
+- **Rider dispatch gate & delivery status guards (2026-09-20)**:
+  - **Rules module (`delivery.rules.ts`)**: pure, unit-tested helpers `normalizeOrderStatus` (lowercase), `isOrderReadyForDispatch` (true only for `ready` | `completed`), `canDispatch` (`accepted` assignment AND ready/completed order), `RIDER_TRANSITIONS` (`pending -> accepted`, `accepted -> dispatched`, `dispatched -> delivered`, `dispatched -> returned`), and `isRiderTransitionAllowed`.
+  - **Server guards in `updateAssignmentStatus`**:
+    - *Idempotency*: if requested `status === assignment.status`, returns the current mapped assignment (200) with no side effects (prevents double-decrement of `activeDeliveries` on double-tap/retry).
+    - *Ownership*: for role `Rider`, requires `assignment.rider.userId === req.user.id` else `403 Forbidden`.
+    - *Rider transitions*: for role `Rider`, enforces `isRiderTransitionAllowed` else `400 Bad Request`. Manager roles stay permissive.
+    - *Kitchen gate (409 Conflict)*: for ALL roles on `status === 'dispatched'`, requires assignment is `accepted` and order is `READY`/`COMPLETED` (or throws `409 'Order was cancelled'` / `'Order is not ready yet - the kitchen is still preparing it'`). Uses an interactive `prisma.$transaction` with `SELECT 1 FROM "orders" WHERE id = ${orderId} FOR UPDATE` to lock and re-verify race-free, writing `status: 'dispatched'` and `dispatchedAt: new Date()`.
+  - **Schema**: `dispatchedAt DateTime?` added to `DeliveryAssignment`.
+  - **Rider room & ready event**: `riderRoom(riderId)` (`rider:<id>`), `emitToRider(riderId, event, payload)`. Rider sockets join `rider:<id>` during `socketAuth`. Transitioning an order into `READY` (`runOrderStatusPostEffects`, `deleteKitchen` promotion) queries active `pending`/`accepted` assignments and emits `delivery:order_ready` to the assigned rider. `assignRider` includes `orderStatus` in `delivery:assigned`.
+  - **Enriched `GET /delivery/my-assignments`**: adds `orderStatus` (lowercase), `canDispatch` (boolean), `items[]` (`{ name, qty, notes }` of active items), and selects `subtotal`/`tax`/`discount` on order so `mapAssignment` returns real numbers instead of fake 0s.
+- **FCM push notifications & device token registration (2026-09-20)**:
+  - **`notifications` module**: `push.service.ts` singleton lazy-initializes `firebase-admin` via modular SDK (`firebase-admin/app`, `firebase-admin/messaging`). Best-effort non-throwing `sendPushToUser(userId, payload)` queries registered device tokens, uses `sendEachForMulticast`, and self-cleans stale/invalid tokens (`messaging/registration-token-not-registered`, `messaging/invalid-registration-token`). Fails soft with a single warning if Firebase credentials are unset.
+  - **Endpoints**: `POST /api/notifications/device-token` (upserts token keyed by token string, stamps `userId = req.user.id`, captures optional `platform`), `DELETE /api/notifications/device-token` (scoped to `userId: req.user.id`, deletes specified token). Both require `authenticate`.
+  - **Schema**: `DeviceToken` model (`id`, `userId` FK User cascade delete, `token` @unique, `platform`, timestamps, `@@index([userId])`).
+  - **Delivery triggers wired**:
+    - *New assignment*: `delivery.controller.ts` (`assignRider`) sends push `"New Delivery Assigned"` to `rider.userId`.
+    - *Order ready for pickup*: `order.controller.ts` (`runOrderStatusPostEffects` and `deleteKitchen` promotion) queries active assignments on the order and sends push `title: 'Order Ready', body: 'Order <orderNumber> is ready for pickup'` to `assignment.rider.userId`.
+- **Rider self-service read APIs & wallet fix (2026-09-20)**:
+  - **Endpoints (all `authenticate, authorize(riderRoles)`)**:
+    - `GET /api/delivery/my-profile`: returns `{ ...mapRider(profile), user: { id, name, email, phone, outlet: { id, name } } }`.
+    - `PATCH /api/delivery/my-status`: body `{ isAvailable: boolean }`. If current `status === 'on_delivery'`, rejects with `400 'Cannot go offline while on an active delivery'`. Otherwise updates `isAvailable` and `status: isAvailable ? 'available' : 'offline'`, returning `mapRider`.
+    - `GET /api/delivery/my-history`: paginated (`page`, `limit` capped at 100) `DeliveryAssignment` rows with `status: { in: ['delivered', 'returned'] }` for caller's riderId, newest first (`assignedAt: desc`), mapped via `mapAssignment`. Optional `from`/`to` filtered on `deliveredAt` (fallback `assignedAt` if `deliveredAt` is null). Returns `ApiResponse.paginated`.
+    - `GET /api/delivery/my-earnings`: query `from`/`to` (defaults to current PKT week Monday to today via `getDefaultWeekRange`). Returns `totalOrders`, `totalSales`, `totalCommissions`, and `breakdown` array with `{ date, orders, sales, commissions }` across the range (zero-filled for days with no activity).
+    - `GET /api/delivery/rankings`: leaderboard visible to all outlet riders (scoped via `resolveOutletScope`). Query `from`/`to` (defaults to current PKT week). For all active riders in scope, counts deliveries and sums `commissionEarned`, sorted by total commission descending. Zero-activity riders are included with 0s.
+  - **Wallet fix on `GET /api/delivery/my-stats`**: removed buggy `pendingCash` field which previously looked only at today's deliveries, silently hiding uncleared cash from previous days. Pointed readers to canonical endpoint `GET /api/cash-settlements/staff/:staffId/active` with `staffId = req.user.id`.
+
+## Step 7 Additions (Rider App: Wallet, Earnings, History, Profile)
+- **Leaderboard, history filters & wallet method fields (Step 7, 2026-09-21)**:
+  - `GET /api/delivery/rankings` returns `[{ riderId, name, deliveries, rank, isMe, commissionEarned? }]`, built by pure `rankRiders(rows, callerRiderId, includeAllCommission)` in `src/modules/delivery/delivery.helpers.ts`: sorted by deliveries desc then name asc, with **competition ranking** (ties share a rank and the next rank skips: 1, 2, 2, 4). Privacy: `commissionEarned` is present only on the caller's own row, or on every row when the caller is Super Admin/Admin/Manager; other riders' rows omit the field entirely. Riders with zero deliveries are included. No web client consumes this endpoint.
+  - `GET /api/delivery/my-history` gained `status` (`delivered` | `returned`; any other value returns 400) and `q` (case-insensitive "contains" match on the **order number only**), AND-composed with the existing `from`/`to` clause. `mapAssignment` now adds `paymentLabel` to every assignment it returns (my-assignments and status-update responses too), derived by pure `deriveHistoryPaymentLabel(status, paymentMethod)`: returned / empty / `Pending` / `Unpaid` give `null`; `COD Balance (X)` gives `X`; `Advance (X)` with no COD part gives `X`; a split such as `Cash: Rs.900, JazzCash: Rs.779` gives `Cash + JazzCash`; a plain method name is returned unchanged. Clients must never parse `COD Balance (...)` strings themselves.
+  - Cash Hub / wallet: every order inside a `getActiveBalances` staff group (so also `GET /cash-settlements/staff/:staffId/active`) now carries `methods`, a `{ method: amount }` map of the non-zero methods that make up that staff member's portion, produced by exported pure `nonZeroMethods(parsedAmounts)` in `cash-settlement.service.ts`. The group-level `byMethod` is unchanged (still zero-filled from `Settings.paymentMethods`).
+
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph

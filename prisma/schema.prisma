@@ -123,6 +123,7 @@ model User {
   purchasePayments          PurchasePayment[]
   staffSettlements          CashSettlement[]           @relation("StaffSettlements")
   managerSettlements        CashSettlement[]           @relation("ManagerApprovedSettlements")
+  deviceTokens              DeviceToken[]
 
   @@map("users")
 }
@@ -1301,6 +1302,7 @@ model DeliveryAssignment {
   status          String    @default("pending") @db.VarChar(20) // pending, accepted, dispatched, delivered, returned
   assignedAt      DateTime  @default(now())
   acceptedAt      DateTime?
+  dispatchedAt    DateTime?
   deliveredAt     DateTime?
   estimatedTime   Int? // minutes
   customerAddress String?
@@ -1321,6 +1323,20 @@ model DeliveryAssignment {
   @@index([orderId])
   @@index([status])
   @@map("delivery_assignments")
+}
+
+model DeviceToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  platform  String   @default("android") @db.VarChar(20)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("device_tokens")
 }
 
 // =============================================
