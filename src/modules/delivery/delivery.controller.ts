@@ -404,27 +404,52 @@ export const getMyEarnings = asyncHandler(async (req: Request, res: Response) =>
   }
   const { gte, lte } = parseDateRange(from, to);
 
-  const assignments = await prisma.deliveryAssignment.findMany({
-    where: {
-      riderId: riderProfile.id,
-      status: 'delivered',
-      deliveredAt: { gte, lte },
-    },
-    select: {
-      deliveredAt: true,
-      commissionEarned: true,
-      order: { select: { total: true } },
-    },
-    orderBy: { deliveredAt: 'asc' },
-  });
+  const [assignments, employee] = await Promise.all([
+    prisma.deliveryAssignment.findMany({
+      where: {
+        riderId: riderProfile.id,
+        status: 'delivered',
+        deliveredAt: { gte, lte },
+      },
+      select: {
+        deliveredAt: true,
+        commissionEarned: true,
+        order: { select: { total: true } },
+      },
+      orderBy: { deliveredAt: 'asc' },
+    }),
+    prisma.employee.findUnique({
+      where: { userId: req.user!.id },
+      select: {
+        rate: true,
+        rateType: true,
+        payFrequency: true,
+        commissionPerDelivery: true,
+        dutyType: true,
+        designation: true,
+      },
+    }),
+  ]);
 
   const result = groupDeliveriesByDay(assignments, from, to);
+
+  const compensation = employee
+    ? {
+        rate: Number(employee.rate ?? 0),
+        rateType: employee.rateType,
+        payFrequency: employee.payFrequency || employee.rateType,
+        commissionPerDelivery: Number(employee.commissionPerDelivery ?? 0),
+        dutyType: employee.dutyType || null,
+        designation: employee.designation || null,
+      }
+    : null;
 
   res.json(
     ApiResponse.success({
       from,
       to,
       ...result,
+      compensation,
     })
   );
 });
