@@ -5,7 +5,7 @@ import {
   getRiders, createRider, updateRider,
   getAssignments, getMyAssignments, getMyStats,
   getMyProfile, updateMyStatus, getMyHistory, getMyEarnings, getRiderRankings,
-  assignRider, updateAssignmentStatus,
+  assignRider, updateAssignmentStatus, claimOrder,
   getRiderStats, getDeliveryDashboard,
 } from './delivery.controller.js';
 
@@ -29,9 +29,10 @@ deliveryRouter.get   ('/my-history',     authenticate, authorize(riderRoles),   
 deliveryRouter.get   ('/my-earnings',    authenticate, authorize(riderRoles),   getMyEarnings);
 deliveryRouter.get   ('/rankings',       authenticate, authorize(riderRoles),   getRiderRankings);
 
-// Assignments
+// Assignments & Claiming
 deliveryRouter.get   ('/assignments',             authenticate, authorize(managerRoles), getAssignments);
 deliveryRouter.post  ('/assign',                  authenticate, authorize(riderRoles),   assignRider);
+deliveryRouter.post  ('/claim',                   authenticate, authorize(riderRoles),   claimOrder);
 deliveryRouter.put   ('/assignments/:id/status',  authenticate, authorize(riderRoles),   updateAssignmentStatus);
 
 // Dashboard

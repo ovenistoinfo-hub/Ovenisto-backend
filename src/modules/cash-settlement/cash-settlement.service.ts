@@ -174,6 +174,25 @@ export function nonZeroMethods(amounts: Record<string, number>): Record<string, 
   return result;
 }
 
+// Shared select shape for a settlement's linked orders, reused across all
+// three settlement FK relations (orders / cashierOrders / riderOrders) so a
+// settlement-detail breakdown looks the same regardless of which FK an
+// order was actually settled through.
+const SETTLEMENT_ORDER_SELECT = {
+  id: true,
+  orderNumber: true,
+  customerName: true,
+  total: true,
+  subtotal: true,
+  tax: true,
+  discount: true,
+  paymentMethod: true,
+  status: true,
+  type: true,
+  createdAt: true,
+  outletId: true,
+} as const;
+
 export function mapOrder(o: any) {
   return {
     id: o.id,
@@ -191,6 +210,26 @@ export function mapOrder(o: any) {
     staffId: o.staffId,
     riderId: o.riderId,
   };
+}
+
+// Merges a settlement's three possible order relations (see
+// SETTLEMENT_ORDER_SELECT above) into one flat, order-count-correct list —
+// an order is only ever linked via exactly one of the three FKs, so no
+// dedup is needed.
+function settlementOrders(s: any) {
+  if (s.orders == null && s.cashierOrders == null && s.riderOrders == null) {
+    return undefined;
+  }
+  return [
+    ...(s.orders ?? []),
+    ...(s.cashierOrders ?? []),
+    ...(s.riderOrders ?? []),
+  ].map(mapOrder);
+}
+
+function settlementOrderCount(s: any) {
+  const merged = settlementOrders(s);
+  return merged ? merged.length : undefined;
 }
 
 export function mapSettlement(s: any) {
@@ -215,8 +254,8 @@ export function mapSettlement(s: any) {
     paymentBreakdown: s.paymentBreakdown ?? null,
     notes: s.notes ?? null,
     createdAt: s.createdAt,
-    orderCount: s.orders ? s.orders.length : undefined,
-    orders: s.orders ? s.orders.map(mapOrder) : undefined,
+    orderCount: settlementOrderCount(s),
+    orders: settlementOrders(s),
     staff: s.staff ? { id: s.staff.id, name: s.staff.name, role: s.staff.role } : undefined,
     settledBy: s.settledBy ? { id: s.settledBy.id, name: s.settledBy.name, role: s.settledBy.role } : undefined,
   };
@@ -856,22 +895,14 @@ export async function getSettlementHistory(
       take: limit,
       orderBy: { createdAt: 'desc' },
       include: {
-        orders: {
-          select: {
-            id: true,
-            orderNumber: true,
-            customerName: true,
-            total: true,
-            subtotal: true,
-            tax: true,
-            discount: true,
-            paymentMethod: true,
-            status: true,
-            type: true,
-            createdAt: true,
-            outletId: true,
-          },
-        },
+        // A settlement's orders can be linked via any of three FKs depending
+        // on which portion it settled (see the Cash Hub "three settlement
+        // FKs" contract) — all three must be fetched or a rider's COD
+        // settlement / a cashier's advance settlement shows an empty
+        // breakdown even though real orders are linked.
+        orders: { select: SETTLEMENT_ORDER_SELECT },
+        cashierOrders: { select: SETTLEMENT_ORDER_SELECT },
+        riderOrders: { select: SETTLEMENT_ORDER_SELECT },
         staff: { select: { id: true, name: true, role: true } },
         settledBy: { select: { id: true, name: true, role: true } },
       },

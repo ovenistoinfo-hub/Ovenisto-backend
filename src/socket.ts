@@ -171,6 +171,7 @@ export function emitCallWaiterEvent(payload: unknown, outletId: string): void {
 
 export type DeliveryEventType =
   | 'delivery:assigned'
+  | 'delivery:unassigned'
   | 'delivery:status_updated'
   | 'delivery:collected'
   | 'delivery:order_ready';

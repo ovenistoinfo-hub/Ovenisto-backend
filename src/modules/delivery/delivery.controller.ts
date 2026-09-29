@@ -36,6 +36,7 @@ function mapAssignment(a: any) {
     name: i.name,
     qty: Number(i.qty),
     notes: i.notes ?? null,
+    cookingTime: i.cookingTime ?? null,
   })) : [];
   const paymentLabel = deriveHistoryPaymentLabel(a.status, a.order?.paymentMethod);
 
@@ -57,6 +58,70 @@ function mapAssignment(a: any) {
       advancePayment: Number(a.order.advancePayment ?? 0),
     } : undefined,
     rider: a.rider ? mapRider(a.rider) : undefined,
+  };
+}
+
+export function computeOrderAmountToCollect(order: any): number {
+  const pm = (order.paymentMethod || '').trim();
+  const pmLower = pm.toLowerCase();
+  const isCOD = pmLower === 'cash on delivery' || pmLower === 'cod' || pmLower === 'cash-on-delivery';
+  const advance = Number(order.advancePayment ?? 0);
+  const orderTotal = Number(order.total);
+  const isPrepaid = (advance > 0 && advance >= orderTotal) || (!isCOD && !pm.includes('Advance (') && !pm.includes('COD Balance (') && pmLower !== 'pending' && pmLower !== 'unpaid' && pm !== '');
+
+  if (isPrepaid) return 0;
+  if (isCOD) return orderTotal;
+  return Math.max(0, orderTotal - advance);
+}
+
+function mapUnassignedDeliveryOrder(order: any, riderProfile: any) {
+  const amountToCollect = computeOrderAmountToCollect(order);
+  const items = order.items ? order.items.map((i: any) => ({
+    name: i.name,
+    qty: Number(i.qty),
+    notes: i.notes ?? null,
+    cookingTime: i.cookingTime ?? null,
+  })) : [];
+  const paymentLabel = deriveHistoryPaymentLabel('pending', order.paymentMethod);
+
+  return {
+    id: `unassigned:${order.id}`,
+    orderId: order.id,
+    riderId: '',
+    status: 'pending',
+    assignedAt: order.createdAt,
+    acceptedAt: null,
+    dispatchedAt: null,
+    deliveredAt: null,
+    estimatedTime: 30,
+    customerAddress: order.deliveryAddress || '',
+    customerPhone: order.phone || '',
+    notes: null,
+    amountToCollect,
+    commissionRate: 0,
+    commissionEarned: 0,
+    paymentLabel,
+    orderStatus: normalizeOrderStatus(order.status),
+    canDispatch: false,
+    items,
+    order: {
+      id: order.id,
+      orderNumber: order.orderNumber,
+      total: Number(order.total ?? 0),
+      subtotal: Number(order.subtotal ?? 0),
+      tax: Number(order.tax ?? 0),
+      discount: Number(order.discount ?? 0),
+      advancePayment: Number(order.advancePayment ?? 0),
+      paymentMethod: order.paymentMethod,
+      status: order.status,
+      updatedAt: order.updatedAt,
+      customerName: order.customerName,
+      deliveryAddress: order.deliveryAddress,
+      phone: order.phone,
+      type: order.type,
+      tableNumber: order.tableNumber,
+    },
+    rider: mapRider(riderProfile),
   };
 }
 
@@ -156,44 +221,84 @@ export const getAssignments = asyncHandler(async (req: Request, res: Response) =
   res.json(ApiResponse.success(assignments.map(mapAssignment)));
 });
 
-/** GET /api/delivery/my-assignments — rider fetches their own (uses req.user) */
+/** GET /api/delivery/my-assignments — rider fetches their own and available unassigned delivery orders */
 export const getMyAssignments = asyncHandler(async (req: Request, res: Response) => {
-  const riderProfile = await prisma.deliveryRider.findUnique({ where: { userId: req.user!.id } });
+  const riderProfile = await prisma.deliveryRider.findUnique({
+    where: { userId: req.user!.id },
+    include: { user: { select: { outletId: true } } },
+  });
   if (!riderProfile) throw ApiError.notFound('No rider profile linked to your account. Ask admin to link your profile.');
 
-  const assignments = await prisma.deliveryAssignment.findMany({
-    where: {
-      riderId: riderProfile.id,
-      status: { in: ['pending', 'accepted', 'dispatched'] },
-      order: { status: { not: 'CANCELLED' } },
-    },
-    include: {
-      order: {
-        select: {
-          id: true,
-          orderNumber: true,
-          total: true,
-          subtotal: true,
-          tax: true,
-          discount: true,
-          advancePayment: true,
-          paymentMethod: true,
-          status: true,
-          customerName: true,
-          deliveryAddress: true,
-          phone: true,
-          type: true,
-          tableNumber: true,
-          items: {
-            where: { status: 'active' },
-            select: { name: true, qty: true, notes: true },
+  const scope = riderProfile.user?.outletId;
+  const isOnline = riderProfile.isAvailable && riderProfile.status !== 'offline';
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const [assignments, unassignedOrders] = await Promise.all([
+    prisma.deliveryAssignment.findMany({
+      where: {
+        riderId: riderProfile.id,
+        status: { in: ['pending', 'accepted', 'dispatched'] },
+        order: { status: { not: 'CANCELLED' } },
+      },
+      include: {
+        order: {
+          select: {
+            id: true,
+            orderNumber: true,
+            total: true,
+            subtotal: true,
+            tax: true,
+            discount: true,
+            advancePayment: true,
+            paymentMethod: true,
+            status: true,
+            updatedAt: true,
+            customerName: true,
+            deliveryAddress: true,
+            phone: true,
+            type: true,
+            tableNumber: true,
+            items: {
+              where: { status: 'active' },
+              select: { name: true, qty: true, notes: true, cookingTime: true },
+            },
           },
         },
       },
-    },
-    orderBy: { assignedAt: 'desc' },
-  });
-  res.json(ApiResponse.success({ rider: mapRider(riderProfile), assignments: assignments.map(mapAssignment) }));
+      orderBy: { assignedAt: 'desc' },
+    }),
+    scope && isOnline
+      ? prisma.order.findMany({
+          where: {
+            outletId: scope,
+            type: 'DELIVERY',
+            riderId: null,
+            status: { notIn: ['CANCELLED', 'COMPLETED'] },
+            isFutureSale: false,
+            createdAt: { gte: today },
+            deliveries: { none: { status: { notIn: ['returned'] } } },
+          },
+          include: {
+            items: {
+              where: { status: 'active' },
+              select: { name: true, qty: true, notes: true, cookingTime: true },
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+        })
+      : [],
+  ]);
+
+  const mappedUnassigned = unassignedOrders.map((o) => mapUnassignedDeliveryOrder(o, riderProfile));
+  const combined = [...assignments.map(mapAssignment), ...mappedUnassigned];
+
+  res.json(ApiResponse.success({
+    rider: mapRider(riderProfile),
+    assignments: combined,
+    availableOrders: mappedUnassigned,
+  }));
 });
 
 /** GET /api/delivery/my-stats — rider's earnings summary */
@@ -552,27 +657,18 @@ export const assignRider = asyncHandler(async (req: Request, res: Response) => {
   if (existing) throw ApiError.badRequest('Order already has an active assignment');
 
   const nextActiveCount = (rider.activeDeliveries || 0) + 1;
+  const initialStatus = (req.user?.role === 'Rider' as any || req.body.status === 'accepted') ? 'accepted' : 'pending';
 
   const [assignment] = await prisma.$transaction([
     prisma.deliveryAssignment.create({
       data: {
         orderId, riderId,
-        status: 'pending',
+        status: initialStatus,
+        acceptedAt: initialStatus === 'accepted' ? new Date() : null,
         estimatedTime:   estimatedTime || 30,
         customerAddress: order.deliveryAddress || '',
         customerPhone:   order.phone || '',
-        amountToCollect: (() => {
-          const pm = (order.paymentMethod || '').trim();
-          const pmLower = pm.toLowerCase();
-          const isCOD = pmLower === 'cash on delivery' || pmLower === 'cod' || pmLower === 'cash-on-delivery';
-          const advance = Number(order.advancePayment ?? 0);
-          const orderTotal = Number(order.total);
-          const isPrepaid = (advance > 0 && advance >= orderTotal) || (!isCOD && !pm.includes('Advance (') && !pm.includes('COD Balance (') && pmLower !== 'pending' && pmLower !== 'unpaid' && pm !== '');
-
-          if (isPrepaid) return 0;
-          if (isCOD) return orderTotal;
-          return Math.max(0, orderTotal - advance);
-        })(),
+        amountToCollect: computeOrderAmountToCollect(order),
         notes: notes || null,
       },
       include: { order: { select: { id: true, orderNumber: true, total: true, customerName: true, deliveryAddress: true, type: true, tableNumber: true, status: true } }, rider: true },
@@ -613,10 +709,121 @@ export const assignRider = asyncHandler(async (req: Request, res: Response) => {
   res.status(201).json(ApiResponse.created(mapAssignment(assignment), 'Rider assigned'));
 });
 
+async function handleClaimOrder(req: Request, res: Response) {
+  const { orderId, estimatedTime } = req.body;
+  if (!orderId) throw ApiError.badRequest('orderId is required');
+
+  const riderProfile = await prisma.deliveryRider.findUnique({
+    where: { userId: req.user!.id },
+    include: { user: { select: { outletId: true } } },
+  });
+  if (!riderProfile) throw ApiError.notFound('No rider profile linked to your account');
+  if (riderProfile.status === 'off_duty' || riderProfile.status === 'offline') {
+    throw ApiError.badRequest('You are currently offline or off duty. Go online to claim orders.');
+  }
+  if ((riderProfile.activeDeliveries || 0) >= 5) {
+    throw ApiError.badRequest('You have reached the maximum active delivery limit (5 orders)');
+  }
+
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    include: {
+      items: {
+        where: { status: 'active' },
+        select: { name: true, qty: true, notes: true, cookingTime: true },
+      },
+    },
+  });
+  if (!order) throw ApiError.notFound('Order not found');
+  if (order.status === 'CANCELLED' as any || order.status === 'COMPLETED' as any) {
+    throw ApiError.badRequest('This order is no longer available');
+  }
+
+  const scope = riderProfile.user?.outletId;
+  if (scope && order.outletId !== scope) throw ApiError.badRequest('Order is not in your outlet');
+
+  const existing = await prisma.deliveryAssignment.findFirst({
+    where: { orderId, status: { notIn: ['returned'] } },
+  });
+  if (existing) throw ApiError.badRequest('Order has already been claimed by another rider');
+
+  const nextActiveCount = (riderProfile.activeDeliveries || 0) + 1;
+  const amountToCollect = computeOrderAmountToCollect(order);
+
+  const [assignment] = await prisma.$transaction([
+    prisma.deliveryAssignment.create({
+      data: {
+        orderId,
+        riderId: riderProfile.id,
+        status: 'accepted',
+        acceptedAt: new Date(),
+        estimatedTime: estimatedTime || 30,
+        customerAddress: order.deliveryAddress || '',
+        customerPhone: order.phone || '',
+        amountToCollect,
+      },
+      include: {
+        order: {
+          select: {
+            id: true,
+            orderNumber: true,
+            total: true,
+            subtotal: true,
+            tax: true,
+            discount: true,
+            advancePayment: true,
+            paymentMethod: true,
+            status: true,
+            updatedAt: true,
+            customerName: true,
+            deliveryAddress: true,
+            phone: true,
+            type: true,
+            tableNumber: true,
+            items: {
+              where: { status: 'active' },
+              select: { name: true, qty: true, notes: true, cookingTime: true },
+            },
+          },
+        },
+        rider: true,
+      },
+    }),
+    prisma.deliveryRider.update({
+      where: { id: riderProfile.id },
+      data: {
+        activeDeliveries: { increment: 1 },
+        isAvailable: nextActiveCount < 5,
+        status: 'on_delivery',
+      },
+    }),
+    prisma.order.update({ where: { id: orderId }, data: { riderId: riderProfile.id } }),
+  ]);
+
+  emitDeliveryEvent('delivery:assigned', {
+    assignmentId: assignment.id,
+    orderId,
+    riderId: riderProfile.id,
+    orderNumber: order.orderNumber,
+    outletId: order.outletId,
+    orderStatus: normalizeOrderStatus(order.status),
+  }, [order.outletId]);
+
+  res.status(201).json(ApiResponse.created(mapAssignment(assignment), 'Order claimed and accepted'));
+}
+
+/** POST /api/delivery/claim — rider claims an unassigned delivery order */
+export const claimOrder = asyncHandler(handleClaimOrder);
+
 /** PUT /api/delivery/assignments/:id/status */
 export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   const { status, paymentMethod } = req.body;
+
+  if (id.startsWith('unassigned:')) {
+    req.body.orderId = id.replace('unassigned:', '');
+    return handleClaimOrder(req, res);
+  }
 
   const allowed = ['accepted', 'dispatched', 'delivered', 'returned'];
   if (!allowed.includes(status)) throw ApiError.badRequest(`Status must be one of: ${allowed.join(', ')}`);

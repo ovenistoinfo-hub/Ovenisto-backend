@@ -960,6 +960,16 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
     await updateTableStatusForOrder(prisma, order.outletId, order.tableNumber, req.user);
   }
   emitOrderEvent('order:created', created);
+  if (order.type === 'DELIVERY' && !order.riderId) {
+    emitDeliveryEvent('delivery:unassigned', {
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      outletId: order.outletId,
+      total: Number(order.total),
+      customerName: order.customerName,
+      deliveryAddress: order.deliveryAddress,
+    }, [order.outletId]);
+  }
   res.status(201).json(ApiResponse.created(created, 'Order created'));
 });
 
