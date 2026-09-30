@@ -1,6 +1,7 @@
 /**
  * Settings Routes
  * GET    /api/settings - Get settings
+ * GET    /api/settings/mine - Get caller's settings
  * PUT    /api/settings - Update settings (Admin+)
  */
 
@@ -8,13 +9,16 @@ import { Router } from 'express';
 import { authenticate } from '../../middleware/authenticate.js';
 import { authorize } from '../../middleware/authorize.js';
 import { validateRequest } from '../../middleware/validateRequest.js';
-import { getSettings, updateSettings } from './settings.controller.js';
+import { getSettings, getMySettings, updateSettings } from './settings.controller.js';
 import { updateSettingsSchema } from './settings.schema.js';
 
 const router = Router();
 
 // Retrieve settings — public (currency, tax rate, restaurant name are not sensitive)
 router.get('/', getSettings);
+
+// Retrieve caller's specific settings
+router.get('/mine', authenticate, getMySettings);
 
 // Update settings (Admin/Super Admin only)
 router.put(

@@ -35,27 +35,39 @@ export const getSettings = asyncHandler(async (req: Request, res: Response) => {
   res.json(ApiResponse.success({ ...settings, taxRate: Number(settings.taxRate) }));
 });
 
+async function findCallerSettings(req: Request) {
+  const userOutletId = (req as any).user?.outletId;
+  if (userOutletId) {
+    const settings = await prisma.settings.findFirst({
+      where: { outletId: userOutletId },
+    });
+    if (!settings) {
+      throw ApiError.notFound('Settings for your branch are not set up yet');
+    }
+    return settings;
+  }
+  const settings = await prisma.settings.findFirst();
+  if (!settings) {
+    throw ApiError.notFound('Restaurant settings not found');
+  }
+  return settings;
+}
+
+/**
+ * GET /api/settings/mine
+ * Fetch caller's specific settings without falling back to another branch
+ */
+export const getMySettings = asyncHandler(async (req: Request, res: Response) => {
+  const settings = await findCallerSettings(req);
+  res.json(ApiResponse.success({ ...settings, taxRate: Number(settings.taxRate) }));
+});
+
 /**
  * PUT /api/settings
  * Update existing settings
  */
 export const updateSettings = asyncHandler(async (req: Request, res: Response) => {
-  const userOutletId = (req as any).user?.outletId;
-  
-  let existingSettings;
-  if (userOutletId) {
-    existingSettings = await prisma.settings.findFirst({
-      where: { outletId: userOutletId },
-    });
-  }
-
-  if (!existingSettings) {
-    existingSettings = await prisma.settings.findFirst();
-  }
-
-  if (!existingSettings) {
-    throw ApiError.notFound('Restaurant settings not found to update');
-  }
+  const existingSettings = await findCallerSettings(req);
 
   const updatedSettings = await prisma.settings.update({
     where: { id: existingSettings.id },
