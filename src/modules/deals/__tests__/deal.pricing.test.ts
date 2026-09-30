@@ -348,6 +348,44 @@ describe('mapDealOutPublic', () => {
     const mapped = mapDealOutPublic({ id: 'd1', type: 'COMBO', price: 1000 });
     expect(mapped.price).toBe(1000);
   });
+
+  it('uses channel price and omits internals for Delivery and Take Away', () => {
+    const baseDeal = {
+      id: 'd1', type: 'COMBO', price: 1000,
+      dineInPrice: 950, takeAwayPrice: 900, deliveryPrice: 920,
+      outletIds: ['outlet-1'], status: 'active',
+    };
+    
+    const takeAway = mapDealOutPublic(baseDeal, 'Take Away');
+    expect(takeAway.price).toBe(900);
+    expect(takeAway).not.toHaveProperty('takeAwayPrice');
+
+    const delivery = mapDealOutPublic(baseDeal, 'Delivery');
+    expect(delivery.price).toBe(920);
+    expect(delivery).not.toHaveProperty('deliveryPrice');
+  });
+
+  it('folds percentages only for percentage type deals', () => {
+    const percentageDeal = {
+      id: 'd1', type: 'PERCENTAGE', discountPercent: 10,
+      dineInPercent: 12, takeAwayPercent: 15, deliveryPercent: null,
+    };
+
+    expect(mapDealOutPublic(percentageDeal, 'Take Away').discountPercent).toBe(15);
+    expect(mapDealOutPublic(percentageDeal, 'Delivery').discountPercent).toBe(10); // null falls back to base
+
+    const bogoDeal = {
+      id: 'd2', type: 'BUY_X_GET_Y', discountPercent: 100, // covers 100% of the free item
+      takeAwayPercent: 50,
+    };
+    // For non-percentage types, the channel percent is NOT folded into discountPercent
+    expect(mapDealOutPublic(bogoDeal, 'Take Away').discountPercent).toBe(100);
+  });
+  
+  it('keeps price null if base and channel are both null', () => {
+    const nullPriceDeal = { id: 'd1', type: 'COMBO', price: null, takeAwayPrice: null };
+    expect(mapDealOutPublic(nullPriceDeal, 'Take Away').price).toBeNull();
+  });
 });
 
 describe('isItemEligibleForDiscount', () => {

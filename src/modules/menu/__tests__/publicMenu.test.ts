@@ -57,5 +57,11 @@ describe('publicMenu helpers', () => {
       expect(resDelivery.price).toBe(120);
       expect(resDelivery.variants[0].price).toBe(20); // falls back to base 20 because deliveryPrice is null
     });
+
+    it('maps zero channel prices properly (does not fall back)', () => {
+      const zeroItem = { ...mockItem, takeAwayPrice: '0', variants: [] };
+      const res = toPublicMenuItem(zeroItem, [], new Map(), new Map(), 'Take Away');
+      expect(res.price).toBe(0);
+    });
   });
 });

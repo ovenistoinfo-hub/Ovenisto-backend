@@ -8,7 +8,7 @@ import { authenticate } from '../../middleware/authenticate.js';
 import { authorize } from '../../middleware/authorize.js';
 import {
   getOrders, getOrdersSummary, getOrder, createOrder, updateOrder, updateOrderStatus, updateOrderKitchenStatus, deleteOrder,
-  acceptSelfOrder, rejectSelfOrder, validateCoupon,
+  acceptOrder, rejectOrder, validateCoupon,
   getKitchens, createKitchen, updateKitchen, deleteKitchen,
 } from './order.controller.js';
 import { createCancellationRequest } from '../cancellation-requests/cancellation-request.controller.js';
@@ -30,8 +30,11 @@ ordersRouter.post('/', authenticate, authorize(posRoles), createOrder);
 ordersRouter.post('/validate-coupon', authenticate, authorize(posRoles), validateCoupon);
 ordersRouter.put('/:id/status', authenticate, authorize(kitchenRoles), updateOrderStatus);
 ordersRouter.put('/:id/kitchen-status', authenticate, authorize(kitchenRoles), updateOrderKitchenStatus);
-ordersRouter.post('/:id/accept-self-order', authenticate, authorize(posRoles), acceptSelfOrder);
-ordersRouter.post('/:id/reject-self-order', authenticate, authorize(posRoles), rejectSelfOrder);
+ordersRouter.post('/:id/accept', authenticate, authorize([...posRoles, 'Delivery Manager']), acceptOrder);
+ordersRouter.post('/:id/reject', authenticate, authorize([...posRoles, 'Delivery Manager']), rejectOrder);
+// Legacy aliases for POS backwards compatibility
+ordersRouter.post('/:id/accept-self-order', authenticate, authorize(posRoles), acceptOrder);
+ordersRouter.post('/:id/reject-self-order', authenticate, authorize(posRoles), rejectOrder);
 ordersRouter.post('/:id/cancellation-requests', authenticate, authorize(kitchenRoles), createCancellationRequest);
 ordersRouter.put('/:id', authenticate, authorize(posRoles), updateOrder);
 ordersRouter.delete('/:id', authenticate, authorize(adminRoles), deleteOrder);

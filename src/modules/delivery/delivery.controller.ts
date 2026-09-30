@@ -8,6 +8,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { checkPendingCancellation, runOrderStatusPostEffects } from '../order/order.controller.js';
+import { isAwaitingAcceptance, AWAITING_ACCEPTANCE_WHERE } from '../order/order.acceptance.js';
 import { emitDeliveryEvent } from '../../socket.js';
 import { getCashierPaymentMethodString } from '../cash-settlement/cash-settlement.service.js';
 import {
@@ -53,6 +54,7 @@ function mapAssignment(a: any) {
       ...a.order,
       total:          Number(a.order.total ?? 0),
       subtotal:       Number(a.order.subtotal ?? 0),
+      deliveryFee:    Number(a.order.deliveryFee ?? 0),
       tax:            Number(a.order.tax ?? 0),
       discount:       Number(a.order.discount ?? 0),
       advancePayment: Number(a.order.advancePayment ?? 0),
@@ -109,6 +111,7 @@ function mapUnassignedDeliveryOrder(order: any, riderProfile: any) {
       orderNumber: order.orderNumber,
       total: Number(order.total ?? 0),
       subtotal: Number(order.subtotal ?? 0),
+      deliveryFee: Number(order.deliveryFee ?? 0),
       tax: Number(order.tax ?? 0),
       discount: Number(order.discount ?? 0),
       advancePayment: Number(order.advancePayment ?? 0),
@@ -213,7 +216,7 @@ export const getAssignments = asyncHandler(async (req: Request, res: Response) =
   const assignments = await prisma.deliveryAssignment.findMany({
     where,
     include: {
-      order: { select: { id: true, orderNumber: true, total: true, subtotal: true, tax: true, discount: true, status: true, customerName: true, deliveryAddress: true, phone: true } },
+      order: { select: { id: true, orderNumber: true, total: true, subtotal: true, deliveryFee: true, tax: true, discount: true, status: true, customerName: true, deliveryAddress: true, phone: true } },
       rider: true,
     },
     orderBy: { assignedAt: 'desc' },
@@ -248,7 +251,7 @@ export const getMyAssignments = asyncHandler(async (req: Request, res: Response)
             id: true,
             orderNumber: true,
             total: true,
-            subtotal: true,
+            subtotal: true, deliveryFee: true,
             tax: true,
             discount: true,
             advancePayment: true,
@@ -279,6 +282,7 @@ export const getMyAssignments = asyncHandler(async (req: Request, res: Response)
             isFutureSale: false,
             createdAt: { gte: today },
             deliveries: { none: { status: { notIn: ['returned'] } } },
+            NOT: AWAITING_ACCEPTANCE_WHERE,
           },
           include: {
             items: {
@@ -467,7 +471,7 @@ export const getMyHistory = asyncHandler(async (req: Request, res: Response) => 
             id: true,
             orderNumber: true,
             total: true,
-            subtotal: true,
+            subtotal: true, deliveryFee: true,
             tax: true,
             discount: true,
             advancePayment: true,
@@ -649,6 +653,7 @@ export const assignRider = asyncHandler(async (req: Request, res: Response) => {
 
   const scope = resolveOutletScope(req);
   if (scope && order.outletId !== scope) throw ApiError.notFound('Order not found');
+  if (isAwaitingAcceptance(order)) throw ApiError.conflict('Cannot assign rider: order is awaiting acceptance');
   if (scope && rider.user?.outletId !== scope) throw ApiError.badRequest('Rider is not in your outlet');
   if (rider.status === 'off_duty' || rider.status === 'offline') throw ApiError.badRequest('Rider is currently off duty');
   if ((rider.activeDeliveries || 0) >= 5) throw ApiError.badRequest('Rider has reached maximum active delivery limit (5 orders)');
@@ -738,6 +743,9 @@ async function handleClaimOrder(req: Request, res: Response) {
   if (order.status === 'CANCELLED' as any || order.status === 'COMPLETED' as any) {
     throw ApiError.badRequest('This order is no longer available');
   }
+  if (isAwaitingAcceptance(order)) {
+    throw ApiError.conflict('Cannot claim order: order is awaiting acceptance');
+  }
 
   const scope = riderProfile.user?.outletId;
   if (scope && order.outletId !== scope) throw ApiError.badRequest('Order is not in your outlet');
@@ -768,7 +776,7 @@ async function handleClaimOrder(req: Request, res: Response) {
             id: true,
             orderNumber: true,
             total: true,
-            subtotal: true,
+            subtotal: true, deliveryFee: true,
             tax: true,
             discount: true,
             advancePayment: true,
@@ -838,7 +846,7 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
           orderNumber: true,
           outletId: true,
           total: true,
-          subtotal: true,
+          subtotal: true, deliveryFee: true,
           tax: true,
           discount: true,
           advancePayment: true,
@@ -888,7 +896,7 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
             id: true,
             orderNumber: true,
             total: true,
-            subtotal: true,
+            subtotal: true, deliveryFee: true,
             tax: true,
             discount: true,
             advancePayment: true,
@@ -934,7 +942,7 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
               id: true,
               orderNumber: true,
               total: true,
-              subtotal: true,
+              subtotal: true, deliveryFee: true,
               tax: true,
               discount: true,
               advancePayment: true,
@@ -991,7 +999,7 @@ export const updateAssignmentStatus = asyncHandler(async (req: Request, res: Res
             id: true,
             orderNumber: true,
             total: true,
-            subtotal: true,
+            subtotal: true, deliveryFee: true,
             tax: true,
             discount: true,
             advancePayment: true,

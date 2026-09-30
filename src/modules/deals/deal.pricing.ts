@@ -577,21 +577,25 @@ export function mapDealOut(deal: any): any {
  *  carrying a real promo code should ever reach here — this is the second
  *  lock, so a future caller that forgets that filter still can't publish a
  *  working coupon code to an unauthenticated client. */
-export function mapDealOutPublic(deal: any): any {
+export function mapDealOutPublic(deal: any, orderType: string = 'Dine In'): any {
   const mapped = mapDealOut(deal);
   const {
     dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice,
     dineInPercent, takeAwayPercent, deliveryPercent, foodpandaPercent,
     outletIds, status, code, minSpend, flatDiscount, ...rest
   } = mapped;
+
+  const priceField = orderType ? ORDER_TYPE_TO_FIELD[orderType] : undefined;
+  const channelPrice = priceField ? mapped[priceField] : undefined;
+
+  const percentField = orderType ? ORDER_TYPE_TO_PERCENT_FIELD[orderType] : undefined;
+  const channelPercent = percentField ? mapped[percentField] : undefined;
+
   return {
     ...rest,
-    price: dineInPrice ?? mapped.price,
-    // Self-order is always dine-in, so fold that channel's override down into
-    // the single customer-facing percentage. Only for a PERCENTAGE deal — on a
-    // BUY_X_GET_Y row the same column means "how much of the free item we
-    // cover", which is not a discount on this deal's own price.
+    price: channelPrice ?? mapped.price,
+    // The channel's percent override is folded into the single customer-facing percentage only for a PERCENTAGE deal — on a BUY_X_GET_Y row the same column means how much of the free item the deal covers.
     discountPercent:
-      mapped.type === 'percentage' ? dineInPercent ?? mapped.discountPercent : mapped.discountPercent,
+      mapped.type === 'percentage' ? (channelPercent ?? mapped.discountPercent) : mapped.discountPercent,
   };
 }

@@ -11,7 +11,7 @@ in this file.
 
 ## Architecture
 
-Express 5 + TypeScript (ESM) + Prisma over PostgreSQL (Neon), with Socket.IO for push.
+Express 5 + TypeScript (ESM) + Prisma over PostgreSQL (**Railway Postgres** since ~2026-09-22; was Neon), with Socket.IO for push. The local `.env` `DATABASE_URL` points at the same production database (`*.proxy.rlwy.net`).
 `src/index.ts` boots the HTTP server, wires Socket.IO, and starts a 60-second
 `autoProcessExpiredBatches` interval; `src/app.ts` is the Express app alone (CORS,
 compression, morgan, 10mb JSON limit, `/health`, `/health/db`, `/api`, error handler).
@@ -91,10 +91,10 @@ localhost, which is how frontend preview deploys connect.
 - Dev server: `npm run dev` (`tsx watch src/index.ts`)
 - Build: `npm run build` (`prisma generate && tsc`)
 - Typecheck only: `npm run typecheck`
-- Lint: `npm run lint`
+- Lint: `npm run lint` — currently BROKEN: `eslint` isn't in devDependencies (verified 2026-09-29)
 - Test all: `npm test` (`vitest run`); a single file: `npx vitest run src/modules/<module>/__tests__/<name>.test.ts`
 - Regenerate the Prisma client after a schema change, no DB connection needed: `npm run db:generate`
-- Push a schema change to the Neon DB: `npm run db:push` (retries through Neon cold-starts); a
+- Push a schema change to the DB (= production Railway Postgres): `npm run db:push` (the retry loop was written for Neon cold-starts); a
   change that needs it (e.g. a new unique constraint) requires `npx prisma db push --accept-data-loss` directly
 - **Only `npm test` needs environment variables** — `DATABASE_URL` and `JWT_SECRET` (min 32
   chars), any syntactically valid values. Vitest imports modules that import
@@ -164,9 +164,10 @@ plus a body explaining _why_ the change was made when that is not obvious.
 
 ## Backend Dev Quick-Reference
 
-- **Never add a background timer. `grep -rn "setInterval" src` must return nothing.** Neon bills
-  compute-hours and suspends the compute when idle; anything querying on a fixed clock keeps it
-  awake 24/7. A 60s `setInterval` in `index.ts` calling `autoProcessExpiredBatches()` burned ~97%
+- **Never add a background timer. `grep -rn "setInterval" src` must return nothing.** Born in the
+  Neon era (billed compute-hours, suspended when idle — a fixed-clock query kept it awake 24/7);
+  still the rule on Railway Postgres, where every fixed-clock query is load on the one shared
+  production DB. A 60s `setInterval` in `index.ts` calling `autoProcessExpiredBatches()` burned ~97%
   of one month's free allowance by itself (removed 2026-08-28), and `database.ts`'s keep-alive
   ping was deleted earlier for the same reason — don't reinvent either under a new name. Auto-expiry
   now runs **on read paths only** (11 call sites in `stock`/`warehouse`/`inventory`/`challan`/
@@ -212,7 +213,7 @@ plus a body explaining _why_ the change was made when that is not obvious.
   no column — they derive scope from the warehouse relations (strict-endpoint).
 - **Prisma `Decimal` → `Number()`** in every response mapper. **Enums return MEMBER names**, not the
   `@map`'d DB strings (e.g. `OrderType` compares against `'DINE_IN'`, not the mapped value).
-- **Prod DB is Neon** — schema changes go via `npm run db:push` (never `prisma migrate dev`); adding a
+- **Prod DB is Railway Postgres (was Neon)** — schema changes go via `npm run db:push` (never `prisma migrate dev`); adding a
   unique constraint needs `--accept-data-loss` even when safe.
 - **`DealType.ORDER_DISCOUNT` → `PROMO_CODE`/`MIN_SPEND` is a three-step migration, not a single
   push** (2026-09): (1) `npm run db:push` with `PROMO_CODE`/`MIN_SPEND` added and `ORDER_DISCOUNT`
@@ -688,6 +689,22 @@ plus a body explaining _why_ the change was made when that is not obvious.
 
 
 <!-- code-review-graph MCP tools -->
+## Public Website API (/api/website)
+- **Endpoints:** `GET /api/website/outlets`, `/api/website/config`, `/api/website/menu`, `/api/website/deals`, `POST /api/website/quote`, `POST /api/website/orders`, `GET /api/website/orders/:id/status`.
+- **websiteConfig:** Parsed flexibly to handle legacy keys (`deliveryCharges` → `deliveryFee`, `prepTime` → `prepTimeMinutes`) and numeric strings, with canonical keys winning and defaults when unset or invalid.
+- **Shared Menu Builder:** `buildPublicMenu` in `src/modules/menu/publicMenu.ts` powers both self-order and website, isolating pure mapping (`toPublicMenuItem`) from DB lookup. Allows passing an optional `orderType` to fold channel pricing.
+- **Trust Proxy:** `app.set('trust proxy', 1)` added to `app.ts` to correctly identify client IPs behind Railway's proxy, ensuring rate-limiters (like `readLimiter`) track real users.
+- **Ordering is closed by default:** `websiteConfig.enabled` defaults to `false`; `acceptingOrders = outlet.isActive && Settings.onlineOrders && websiteConfig.enabled`. Settings lookup = the outlet's own row `?? findFirst()` (same as `createSelfOrder`), tax default 16, currency `Rs.`.
+- **`mapDealOutPublic(deal, orderType = 'Dine In')`** now takes a channel — always call it through an arrow (`.map((d) => mapDealOutPublic(d))`); `.map(mapDealOutPublic)` passes the array index as `orderType`.
+- **Legacy `ORDER_DISCOUNT` deals:** website deals exclude them; one still exists in prod (the Deals split backfill never ran) and `/self-order/deals` still lists it as a card.
+- **Step 2 (accepted 2026-09-29, live-tested on the DHA branch):**
+  - **One pricing path:** `website.pricing.ts` `priceWebsiteCart()` backs both `POST /quote` and `POST /orders`. Plain lines are priced from the DB (`resolveChannelPrice` on the variant or item, plus active linked modifiers; the name is server-derived as `Item (Variant)`). Deal lines are only those with `dealId && dealLineId` (anything else is priced as plain — a dealId without dealLineId used to come back unpriced/free). Single-discount rule and `resolveOrderDiscount` match `createOrder`. `tax = Math.round(taxable × rate)`, `deliveryFee` (Delivery only, free at `freeDeliveryAbove`), `minOrder` applies to Delivery only. Quote never throws for a closed branch — it returns `acceptingOrders: false`; create returns 409.
+  - **Orders:** created PENDING, `orderSource: 'website'`, `paymentMethod: 'Pending'`, `staffName: 'Website'`, `cashApproved: true`, number from `generateOrderNumber()`, phone stored as `03XX-XXXXXXX`, customer linked by exact phone and NEVER renamed, `clientRequestId` idempotency. `GET /orders/:id/status` only answers for website orders and maps to `pending | accepted | preparing | ready | out_for_delivery | completed | cancelled` (no PII).
+- **Step 3 (accepted 2026-09-29, live-tested on DHA):** Added table reservations (`POST /api/website/reservations`, `GET /api/website/reservations/:id/status`). Gated by `reservationsEnabled` in `websiteConfig` (default false). `validateReservationSlot` safely enforces future PKT time and max advance days. Uses shared `findOrCreateWebsiteCustomer` logic. Responses never expose PII.
+  - **Acceptance (self-order + website, `order/order.acceptance.ts`):** `acceptOrder`/`rejectOrder` at `/orders/:id/accept|reject` (legacy `accept-self-order`/`reject-self-order` aliases kept). Accept stamps the staff member and leaves the order PENDING for the kitchen — except an order with no kitchen-routed item goes READY with stock deduction (self-order drinks-only orders used to go READY at creation, skipping acceptance). `updateOrderStatus` (→ preparing/ready/completed), `updateOrderKitchenStatus`, `assignRider` and claim return **409** while awaiting acceptance; `getMyAssignments` hides such orders; a website Delivery order emits `delivery:unassigned` on accept, not on create.
+- **deliveryFee:** `Order.deliveryFee` (pushed to the DB 2026-09-29), included in `total`, never taxed; returned by `mapOrderOut`, the rider-API assignment DTOs and quotes.
+- Full status of the 8-step website plan lives in the root `CLAUDE.md` ("Public Website Integration").
+
 ## MCP Tools: code-review-graph
 
 **IMPORTANT: This project has a knowledge graph. ALWAYS use the
@@ -725,3 +742,4 @@ Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
 2. Use `detect_changes` for code review.
 3. Use `get_affected_flows` to understand impact.
 4. Use `query_graph` pattern="tests_for" to check coverage.
+

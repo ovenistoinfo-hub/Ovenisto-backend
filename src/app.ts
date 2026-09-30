@@ -13,6 +13,7 @@ import { prisma } from './config/database.js';
 import routes from './routes/index.js';
 
 const app: Application = express();
+app.set('trust proxy', 1); // Railway = one proxy hop; rate limiters then key on the real client IP
 
 // ============================================
 // MIDDLEWARE

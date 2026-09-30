@@ -14,6 +14,7 @@ import { fifoDrawdown } from '../stock/dough.helpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
 import { emitSelfOrderEventForOrder } from '../self-order/self-order.socket.js';
+import { requiresAcceptance, isAwaitingAcceptance, AWAITING_ACCEPTANCE_WHERE } from './order.acceptance.js';
 import { revalidateDealLines, resolveOrderDiscount, withDealItemKeys } from '../deals/deal.revalidate.js';
 import { round2 } from '../deals/deal.pricing.js';
 import { computeCogs, splitOrderTotalByLine, orderUsedPaymentMethod, type CogsItem, type CogsRecipe } from '../reports/reports.helpers.js';
@@ -181,6 +182,7 @@ export function mapOrderOut(order: any): any {
     subtotal: order.subtotal != null ? Number(order.subtotal) : 0,
     discount: order.discount != null ? Number(order.discount) : 0,
     tax: order.tax != null ? Number(order.tax) : 0,
+    deliveryFee: order.deliveryFee != null ? Number(order.deliveryFee) : 0,
     total: order.total != null ? Number(order.total) : 0,
     advancePayment: order.advancePayment != null ? Number(order.advancePayment) : 0,
     items: (order.items ?? []).map((i: any) => ({
@@ -1602,6 +1604,10 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
 
   const prismaStatus = STATUS_TO_PRISMA[status] ?? status.toUpperCase();
 
+  if (isAwaitingAcceptance(existing) && ['PREPARING', 'READY', 'COMPLETED'].includes(prismaStatus)) {
+    throw ApiError.conflict('Cannot change status: order is awaiting acceptance');
+  }
+
   const order = await prisma.$transaction(async (tx) => {
     const updated = await tx.order.update({
       where: { id },
@@ -1689,6 +1695,10 @@ export const updateOrderKitchenStatus = asyncHandler(async (req: Request, res: R
   if (!existing) throw ApiError.notFound('Order not found');
   const scope = resolveOutletScope(req);
   if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
+
+  if (isAwaitingAcceptance(existing)) {
+    throw ApiError.conflict('Cannot change kitchen status: order is awaiting acceptance');
+  }
 
   if (await checkPendingCancellation(id)) {
     throw ApiError.badRequest('Cannot change order status while a cancellation request is pending approval');
@@ -1806,22 +1816,18 @@ export const updateOrderKitchenStatus = asyncHandler(async (req: Request, res: R
   res.json(ApiResponse.success(statusUpdated, 'Kitchen status updated'));
 });
 
-/** POST /api/orders/:id/accept-self-order — a waiter claims a pending self-order.
- *  Does NOT change status (stays PENDING); only stamps who accepted it. That status
- *  stays PENDING deliberately: an accepted self-order should behave exactly like any
- *  other freshly-placed pending order from here on, going through the kitchen's own
- *  Accept Order step (pending -> preparing) like everything else — not skip it. */
-export const acceptSelfOrder = asyncHandler(async (req: Request, res: Response) => {
+/** POST /api/orders/:id/accept — it stamps who accepted; the status stays PENDING for the kitchen to start, except an order with no kitchen-routed items moves to READY (with stock deduction) on accept. */
+export const acceptOrder = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
 
   const existing = await prisma.order.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Order not found');
   const scope = resolveOutletScope(req);
   if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
-  if (existing.type !== 'SELF_ORDER') throw ApiError.badRequest('Not a self-order');
+  if (!requiresAcceptance(existing)) throw ApiError.badRequest('This order does not need acceptance');
 
   const result = await prisma.order.updateMany({
-    where: { id, acceptedById: null },
+    where: { id, acceptedById: null, status: 'PENDING' },
     data: {
       acceptedById: req.user?.id || null,
       acceptedByName: req.user?.name || null,
@@ -1832,7 +1838,10 @@ export const acceptSelfOrder = asyncHandler(async (req: Request, res: Response) 
 
   if (result.count === 0) {
     const latest = await prisma.order.findUnique({ where: { id } });
-    throw ApiError.conflict(`Already accepted by ${latest?.acceptedByName ?? 'another staff member'}`);
+    if (latest?.acceptedById) {
+      throw ApiError.conflict(`Already accepted by ${latest?.acceptedByName ?? 'another staff member'}`);
+    }
+    throw ApiError.badRequest('This order can no longer be accepted');
   }
 
   const updated = await prisma.order.findUnique({
@@ -1843,10 +1852,11 @@ export const acceptSelfOrder = asyncHandler(async (req: Request, res: Response) 
       kitchenDealProgress: true,
     },
   });
+  if (!updated) throw ApiError.notFound('Order not found');
 
   // Occupy the table only now that a waiter has actually verified this order is
   // real — a still-pending, unaccepted self-order never touches table status.
-  if (updated?.tableNumber) {
+  if (updated?.tableNumber && updated.type === 'SELF_ORDER') {
     await updateTableStatusForOrder(prisma, updated.outletId, updated.tableNumber, req.user);
     // Stamp currentOrderId in the same "timestamp:guestCount" format the manual
     // waiter-initiated flows already use, so WaiterPanel's getGuestsCount() shows
@@ -1859,23 +1869,64 @@ export const acceptSelfOrder = asyncHandler(async (req: Request, res: Response) 
     }
   }
 
-  if (updated) {
-    await emitSelfOrderEventForOrder(updated, 'order:updated', {
-      orderId: updated.id,
-      status: 'confirmed',
-      accepted: true,
-      paid: updated.status === 'COMPLETED',
-    });
+  const hasKitchenWork = await seedKitchenProgress(prisma, id, updated.items);
+
+  let finalUpdated = updated;
+  if (!hasKitchenWork) {
+    finalUpdated = await prisma.$transaction(async (tx) => {
+      const o = await tx.order.update({
+        where: { id },
+        data: { status: 'READY' },
+        include: {
+          items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
+          kitchenProgress: true,
+          kitchenDealProgress: true,
+        },
+      });
+      await tx.orderKitchenProgress.updateMany({
+        where: { orderId: id, status: 'pending' },
+        data: { status: 'ready' },
+      });
+      await tx.orderKitchenDealProgress.updateMany({
+        where: { orderId: id, status: 'pending' },
+        data: { status: 'ready' },
+      });
+      await deductStockForConsumedStates(tx, existing, updated.items, 'READY', req.user?.id);
+      return o;
+    }, { timeout: 30000 });
+
+    await runOrderStatusPostEffects(prisma, existing, finalUpdated, 'READY', req);
+  } else {
+    if (finalUpdated.type === 'SELF_ORDER') {
+      await emitSelfOrderEventForOrder(finalUpdated, 'order:updated', {
+        orderId: finalUpdated.id,
+        status: 'confirmed',
+        accepted: true,
+        paid: finalUpdated.status === 'COMPLETED',
+      });
+    }
+    const mapped = mapOrderOut(finalUpdated);
+    emitOrderEvent('order:updated', mapped);
   }
 
-  const mapped = mapOrderOut(updated);
-  emitOrderEvent('order:updated', mapped);
+  if (finalUpdated.type === 'DELIVERY' && !finalUpdated.riderId) {
+    emitDeliveryEvent('delivery:unassigned', {
+      orderId: finalUpdated.id,
+      orderNumber: finalUpdated.orderNumber,
+      outletId: finalUpdated.outletId,
+      total: Number(finalUpdated.total),
+      customerName: finalUpdated.customerName,
+      deliveryAddress: finalUpdated.deliveryAddress,
+    }, [finalUpdated.outletId]);
+  }
+
+  const mapped = mapOrderOut(finalUpdated);
   res.json(ApiResponse.success(mapped, 'Order accepted'));
 });
 
-/** POST /api/orders/:id/reject-self-order — declines a pending self-order. Reuses
- *  the ordinary CANCELLED status (no new enum value); rejectionReason is optional. */
-export const rejectSelfOrder = asyncHandler(async (req: Request, res: Response) => {
+/** POST /api/orders/:id/reject — declines a pending order. Reuses
+ *  the ordinary CANCELLED status; rejectionReason is optional. */
+export const rejectOrder = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   const { reason } = req.body;
 
@@ -1883,26 +1934,30 @@ export const rejectSelfOrder = asyncHandler(async (req: Request, res: Response) 
   if (!existing) throw ApiError.notFound('Order not found');
   const scope = resolveOutletScope(req);
   if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
-  if (existing.type !== 'SELF_ORDER') throw ApiError.badRequest('Not a self-order');
+  if (!requiresAcceptance(existing)) throw ApiError.badRequest('This order does not need acceptance');
   if (existing.status !== 'PENDING' || existing.acceptedById) {
     throw ApiError.badRequest('This order can no longer be declined');
   }
 
+  const cappedReason = reason ? String(reason).trim().substring(0, 300) : null;
+
   const updated = await prisma.order.update({
     where: { id },
-    data: { status: 'CANCELLED', rejectionReason: reason || null },
+    data: { status: 'CANCELLED', rejectionReason: cappedReason },
     include: {
       items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
     },
   });
 
-  await emitSelfOrderEventForOrder(updated, 'order:updated', {
-    orderId: updated.id,
-    status: 'cancelled',
-    accepted: false,
-    rejectionReason: updated.rejectionReason ?? undefined,
-    paid: false,
-  });
+  if (updated.type === 'SELF_ORDER') {
+    await emitSelfOrderEventForOrder(updated, 'order:updated', {
+      orderId: updated.id,
+      status: 'cancelled',
+      accepted: false,
+      rejectionReason: updated.rejectionReason ?? undefined,
+      paid: false,
+    });
+  }
 
   const mapped = mapOrderOut(updated);
   emitOrderEvent('order:updated', mapped);

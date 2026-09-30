@@ -17,8 +17,8 @@ import { generateOrderNumber, mapOrderOut, validateOrderStock } from '../order/o
 import { emitSelfOrderTableEvent, clearSelfOrderTableState } from './self-order.socket.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { revalidateDealLines, resolveOrderDiscount, withDealItemKeys } from '../deals/deal.revalidate.js';
-import { seedKitchenProgress } from '../order/order.controller.js';
 import { isDealCurrentlyValid, isDealAvailableForChannel, mapDealOutPublic, round2 } from '../deals/deal.pricing.js';
+import { buildPublicMenu } from '../menu/publicMenu.js';
 
 /** GET /api/self-order/table/:tableId */
 export const getTableForSelfOrder = asyncHandler(async (req: Request, res: Response) => {
@@ -70,36 +70,6 @@ export const lookupCustomerByPhone = asyncHandler(async (req: Request, res: Resp
   res.json(ApiResponse.success(customer ? { exists: true, name: customer.name } : { exists: false }));
 });
 
-/** Whether at least one complete unit of `menuItemId` (at this `variantId`,
- *  or the item's own base recipe when `variantId` is null) can currently be
- *  made from the given stock maps — the same "floor(stock / qtyPerUnit),
- *  minimum across every ingredient/production item" rule as the frontend's
- *  calculateFoodAvailability and this file's own validateOrderStock, reduced
- *  to a boolean since a public, unauthenticated route has no business
- *  returning raw stock numbers to a customer's phone. An item with no
- *  recipe rows at all is always available — no recipe configured means
- *  nothing here restricts it. */
-function isVariantAvailable(
-  recipes: { variantId: string | null; ingredientId: string | null; productionItemId: string | null; qtyPerUnit: unknown }[],
-  variantId: string | null,
-  ingredientStock: Map<string, number>,
-  productionStock: Map<string, number>,
-): boolean {
-  const relevant = recipes.filter((r) => (variantId ? !r.variantId || r.variantId === variantId : !r.variantId));
-  if (relevant.length === 0) return true;
-  for (const r of relevant) {
-    const qtyPerUnit = Number(r.qtyPerUnit);
-    if (!qtyPerUnit || qtyPerUnit <= 0) continue;
-    const stock = r.ingredientId
-      ? ingredientStock.get(r.ingredientId) ?? 0
-      : r.productionItemId
-      ? productionStock.get(r.productionItemId) ?? 0
-      : 0;
-    if (Math.floor(stock / qtyPerUnit) <= 0) return false;
-  }
-  return true;
-}
-
 /** GET /api/self-order/menu?tableId=<id> — the menu catalog is global (no
  *  outletId column on FoodMenuItem/FoodCategory), so every outlet sees the
  *  same active/available menu; `tableId` is optional and used only to
@@ -119,105 +89,8 @@ export const getSelfOrderMenu = asyncHandler(async (req: Request, res: Response)
     outletId = table?.outletId ?? null;
   }
 
-  const categories = await prisma.foodCategory.findMany({
-    where: { status: 'active' },
-    orderBy: [{ displayOrder: 'asc' }, { name: 'asc' }],
-    select: { id: true, name: true, displayOrder: true, status: true },
-  });
-
-  const items = await prisma.foodMenuItem.findMany({
-    where: { available: true },
-    orderBy: [{ category: { displayOrder: 'asc' } }, { name: 'asc' }],
-    include: {
-      category: { select: { id: true, name: true } },
-      variants: { orderBy: { displayOrder: 'asc' } },
-      modifiers: { include: { modifier: true } },
-    },
-  });
-
-  const menuItemIds = items.map((item) => item.id);
-  const recipes = menuItemIds.length
-    ? await prisma.foodRecipe.findMany({
-        where: { menuItemId: { in: menuItemIds } },
-        select: { menuItemId: true, variantId: true, ingredientId: true, productionItemId: true, qtyPerUnit: true },
-      })
-    : [];
-
-  const ingredientStock = new Map<string, number>();
-  const productionStock = new Map<string, number>();
-  if (recipes.length > 0) {
-    let kitchenWarehouseId: string | null = null;
-    if (outletId) {
-      const kw = await prisma.warehouse.findFirst({
-        where: { outletId, type: 'KITCHEN' as never, isActive: true },
-        select: { id: true },
-      });
-      kitchenWarehouseId = kw?.id ?? null;
-    }
-    const ingredientIds = Array.from(new Set(recipes.map((r) => r.ingredientId).filter((id): id is string => !!id)));
-    const productionItemIds = Array.from(new Set(recipes.map((r) => r.productionItemId).filter((id): id is string => !!id)));
-
-    if (kitchenWarehouseId) {
-      if (ingredientIds.length) {
-        const rows = await prisma.warehouseStock.findMany({
-          where: { warehouseId: kitchenWarehouseId, ingredientId: { in: ingredientIds } },
-          select: { ingredientId: true, currentStock: true },
-        });
-        for (const r of rows) ingredientStock.set(r.ingredientId, Math.max(0, Number(r.currentStock)));
-      }
-      if (productionItemIds.length) {
-        const rows = await prisma.productionWarehouseStock.findMany({
-          where: { warehouseId: kitchenWarehouseId, productionItemId: { in: productionItemIds } },
-          select: { productionItemId: true, currentStock: true },
-        });
-        for (const r of rows) {
-          productionStock.set(r.productionItemId, (productionStock.get(r.productionItemId) ?? 0) + Math.max(0, Number(r.currentStock)));
-        }
-      }
-    } else if (ingredientIds.length) {
-      // No kitchen warehouse for this outlet — fall back to the chain-wide
-      // Ingredient record, same fallback validateOrderStock uses.
-      const rows = await prisma.ingredient.findMany({
-        where: { id: { in: ingredientIds } },
-        select: { id: true, currentStock: true },
-      });
-      for (const r of rows) ingredientStock.set(r.id, Math.max(0, Number(r.currentStock)));
-    }
-  }
-
-  const recipesByItem = new Map<string, typeof recipes>();
-  for (const r of recipes) {
-    if (!recipesByItem.has(r.menuItemId)) recipesByItem.set(r.menuItemId, []);
-    recipesByItem.get(r.menuItemId)!.push(r);
-  }
-
-  const publicItems = items.map((item) => {
-    const itemRecipes = recipesByItem.get(item.id) ?? [];
-    const variants = item.variants.map((v) => ({
-      id: v.id,
-      name: v.name,
-      price: Number(v.price),
-      available: isVariantAvailable(itemRecipes, v.id, ingredientStock, productionStock),
-    }));
-    const available = variants.length > 0
-      ? variants.some((v) => v.available)
-      : isVariantAvailable(itemRecipes, null, ingredientStock, productionStock);
-
-    return {
-      id: item.id,
-      name: item.name,
-      price: Number(item.price),
-      image: item.image ?? null,
-      category: item.category ? { id: item.category.id, name: item.category.name } : null,
-      available,
-      variants,
-      modifiers: item.modifiers
-        .filter((mm) => mm.modifier.status === 'active')
-        .map((mm) => ({ id: mm.modifier.id, name: mm.modifier.name, price: Number(mm.modifier.price) })),
-    };
-  });
-
-  res.json(ApiResponse.success({ categories, items: publicItems }));
+  const result = await buildPublicMenu(prisma, { outletId });
+  res.json(ApiResponse.success(result));
 });
 
 /** GET /api/self-order/deals?tableId=<id> — public, unauthenticated deal
@@ -265,7 +138,7 @@ export const getSelfOrderDeals = asyncHandler(async (req: Request, res: Response
   const liveDeals = deals.filter(
     (d) => isDealCurrentlyValid(d as any).valid && isDealAvailableForChannel(d as any, 'Dine In'),
   );
-  res.json(ApiResponse.success(liveDeals.map(mapDealOutPublic)));
+  res.json(ApiResponse.success(liveDeals.map((d) => mapDealOutPublic(d))));
 });
 
 /** POST /api/self-order/orders */
@@ -506,16 +379,9 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
   // Deliberately does NOT occupy the table yet — this order is unverified until a
   // waiter accepts it. Table occupancy is triggered from acceptSelfOrder instead.
 
-  // Mirror the same kitchen-matching logic createOrder runs so that kitchen staff can
-  // accept this order via PUT /orders/:id/kitchen-status. Without a shared-ticket row
-  // (for a plain item) that endpoint's self-healing covers it lazily, but skipping
-  // this for a deal-only order would leave nothing to flip it out of PENDING.
-  const hasKitchenWork = await seedKitchenProgress(prisma, order.id, order.items as any[]);
-  if (!hasKitchenWork) {
-    // No kitchen assigned to any item in this order — mark it ready immediately
-    // (e.g., a drinks-only order on an outlet with no beverage kitchen).
-    await prisma.order.update({ where: { id: order.id }, data: { status: 'READY' as any } });
-  }
+  // Kitchen progress is seeded here, but if the order requires no kitchen work
+  // (e.g. drinks only) we do NOT fast-forward it to READY yet. All self-orders
+  // must remain PENDING until explicitly accepted by staff (order.acceptance.ts).
 
   emitOrderEvent('order:created', mapOrderOut(order));
   emitSelfOrderTableEvent(table.id, 'order:updated', {

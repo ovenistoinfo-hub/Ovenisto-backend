@@ -38,6 +38,7 @@ import { payrollRouter } from '../modules/payroll/payroll.routes.js';
 import { cancellationRequestsRouter } from '../modules/cancellation-requests/cancellation-request.routes.js';
 import { penaltiesRouter } from '../modules/penalties/penalty.routes.js';
 import { selfOrderRouter } from '../modules/self-order/self-order.routes.js';
+import { websiteRouter } from '../modules/website/website.routes.js';
 import { cashSettlementRouter } from '../modules/cash-settlement/cash-settlement.routes.js';
 import { dealRouter } from '../modules/deals/deal.routes.js';
 import { notificationRouter } from '../modules/notifications/notification.routes.js';
@@ -180,5 +181,6 @@ router.use('/reports', reportsRouter);
 router.use('/production-items', productionItemsRoutes);
 // router.use('/sms', smsRoutes);
 router.use('/self-order', selfOrderRouter);
+router.use('/website', websiteRouter);
 
 export default router;

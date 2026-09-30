@@ -1,5 +1,26 @@
+/** Shared by self-order and website.
+ *  Public-safe shape (no channel price fields, no stock numbers). */
 import { resolveChannelPrice } from '../deals/deal.pricing.js';
+import type { PrismaClient } from '@prisma/client';
 
+export const parsePrices = (obj: any) => ({
+  ...obj,
+  price: Number(obj.price),
+  dineInPrice: obj.dineInPrice != null ? Number(obj.dineInPrice) : null,
+  takeAwayPrice: obj.takeAwayPrice != null ? Number(obj.takeAwayPrice) : null,
+  deliveryPrice: obj.deliveryPrice != null ? Number(obj.deliveryPrice) : null,
+  foodpandaPrice: obj.foodpandaPrice != null ? Number(obj.foodpandaPrice) : null,
+});
+
+/** Whether at least one complete unit of `menuItemId` (at this `variantId`,
+ *  or the item's own base recipe when `variantId` is null) can currently be
+ *  made from the given stock maps — the same "floor(stock / qtyPerUnit),
+ *  minimum across every ingredient/production item" rule as the frontend's
+ *  calculateFoodAvailability and this file's own validateOrderStock, reduced
+ *  to a boolean since a public, unauthenticated route has no business
+ *  returning raw stock numbers to a customer's phone. An item with no
+ *  recipe rows at all is always available — no recipe configured means
+ *  nothing here restricts it. */
 export function isVariantAvailable(
   recipes: { variantId: string | null; ingredientId: string | null; productionItemId: string | null; qtyPerUnit: unknown }[],
   variantId: string | null,
@@ -31,7 +52,7 @@ export function toPublicMenuItem(
   const variants = item.variants.map((v: any) => ({
     id: v.id,
     name: v.name,
-    price: orderType ? resolveChannelPrice({ ...v, price: Number(v.price), dineInPrice: v.dineInPrice ? Number(v.dineInPrice) : null, takeAwayPrice: v.takeAwayPrice ? Number(v.takeAwayPrice) : null, deliveryPrice: v.deliveryPrice ? Number(v.deliveryPrice) : null, foodpandaPrice: v.foodpandaPrice ? Number(v.foodpandaPrice) : null }, orderType) : Number(v.price),
+    price: orderType ? resolveChannelPrice(parsePrices(v), orderType) : Number(v.price),
     available: isVariantAvailable(itemRecipes, v.id, ingredientStock, productionStock),
   }));
 
@@ -42,7 +63,7 @@ export function toPublicMenuItem(
   return {
     id: item.id,
     name: item.name,
-    price: orderType ? resolveChannelPrice({ ...item, price: Number(item.price), dineInPrice: item.dineInPrice ? Number(item.dineInPrice) : null, takeAwayPrice: item.takeAwayPrice ? Number(item.takeAwayPrice) : null, deliveryPrice: item.deliveryPrice ? Number(item.deliveryPrice) : null, foodpandaPrice: item.foodpandaPrice ? Number(item.foodpandaPrice) : null }, orderType) : Number(item.price),
+    price: orderType ? resolveChannelPrice(parsePrices(item), orderType) : Number(item.price),
     image: item.image ?? null,
     category: item.category ? { id: item.category.id, name: item.category.name } : null,
     available,
@@ -53,7 +74,7 @@ export function toPublicMenuItem(
   };
 }
 
-export async function buildPublicMenu(prisma: any, options: { outletId: string | null; orderType?: string }) {
+export async function buildPublicMenu(prisma: PrismaClient, options: { outletId: string | null; orderType?: string }) {
   const { outletId, orderType } = options;
 
   const categories = await prisma.foodCategory.findMany({
@@ -112,6 +133,8 @@ export async function buildPublicMenu(prisma: any, options: { outletId: string |
         }
       }
     } else if (ingredientIds.length) {
+      // No kitchen warehouse for this outlet — fall back to the chain-wide
+      // Ingredient record, same fallback validateOrderStock uses.
       const rows = await prisma.ingredient.findMany({
         where: { id: { in: ingredientIds } },
         select: { id: true, currentStock: true },
