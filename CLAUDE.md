@@ -706,10 +706,23 @@ plus a body explaining _why_ the change was made when that is not obvious.
 - **Step 4b (accepted 2026-09-30) — settings row lookup:** `GET /api/settings/mine` (`authenticate`)
   returns the caller's own outlet row through `findCallerSettings(req)` in `settings.controller.ts`, the
   same helper `updateSettings` uses, so read and write always pick the same row. A user whose outlet has
-  no settings row gets 404 (no fallback to another branch's row); Super Admin (no outlet) gets the first
-  row. **The public `GET /api/settings` has no auth and always returns the FIRST row (Main)** — never use
-  it for per-branch data (the staff Website tab did, and Save would have overwritten DHA's config with
-  Main's). `getOutlets`' `acceptingReservations = o.isActive && config.reservationsEnabled`.
+  no settings row gets 404 (no fallback to another branch's row). `getOutlets`' `acceptingReservations =
+  o.isActive && config.reservationsEnabled`.
+- **Step 4c (2026-09-30) — every branch reads its own Settings row:**
+  - **`GET /api/settings` runs `optionalAuth`:**
+    - a branch user → their own row (`findCallerSettings`);
+    - a Super Admin → the `X-Outlet-Id` branch's row, else a chain view (the first row with
+      `paymentMethods` = the union of all branches);
+    - logged out → the `?outletId=` row, else the first row (the public self-order page uses this);
+    - a Bearer header that optionalAuth rejected → 401 (so the client refreshes instead of getting Main's
+      row).
+  - **`findCallerSettings` (PUT, `/mine`) refuses Super Admin by ROLE**, not only a missing outletId:
+    `admin@ovenisto.com` is a Super Admin linked to DHA.
+  - **Payment-method lists:** `settings.service.ts` `getConfiguredPaymentMethods(outletId | null)` gives one
+    branch's list, or the union for chain-wide (`settings.helpers.ts` `mergePaymentMethods` — pure,
+    unit-tested). Used by cash-settlement `getActiveBalances` / `getStaffActiveBalance` and the reports
+    Sales-by-Payment-Method zero-fill; don't read `prisma.settings.findFirst()` for this again.
+  - **New outlets:** `createOutlet` creates the outlet's Settings row in the same transaction.
 - Full status of the 8-step website plan lives in the root `CLAUDE.md` ("Public Website Integration").
 
 ## MCP Tools: code-review-graph

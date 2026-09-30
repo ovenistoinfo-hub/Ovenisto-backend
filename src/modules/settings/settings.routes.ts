@@ -6,7 +6,7 @@
  */
 
 import { Router } from 'express';
-import { authenticate } from '../../middleware/authenticate.js';
+import { authenticate, optionalAuth } from '../../middleware/authenticate.js';
 import { authorize } from '../../middleware/authorize.js';
 import { validateRequest } from '../../middleware/validateRequest.js';
 import { getSettings, getMySettings, updateSettings } from './settings.controller.js';
@@ -15,7 +15,7 @@ import { updateSettingsSchema } from './settings.schema.js';
 const router = Router();
 
 // Retrieve settings — public (currency, tax rate, restaurant name are not sensitive)
-router.get('/', getSettings);
+router.get('/', optionalAuth, getSettings);
 
 // Retrieve caller's specific settings
 router.get('/mine', authenticate, getMySettings);

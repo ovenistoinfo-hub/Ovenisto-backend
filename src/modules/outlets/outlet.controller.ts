@@ -66,8 +66,22 @@ export const createOutlet = asyncHandler(async (req: Request, res: Response) => 
     throw ApiError.conflict('An outlet with this code already exists');
   }
 
-  const outlet = await prisma.outlet.create({
-    data: { name, code, address, city, phone, email },
+  const outlet = await prisma.$transaction(async (tx) => {
+    const newOutlet = await tx.outlet.create({
+      data: { name, code, address, city, phone, email },
+    });
+
+    await tx.settings.create({
+      data: {
+        outletId: newOutlet.id,
+        restaurantName: name,
+        phone: phone || '',
+        email: email || '',
+        address: address || '',
+      },
+    });
+
+    return newOutlet;
   });
 
   res.status(201).json(ApiResponse.created(outlet, 'Outlet created successfully'));

@@ -8,24 +8,48 @@ import { prisma } from '../../config/database.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
+import { resolveOutletScope } from '../../middleware/outletScope.js';
+import { getConfiguredPaymentMethods } from './settings.service.js';
 
 /**
  * GET /api/settings
  * Fetch global or outlet-specific settings.
  */
 export const getSettings = asyncHandler(async (req: Request, res: Response) => {
-  const userOutletId = (req as any).user?.outletId;
+  const user = (req as any).user;
+
+  if (req.headers.authorization?.startsWith('Bearer ') && !user) {
+    throw ApiError.unauthorized('Session expired');
+  }
   
   let settings;
-  if (userOutletId) {
-    settings = await prisma.settings.findFirst({
-      where: { outletId: userOutletId },
-    });
-  }
-
-  // Fallback to first settings instance available if no outlet specified or found
-  if (!settings) {
-    settings = await prisma.settings.findFirst();
+  if (user) {
+    if (user.role === 'Super Admin') {
+      const scope = resolveOutletScope(req);
+      if (scope) {
+        settings = await prisma.settings.findFirst({
+          where: { outletId: scope },
+        });
+      }
+      if (!settings) {
+        settings = await prisma.settings.findFirst();
+        if (settings) {
+          settings.paymentMethods = await getConfiguredPaymentMethods(null);
+        }
+      }
+    } else {
+      settings = await findCallerSettings(req);
+    }
+  } else {
+    const qOutletId = req.query.outletId as string;
+    if (qOutletId) {
+      settings = await prisma.settings.findFirst({
+        where: { outletId: qOutletId },
+      });
+    }
+    if (!settings) {
+      settings = await prisma.settings.findFirst();
+    }
   }
 
   if (!settings) {
@@ -37,18 +61,17 @@ export const getSettings = asyncHandler(async (req: Request, res: Response) => {
 
 async function findCallerSettings(req: Request) {
   const userOutletId = (req as any).user?.outletId;
-  if (userOutletId) {
-    const settings = await prisma.settings.findFirst({
-      where: { outletId: userOutletId },
-    });
-    if (!settings) {
-      throw ApiError.notFound('Settings for your branch are not set up yet');
-    }
-    return settings;
+  // By role, not only by a missing outlet: a Super Admin account can still carry an
+  // outletId (admin@ovenisto.com is linked to DHA) and must not edit branch settings.
+  if (!userOutletId || (req as any).user?.role === 'Super Admin') {
+    throw ApiError.forbidden('Settings are per branch — sign in as that branch\'s Admin');
   }
-  const settings = await prisma.settings.findFirst();
+  
+  const settings = await prisma.settings.findFirst({
+    where: { outletId: userOutletId },
+  });
   if (!settings) {
-    throw ApiError.notFound('Restaurant settings not found');
+    throw ApiError.notFound('Settings for your branch are not set up yet');
   }
   return settings;
 }

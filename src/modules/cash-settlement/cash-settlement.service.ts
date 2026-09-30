@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database.js';
+import { getConfiguredPaymentMethods } from '../settings/settings.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { emitToOutlets } from '../../socket.js';
 
@@ -264,11 +265,7 @@ export function mapSettlement(s: any) {
 export async function getActiveBalances(outletScope: string | null) {
   let configuredMethods = ['Cash', 'Credit Card', 'Account', 'JazzCash', 'EasyPaisa'];
   try {
-    const settingsWhere: Prisma.SettingsWhereInput = outletScope ? { outletId: outletScope } : {};
-    const settings = await prisma.settings.findFirst({ where: settingsWhere });
-    if (settings && Array.isArray(settings.paymentMethods) && settings.paymentMethods.length > 0) {
-      configuredMethods = settings.paymentMethods;
-    }
+    configuredMethods = await getConfiguredPaymentMethods(outletScope);
   } catch {}
 
   const where: Prisma.OrderWhereInput = {
@@ -616,11 +613,7 @@ export async function getStaffActiveBalance(staffId: string, outletScope: string
 
   let configuredMethods = ['Cash', 'Credit Card', 'Account', 'JazzCash', 'EasyPaisa'];
   try {
-    const settingsWhere: Prisma.SettingsWhereInput = outletScope ? { outletId: outletScope } : {};
-    const settings = await prisma.settings.findFirst({ where: settingsWhere });
-    if (settings && Array.isArray(settings.paymentMethods) && settings.paymentMethods.length > 0) {
-      configuredMethods = settings.paymentMethods;
-    }
+    configuredMethods = await getConfiguredPaymentMethods(outletScope);
   } catch {}
 
   const initialByMethod: Record<string, number> = {};

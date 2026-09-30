@@ -4,6 +4,7 @@
  */
 import type { Request, Response } from 'express';
 import { prisma } from '../../config/database.js';
+import { getConfiguredPaymentMethods } from '../settings/settings.service.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
@@ -965,10 +966,7 @@ export const getSalesByPaymentMethod = asyncHandler(async (req: Request, res: Re
   // Zero-fill: every configured payment method shows even with nothing collected this period
   // (Cash is always included). Matched case-insensitively against what the parser returned so a
   // configured "Credit Card" and a parsed "credit card" don't become two rows.
-  const settingsRow = await prisma.settings.findFirst({ select: { paymentMethods: true } });
-  const configured = (settingsRow?.paymentMethods && settingsRow.paymentMethods.length > 0)
-    ? settingsRow.paymentMethods
-    : ['Cash', 'Credit Card', 'Account', 'JazzCash', 'EasyPaisa'];
+  const configured = await getConfiguredPaymentMethods(outletId ?? null);
   const wantedMethods = [...new Set(['Cash', ...configured])];
   const seenLower = new Set(byMethod.map((m) => m.method.toLowerCase()));
   const zeroFilled = [
