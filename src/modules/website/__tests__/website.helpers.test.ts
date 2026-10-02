@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus } from '../website.helpers.js';
+import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact } from '../website.helpers.js';
 
 describe('website.helpers.ts', () => {
   const dummyConfig: WebsiteConfig = {
@@ -15,6 +15,45 @@ describe('website.helpers.ts', () => {
     it('returns 0 for Take Away', () => {
       expect(computeDeliveryFee('Take Away', dummyConfig, 500)).toBe(0);
     });
+
+  describe('resolveBranchContact', () => {
+    const out = { address: 'Out Addr', phone: 'Out Phone', email: 'out@email', city: 'Out City' };
+    const set = { outletId: 'o1', address: 'Set Addr', phone: 'Set Phone', email: 'set@email' };
+
+    it('Settings wins over Outlet', () => {
+      const res = resolveBranchContact(out, set, 'o1');
+      expect(res.address).toBe('Set Addr');
+      expect(res.phone).toBe('Set Phone');
+      expect(res.email).toBe('set@email');
+      expect(res.city).toBe('Out City');
+    });
+
+    it('blank Settings value falls back to Outlet', () => {
+      const blankSet = { outletId: 'o1', address: '', phone: '   ', email: null };
+      const res = resolveBranchContact(out, blankSet, 'o1');
+      expect(res.address).toBe('Out Addr');
+      expect(res.phone).toBe('Out Phone');
+      expect(res.email).toBe('out@email');
+      expect(res.city).toBe('Out City');
+    });
+
+    it('another branch\'s Settings row is ignored', () => {
+      const res = resolveBranchContact(out, set, 'o2'); // target is o2, settings is for o1
+      expect(res.address).toBe('Out Addr');
+      expect(res.phone).toBe('Out Phone');
+      expect(res.email).toBe('out@email');
+      expect(res.city).toBe('Out City');
+    });
+
+    it('all empty gives nulls', () => {
+      const emptyOut = { address: '', phone: null, email: '   ', city: undefined };
+      const res = resolveBranchContact(emptyOut, null, 'o1');
+      expect(res.address).toBe(null);
+      expect(res.phone).toBe(null);
+      expect(res.email).toBe(null);
+      expect(res.city).toBe(null);
+    });
+  });
 
     it('returns deliveryFee for Delivery if under freeDeliveryAbove', () => {
       expect(computeDeliveryFee('Delivery', dummyConfig, 500)).toBe(150);

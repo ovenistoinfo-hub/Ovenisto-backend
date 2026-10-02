@@ -6,7 +6,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { buildPublicMenu } from '../menu/publicMenu.js';
 import { isDealCurrentlyValid, isDealAvailableForChannel, mapDealOutPublic } from '../deals/deal.pricing.js';
 import { getActiveOutlet, getOutletSettings, findOrCreateWebsiteCustomer } from './website.service.js';
-import { WEBSITE_ORDER_TYPES, parseWebsiteOrderType, readWebsiteConfig, isAcceptingOrders, WebsiteOrderType, normalizePkPhone, toWebsiteOrderStatus, validateReservationSlot, toWebsiteReservationStatus } from './website.helpers.js';
+import { WEBSITE_ORDER_TYPES, parseWebsiteOrderType, readWebsiteConfig, isAcceptingOrders, WebsiteOrderType, normalizePkPhone, toWebsiteOrderStatus, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact } from './website.helpers.js';
 import { priceWebsiteCart } from './website.pricing.js';
 import { emitOrderEvent } from '../../socket.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
@@ -18,13 +18,13 @@ const prisma = new PrismaClient();
 export const getOutlets = asyncHandler(async (req: Request, res: Response) => {
   const outlets = await prisma.outlet.findMany({
     where: { isActive: true },
-    select: { id: true, name: true, address: true, phone: true, isActive: true },
+    select: { id: true, name: true, address: true, phone: true, email: true, city: true, isActive: true },
     orderBy: { name: 'asc' },
   });
 
   const settings = await prisma.settings.findMany({
     where: { outletId: { in: outlets.map(o => o.id) } },
-    select: { outletId: true, onlineOrders: true, websiteConfig: true },
+    select: { outletId: true, onlineOrders: true, websiteConfig: true, phone: true, address: true, email: true },
   });
   const settingsByOutlet = Object.fromEntries(settings.map(s => [s.outletId, s]));
 
@@ -37,11 +37,14 @@ export const getOutlets = asyncHandler(async (req: Request, res: Response) => {
       config,
     });
     const acceptingReservations = o.isActive && config.reservationsEnabled;
+    const contact = resolveBranchContact(o, s, o.id);
     return {
       id: o.id,
       name: o.name,
-      address: o.address,
-      phone: o.phone,
+      address: contact.address,
+      phone: contact.phone,
+      email: contact.email,
+      city: contact.city,
       acceptingOrders,
       acceptingReservations,
     };

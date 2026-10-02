@@ -139,3 +139,24 @@ export function toWebsiteReservationStatus(status: string): string {
   }
 }
 
+
+export function resolveBranchContact(
+  outlet: { address?: string | null; phone?: string | null; email?: string | null; city?: string | null },
+  settings: { outletId?: string | null; address?: string | null; phone?: string | null; email?: string | null } | null | undefined,
+  outletId: string
+): { address: string | null; phone: string | null; email: string | null; city: string | null } {
+  const isTargetSettings = settings && settings.outletId === outletId;
+
+  const getVal = (setVal?: string | null, outVal?: string | null) => {
+    if (isTargetSettings && setVal && setVal.trim() !== '') return setVal.trim();
+    if (outVal && outVal.trim() !== '') return outVal.trim();
+    return null;
+  };
+
+  return {
+    address: getVal(settings?.address, outlet?.address),
+    phone: getVal(settings?.phone, outlet?.phone),
+    email: getVal(settings?.email, outlet?.email),
+    city: (outlet?.city && outlet.city.trim() !== '') ? outlet.city.trim() : null,
+  };
+}

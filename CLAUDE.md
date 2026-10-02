@@ -703,6 +703,12 @@ plus a body explaining _why_ the change was made when that is not obvious.
 - **Step 3 (accepted 2026-09-29, live-tested on DHA):** Added table reservations (`POST /api/website/reservations`, `GET /api/website/reservations/:id/status`). Gated by `reservationsEnabled` in `websiteConfig` (default false). `validateReservationSlot` safely enforces future PKT time and max advance days. Uses shared `findOrCreateWebsiteCustomer` logic. Responses never expose PII.
   - **Acceptance (self-order + website, `order/order.acceptance.ts`):** `acceptOrder`/`rejectOrder` at `/orders/:id/accept|reject` (legacy `accept-self-order`/`reject-self-order` aliases kept). Accept stamps the staff member and leaves the order PENDING for the kitchen — except an order with no kitchen-routed item goes READY with stock deduction (self-order drinks-only orders used to go READY at creation, skipping acceptance). `updateOrderStatus` (→ preparing/ready/completed), `updateOrderKitchenStatus`, `assignRider` and claim return **409** while awaiting acceptance; `getMyAssignments` hides such orders; a website Delivery order emits `delivery:unassigned` on accept, not on create.
 - **deliveryFee:** `Order.deliveryFee` (pushed to the DB 2026-09-29), included in `total`, never taxed; returned by `mapOrderOut`, the rider-API assignment DTOs and quotes.
+- **Branch contact on `GET /outlets` (Step 8a, 2026-10-01):** `address`/`phone`/`email` come from pure
+  `website.helpers.ts` `resolveBranchContact(outlet, settings, outletId)`. The branch's OWN Settings row
+  wins (what branch staff edit and receipts print), the Outlet row is the fallback, and a Settings row of
+  another branch is ignored — `getOutletSettings` falls back to the first row, which belongs to Main.
+  `city` comes from Outlet only. In prod the Outlet rows still hold Karachi seed data (DHA's Outlet says
+  "Clifton, Karachi" while its Settings has the real Lahore address), so the website never shows `city`.
 - **Step 4b (accepted 2026-09-30) — settings row lookup:** `GET /api/settings/mine` (`authenticate`)
   returns the caller's own outlet row through `findCallerSettings(req)` in `settings.controller.ts`, the
   same helper `updateSettings` uses, so read and write always pick the same row. A user whose outlet has
