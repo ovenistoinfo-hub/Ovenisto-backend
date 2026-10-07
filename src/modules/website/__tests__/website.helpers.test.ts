@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact } from '../website.helpers.js';
+import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, parseLocation } from '../website.helpers.js';
 
 describe('website.helpers.ts', () => {
   const dummyConfig: WebsiteConfig = {
@@ -9,6 +9,7 @@ describe('website.helpers.ts', () => {
     minOrder: 500,
     prepTimeMinutes: 30,
     reservationsEnabled: true,
+    location: null,
   };
 
   describe('computeDeliveryFee', () => {
@@ -189,3 +190,26 @@ describe('website.helpers.ts', () => {
     });
   });
 });
+
+  describe('parseLocation', () => {
+    it('parses valid object', () => {
+      expect(parseLocation({ lat: 31.47, lng: 74.3 })).toEqual({ lat: 31.47, lng: 74.3 });
+    });
+    it('parses numeric strings', () => {
+      expect(parseLocation({ lat: "31.47", lng: "74.3" })).toEqual({ lat: 31.47, lng: 74.3 });
+    });
+    it('rejects out of range', () => {
+      expect(parseLocation({ lat: 91, lng: 0 })).toBeNull();
+      expect(parseLocation({ lat: 0, lng: 181 })).toBeNull();
+    });
+    it('rejects (0,0)', () => {
+      expect(parseLocation({ lat: 0, lng: 0 })).toBeNull();
+    });
+    it('rejects missing or garbage', () => {
+      expect(parseLocation(null)).toBeNull();
+      expect(parseLocation("string")).toBeNull();
+      expect(parseLocation(123)).toBeNull();
+      expect(parseLocation([])).toBeNull();
+      expect(parseLocation({ lat: 31 })).toBeNull();
+    });
+  });

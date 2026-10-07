@@ -15,6 +15,7 @@ export interface WebsiteConfig {
   minOrder: number;
   prepTimeMinutes: number;
   reservationsEnabled: boolean;
+  location: { lat: number; lng: number } | null;
 }
 
 function parseNumber(value: unknown, defaultValue: number): number {
@@ -32,6 +33,24 @@ function parseNumberNullable(value: unknown, defaultValue: number | null): numbe
   return parsed;
 }
 
+
+export function parseLocation(value: unknown): { lat: number; lng: number } | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const obj = value as Record<string, unknown>;
+  if (!('lat' in obj) || !('lng' in obj)) return null;
+  
+  const lat = Number(obj.lat);
+  const lng = Number(obj.lng);
+  
+  if (Number.isNaN(lat) || !Number.isFinite(lat)) return null;
+  if (Number.isNaN(lng) || !Number.isFinite(lng)) return null;
+  if (lat === 0 && lng === 0) return null;
+  if (lat < -90 || lat > 90) return null;
+  if (lng < -180 || lng > 180) return null;
+  
+  return { lat, lng };
+}
+
 export function readWebsiteConfig(raw: unknown): WebsiteConfig {
   const defaults: WebsiteConfig = {
     enabled: false,
@@ -40,6 +59,7 @@ export function readWebsiteConfig(raw: unknown): WebsiteConfig {
     minOrder: 0,
     prepTimeMinutes: 30,
     reservationsEnabled: false,
+    location: null,
   };
 
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -67,7 +87,9 @@ export function readWebsiteConfig(raw: unknown): WebsiteConfig {
     prepTimeMinutes = parseNumber(obj.prepTime, defaults.prepTimeMinutes);
   }
 
-  return { enabled, deliveryFee, freeDeliveryAbove, minOrder, prepTimeMinutes, reservationsEnabled };
+  const location = parseLocation(obj.location);
+
+  return { enabled, deliveryFee, freeDeliveryAbove, minOrder, prepTimeMinutes, reservationsEnabled, location };
 }
 
 export function isAcceptingOrders(params: { outletActive: boolean; onlineOrders: boolean; config: WebsiteConfig }): boolean {

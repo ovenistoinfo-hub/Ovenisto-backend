@@ -47,10 +47,11 @@ export const getOutlets = asyncHandler(async (req: Request, res: Response) => {
       city: contact.city,
       acceptingOrders,
       acceptingReservations,
+      location: config.location,
     };
   });
 
-  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.setHeader('Cache-Control', 'no-cache');
   res.json(ApiResponse.success(result));
 });
 
@@ -70,7 +71,7 @@ export const getConfig = asyncHandler(async (req: Request, res: Response) => {
 
   const acceptingReservations = outlet.isActive && config.reservationsEnabled;
 
-  res.setHeader('Cache-Control', 'public, max-age=60');
+  res.setHeader('Cache-Control', 'no-cache');
   res.json(ApiResponse.success({
     outletId: outlet.id,
     outletName: outlet.name,
@@ -95,7 +96,7 @@ export const getMenu = asyncHandler(async (req: Request, res: Response) => {
 
   const menu = await buildPublicMenu(prisma, { outletId: outlet.id, orderType });
 
-  res.setHeader('Cache-Control', 'public, max-age=60');
+  res.setHeader('Cache-Control', 'no-cache');
   res.json(ApiResponse.success(menu));
 });
 
@@ -129,7 +130,7 @@ export const getDeals = asyncHandler(async (req: Request, res: Response) => {
     (d: any) => isDealCurrentlyValid(d).valid && isDealAvailableForChannel(d, orderType),
   );
 
-  res.setHeader('Cache-Control', 'public, max-age=60');
+  res.setHeader('Cache-Control', 'no-cache');
   res.json(ApiResponse.success(liveDeals.map((d: any) => mapDealOutPublic(d, orderType))));
 });
 
