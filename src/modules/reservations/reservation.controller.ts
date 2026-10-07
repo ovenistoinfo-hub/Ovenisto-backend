@@ -13,7 +13,9 @@ export function mapReservation(r: any) {
     date: r.date instanceof Date ? r.date.toISOString().split('T')[0] : r.date,
     advancePaid: r.advancePaid ? Number(r.advancePaid) : 0,
     subtotal: r.subtotal ? Number(r.subtotal) : 0,
+    discount: r.discount ? Number(r.discount) : 0,
     tax: r.tax ? Number(r.tax) : 0,
+    deliveryFee: r.deliveryFee ? Number(r.deliveryFee) : 0,
     totalAmount: r.totalAmount ? Number(r.totalAmount) : 0,
   };
 }
@@ -247,7 +249,11 @@ export const convertReservationToOrder = asyncHandler(async (req: Request, res: 
         phone: existing.customerPhone,
         type: prismaType,
         subtotal: existing.subtotal ? Number(existing.subtotal) : 0,
+        // Website pre-orders store their server-priced discount and delivery fee (0 for staff-made
+        // reservations), so the order's subtotal − discount + tax + fee still equals its total.
+        discount: Number(existing.discount ?? 0),
         tax: existing.tax ? Number(existing.tax) : 0,
+        deliveryFee: Number(existing.deliveryFee ?? 0),
         total: existing.totalAmount ? Number(existing.totalAmount) : (existing.subtotal ? Number(existing.subtotal) : 0),
         status: 'PENDING',
         paymentMethod: (existing.advancePaid && Number(existing.advancePaid) >= (existing.totalAmount ? Number(existing.totalAmount) : (existing.subtotal ? Number(existing.subtotal) : 0))) ? (existing.paymentMethod || 'Cash') : 'Pending',
@@ -255,6 +261,8 @@ export const convertReservationToOrder = asyncHandler(async (req: Request, res: 
         time: existing.time,
         tableNumber: existing.tableNumber ? parseInt(existing.tableNumber, 10) : null,
         deliveryAddress: existing.deliveryAddress || null,
+        deliveryLat: existing.deliveryLat ?? null,
+        deliveryLng: existing.deliveryLng ?? null,
         isFutureSale: existing.bookingType === 'future_order',
         scheduledDate: existing.date,
         scheduledTime: existing.time,
@@ -286,7 +294,9 @@ export const convertReservationToOrder = asyncHandler(async (req: Request, res: 
     }
 
     return { order, updatedRes };
-  });
+    // Deal revalidation adds several queries; Prisma's default 5 s cut this off (P2028) when tested
+    // against the Railway DB over the public proxy. Same headroom as the other multi-step transactions.
+  }, { timeout: 30000 });
 
   emitReservationEvent('reservation:updated', mapReservation(updatedRes), [updatedRes.outletId]);
   emitOrderEvent('order:created', order);

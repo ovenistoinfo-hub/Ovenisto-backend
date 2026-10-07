@@ -692,6 +692,17 @@ plus a body explaining _why_ the change was made when that is not obvious.
 ## Public Website API (/api/website)
 - **Endpoints:** `GET /api/website/outlets`, `/api/website/config`, `/api/website/menu`, `/api/website/deals`, `POST /api/website/quote`, `POST /api/website/orders`, `GET /api/website/orders/:id/status`.
 - **Branch location (Step 10, 2026-10-06):** `websiteConfig.location {lat,lng}`, read by `readWebsiteConfig` through pure `parseLocation` (finite numbers or numeric strings, in range, `(0,0)` rejected, else `null`). `GET /website/outlets` returns `location` per branch; the website uses it to auto-select the nearest branch. No schema column; branch Admins set it in staff Settings → Website.
+- **Website reservations with pre-orders (Step 12a, 2026-10-07):**
+  - **Endpoints and types:**
+    - `WEBSITE_BOOKING_TYPES` (Dine In / Take Away / Delivery) is accepted by `/website/menu`, `/website/deals` (Dine In → `availableDineIn: true`), the new `POST /website/reservations/quote` and `POST /website/reservations`.
+    - Orders and `/website/quote` keep `WEBSITE_ORDER_TYPES`.
+  - **Pricing:** reservations price through `priceWebsiteCart(..., checkStock: false)` (a future booking isn't refused on today's stock; no coupon code).
+  - **Storage:**
+    - `preOrderItems` uses the staff line shape. `attachDealTags` puts back the client's `dealGroupId`/`dealRole`, which `revalidateDealLines` drops but `convertReservationToOrder` needs when it revalidates again.
+    - New `Reservation.discount`/`deliveryFee`/`deliveryLat`/`deliveryLng`; `mapReservation` numbers the two Decimals.
+    - bookingType is `table_reservation` (Dine In) or `future_order`.
+  - **Convert:** `convertReservationToOrder` copies discount, delivery fee and coordinates to the order; its `$transaction` has `{ timeout: 30000 }` (P2028 at the 5 s default when tested over the public proxy).
+- **Delivery live location (Step 11, 2026-10-07):** `Order.deliveryLat`/`deliveryLng` (`Float?`). `POST /website/orders` accepts optional `deliveryLocation {lat,lng}` and stores it only for Delivery via pure `resolveDeliveryLocation(orderType, value)` → `parseLocation` (else both null). Every order `select` in `delivery.controller.ts` includes the two fields (`mapAssignment` spreads `a.order`), and `mapUnassignedDeliveryOrder` copies them explicitly — keep both in sync when adding a delivery query. Pushed to the staging DB 2026-10-07; production adds the columns on deploy (additive, no data-loss flag).
 - **Caching (Step 9, 2026-10-06):** the four read endpoints send `Cache-Control: no-cache`. They used to send `public, max-age=60` (outlets 300), and browsers then kept staff changes (ordering off, an item out of stock) off the website for minutes, even across reloads. Express's weak ETag turns an unchanged response into a 304. The status endpoints send `no-store`. Don't reintroduce `max-age` here.
 - **websiteConfig:** Parsed flexibly to handle legacy keys (`deliveryCharges` → `deliveryFee`, `prepTime` → `prepTimeMinutes`) and numeric strings, with canonical keys winning and defaults when unset or invalid.
 - **Shared Menu Builder:** `buildPublicMenu` in `src/modules/menu/publicMenu.ts` powers both self-order and website, isolating pure mapping (`toPublicMenuItem`) from DB lookup. Allows passing an optional `orderType` to fold channel pricing.

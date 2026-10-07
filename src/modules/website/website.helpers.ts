@@ -8,6 +8,49 @@ export function parseWebsiteOrderType(value: unknown): WebsiteOrderType | null {
   return null;
 }
 
+// Reservations (and the menu/deals that feed them) also allow Dine In; /website/quote and
+// /website/orders stay Delivery + Take Away (WEBSITE_ORDER_TYPES).
+export const WEBSITE_BOOKING_TYPES = ['Dine In', 'Take Away', 'Delivery'] as const;
+export type WebsiteBookingType = typeof WEBSITE_BOOKING_TYPES[number];
+
+export function parseWebsiteBookingType(value: unknown): WebsiteBookingType | null {
+  if (value === 'Dine In' || value === 'Take Away' || value === 'Delivery') {
+    return value;
+  }
+  return null;
+}
+
+export interface DealTaggedLine {
+  menuItemId?: string | null;
+  variantId?: string | null;
+  dealLineId?: string | null;
+  dealGroupId?: string | null;
+  dealRole?: 'buy' | 'get' | null;
+}
+
+/**
+ * revalidateDealLines returns deal lines without the client's `dealGroupId`/`dealRole`, but a stored
+ * reservation pre-order is revalidated AGAIN by convertReservationToOrder, which needs them (an
+ * OPTION_COMBO pick's group, a BUY_X_GET_Y line's side). Copy each priced deal line's tags from the
+ * first unused request line with the same dealLineId + menuItemId + variantId.
+ */
+export function attachDealTags<T extends DealTaggedLine>(
+  pricedItems: T[],
+  requestItems: DealTaggedLine[],
+): Array<T & Pick<DealTaggedLine, 'dealGroupId' | 'dealRole'>> {
+  const used = new Set<number>();
+  return pricedItems.map((priced) => {
+    if (!priced.dealLineId) return priced;
+    const idx = requestItems.findIndex((r, i) => !used.has(i)
+      && r.dealLineId === priced.dealLineId
+      && (r.menuItemId ?? null) === (priced.menuItemId ?? null)
+      && (r.variantId ?? null) === (priced.variantId ?? null));
+    if (idx === -1) return priced;
+    used.add(idx);
+    return { ...priced, dealGroupId: requestItems[idx].dealGroupId ?? null, dealRole: requestItems[idx].dealRole ?? null };
+  });
+}
+
 export interface WebsiteConfig {
   enabled: boolean;
   deliveryFee: number;
@@ -49,6 +92,13 @@ export function parseLocation(value: unknown): { lat: number; lng: number } | nu
   if (lng < -180 || lng > 180) return null;
   
   return { lat, lng };
+}
+
+export function resolveDeliveryLocation(orderType: WebsiteBookingType, value: unknown): { lat: number; lng: number } | null {
+  if (orderType === 'Delivery') {
+    return parseLocation(value);
+  }
+  return null;
 }
 
 export function readWebsiteConfig(raw: unknown): WebsiteConfig {
@@ -96,7 +146,7 @@ export function isAcceptingOrders(params: { outletActive: boolean; onlineOrders:
   return params.outletActive && params.onlineOrders && params.config.enabled;
 }
 
-export function computeDeliveryFee(orderType: WebsiteOrderType, config: WebsiteConfig, taxableSubtotal: number): number {
+export function computeDeliveryFee(orderType: WebsiteBookingType, config: WebsiteConfig, taxableSubtotal: number): number {
   if (orderType !== 'Delivery') return 0;
   if (config.freeDeliveryAbove !== null && taxableSubtotal >= config.freeDeliveryAbove) return 0;
   return config.deliveryFee;

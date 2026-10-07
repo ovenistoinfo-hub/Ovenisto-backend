@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import { WebsiteOrderType, WebsiteConfig, computeDeliveryFee } from './website.helpers.js';
+import { WebsiteOrderType, WebsiteBookingType, WebsiteConfig, computeDeliveryFee } from './website.helpers.js';
 import { getActiveOutlet, getOutletSettings } from './website.service.js';
 import { readWebsiteConfig, isAcceptingOrders } from './website.helpers.js';
 import { validateOrderStock } from '../order/order.controller.js';
@@ -12,8 +12,10 @@ function round2(num: number): number {
   return Math.round(num * 100) / 100;
 }
 
-export async function priceWebsiteCart(prisma: PrismaClient, req: { outletId: string, orderType: WebsiteOrderType, items: any[], dealCode?: string | null }) {
-  const { outletId, orderType, items, dealCode } = req;
+// `checkStock: false` is for reservation pre-orders: a booking days ahead must not be refused on
+// today's stock (the staff Reservations picker skips the check for the same reason).
+export async function priceWebsiteCart(prisma: PrismaClient, req: { outletId: string, orderType: WebsiteBookingType, items: any[], dealCode?: string | null, checkStock?: boolean }) {
+  const { outletId, orderType, items, dealCode, checkStock = true } = req;
 
   const outlet = await getActiveOutlet(outletId);
   const settings = await getOutletSettings(outlet.id);
@@ -22,7 +24,9 @@ export async function priceWebsiteCart(prisma: PrismaClient, req: { outletId: st
   const acceptingOrders = isAcceptingOrders({ outletActive: outlet.isActive, onlineOrders: settings?.onlineOrders ?? true, config });
 
   // Check stock (throws if out of stock)
-  await validateOrderStock(prisma, outlet.id, items);
+  if (checkStock !== false) {
+    await validateOrderStock(prisma, outlet.id, items);
+  }
 
   const itemsData: any[] = [];
   const linesOut: any[] = [];

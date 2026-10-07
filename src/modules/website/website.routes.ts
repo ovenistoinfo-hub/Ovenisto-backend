@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
-import { getOutlets, getConfig, getMenu, getDeals, quoteCart, createWebsiteOrder, getWebsiteOrderStatus, createWebsiteReservation, getWebsiteReservationStatus } from './website.controller.js';
+import { getOutlets, getConfig, getMenu, getDeals, quoteCart, createWebsiteOrder, getWebsiteOrderStatus, createWebsiteReservation, getWebsiteReservationStatus, quoteWebsiteReservation } from './website.controller.js';
 import { validateRequest } from '../../middleware/validateRequest.js';
-import { quoteCartSchema, createOrderSchema, reservationSchema } from './website.schema.js';
+import { quoteCartSchema, createOrderSchema, reservationSchema, quoteReservationSchema } from './website.schema.js';
 
 export const websiteRouter = Router();
 
@@ -47,6 +47,7 @@ websiteRouter.post('/quote', quoteLimiter, validateRequest({ body: quoteCartSche
 websiteRouter.post('/orders', orderLimiter, validateRequest({ body: createOrderSchema }), createWebsiteOrder);
 websiteRouter.get('/orders/:id/status', readLimiter, getWebsiteOrderStatus);
 
+websiteRouter.post('/reservations/quote', quoteLimiter, validateRequest({ body: quoteReservationSchema }), quoteWebsiteReservation);
 websiteRouter.post('/reservations', reservationLimiter, validateRequest({ body: reservationSchema }), createWebsiteReservation);
 websiteRouter.get('/reservations/:id/status', readLimiter, getWebsiteReservationStatus);
 

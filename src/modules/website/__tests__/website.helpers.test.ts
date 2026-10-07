@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, parseLocation } from '../website.helpers.js';
+import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, parseLocation, resolveDeliveryLocation, parseWebsiteBookingType, attachDealTags } from '../website.helpers.js';
 
 describe('website.helpers.ts', () => {
   const dummyConfig: WebsiteConfig = {
@@ -189,7 +189,6 @@ describe('website.helpers.ts', () => {
       expect(toWebsiteReservationStatus('unknown_status_xyz')).toBe('pending');
     });
   });
-});
 
   describe('parseLocation', () => {
     it('parses valid object', () => {
@@ -213,3 +212,74 @@ describe('website.helpers.ts', () => {
       expect(parseLocation({ lat: 31 })).toBeNull();
     });
   });
+
+  describe('resolveDeliveryLocation', () => {
+    it('returns point for Delivery with valid point', () => {
+      expect(resolveDeliveryLocation('Delivery', { lat: 31.47, lng: 74.3 })).toEqual({ lat: 31.47, lng: 74.3 });
+    });
+    it('returns null for Take Away with valid point', () => {
+      expect(resolveDeliveryLocation('Take Away', { lat: 31.47, lng: 74.3 })).toBeNull();
+    });
+    it('returns null for Delivery with invalid point', () => {
+      expect(resolveDeliveryLocation('Delivery', { lat: 0, lng: 0 })).toBeNull();
+      expect(resolveDeliveryLocation('Delivery', null)).toBeNull();
+      expect(resolveDeliveryLocation('Delivery', { lat: 91, lng: 0 })).toBeNull();
+    });
+    it('returns null for Dine In', () => {
+      expect(resolveDeliveryLocation('Dine In', { lat: 31.47, lng: 74.3 })).toBeNull();
+    });
+  });
+
+  describe('parseWebsiteBookingType', () => {
+    it('accepts the three booking channels and nothing else', () => {
+      expect(parseWebsiteBookingType('Dine In')).toBe('Dine In');
+      expect(parseWebsiteBookingType('Take Away')).toBe('Take Away');
+      expect(parseWebsiteBookingType('Delivery')).toBe('Delivery');
+      expect(parseWebsiteBookingType('Foodpanda')).toBeNull();
+      expect(parseWebsiteBookingType(undefined)).toBeNull();
+    });
+  });
+
+  describe('attachDealTags', () => {
+    const plain = { menuItemId: 'p1', variantId: null, dealLineId: null, name: 'Fries' };
+
+    it('puts an option-combo pick back in its group', () => {
+      const priced = [{ menuItemId: 'm1', variantId: 'v1', dealLineId: 'L1', name: 'Combo: Burger' }];
+      const request = [{ menuItemId: 'm1', variantId: 'v1', dealLineId: 'L1', dealGroupId: 'g-main' }];
+      expect(attachDealTags(priced, request)[0]).toMatchObject({ dealGroupId: 'g-main', dealRole: null });
+    });
+
+    it('restores the BUY/GET side of a Buy X Get Y line', () => {
+      const priced = [
+        { menuItemId: 'pizza', variantId: 'L', dealLineId: 'B1' },
+        { menuItemId: 'drink', variantId: null, dealLineId: 'B1' },
+      ];
+      const request = [
+        { menuItemId: 'drink', variantId: undefined, dealLineId: 'B1', dealRole: 'get' as const },
+        { menuItemId: 'pizza', variantId: 'L', dealLineId: 'B1', dealRole: 'buy' as const },
+      ];
+      const tagged = attachDealTags(priced, request);
+      expect(tagged[0].dealRole).toBe('buy');
+      expect(tagged[1].dealRole).toBe('get');
+    });
+
+    it('gives two identical items in one deal line two different request rows', () => {
+      const priced = [
+        { menuItemId: 'can', variantId: null, dealLineId: 'L2' },
+        { menuItemId: 'can', variantId: null, dealLineId: 'L2' },
+      ];
+      const request = [
+        { menuItemId: 'can', variantId: null, dealLineId: 'L2', dealGroupId: 'g-drink-1' },
+        { menuItemId: 'can', variantId: null, dealLineId: 'L2', dealGroupId: 'g-drink-2' },
+      ];
+      expect(attachDealTags(priced, request).map(l => l.dealGroupId)).toEqual(['g-drink-1', 'g-drink-2']);
+    });
+
+    it('leaves plain lines and unmatched deal lines untouched', () => {
+      const orphan = { menuItemId: 'x', variantId: null, dealLineId: 'L9' };
+      const tagged = attachDealTags([plain, orphan], [{ menuItemId: 'y', variantId: null, dealLineId: 'L9', dealGroupId: 'g' }]);
+      expect(tagged[0]).toBe(plain);
+      expect(tagged[1]).toBe(orphan);
+    });
+  });
+});

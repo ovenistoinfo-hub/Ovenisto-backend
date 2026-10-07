@@ -6,7 +6,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { buildPublicMenu } from '../menu/publicMenu.js';
 import { isDealCurrentlyValid, isDealAvailableForChannel, mapDealOutPublic } from '../deals/deal.pricing.js';
 import { getActiveOutlet, getOutletSettings, findOrCreateWebsiteCustomer } from './website.service.js';
-import { WEBSITE_ORDER_TYPES, parseWebsiteOrderType, readWebsiteConfig, isAcceptingOrders, WebsiteOrderType, normalizePkPhone, toWebsiteOrderStatus, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact } from './website.helpers.js';
+import { WEBSITE_ORDER_TYPES, readWebsiteConfig, isAcceptingOrders, WebsiteOrderType, WebsiteBookingType, parseWebsiteBookingType, normalizePkPhone, toWebsiteOrderStatus, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, resolveDeliveryLocation, attachDealTags, type DealTaggedLine } from './website.helpers.js';
 import { priceWebsiteCart } from './website.pricing.js';
 import { emitOrderEvent } from '../../socket.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
@@ -89,9 +89,10 @@ export const getConfig = asyncHandler(async (req: Request, res: Response) => {
   }));
 });
 
+// Menu and deals also serve Dine In, for reservation pre-orders.
 export const getMenu = asyncHandler(async (req: Request, res: Response) => {
   const outlet = await getActiveOutlet(req.query.outletId);
-  const orderType = parseWebsiteOrderType(req.query.orderType);
+  const orderType = parseWebsiteBookingType(req.query.orderType);
   if (!orderType) throw ApiError.badRequest('Invalid orderType');
 
   const menu = await buildPublicMenu(prisma, { outletId: outlet.id, orderType });
@@ -102,7 +103,7 @@ export const getMenu = asyncHandler(async (req: Request, res: Response) => {
 
 export const getDeals = asyncHandler(async (req: Request, res: Response) => {
   const outlet = await getActiveOutlet(req.query.outletId);
-  const orderType = parseWebsiteOrderType(req.query.orderType);
+  const orderType = parseWebsiteBookingType(req.query.orderType);
   if (!orderType) throw ApiError.badRequest('Invalid orderType');
 
   const deals = await prisma.deal.findMany({
@@ -113,6 +114,7 @@ export const getDeals = asyncHandler(async (req: Request, res: Response) => {
       type: { notIn: ['PROMO_CODE', 'MIN_SPEND', 'ORDER_DISCOUNT'] },
       ...(orderType === 'Delivery' ? { availableDelivery: true } : {}),
       ...(orderType === 'Take Away' ? { availableTakeaway: true } : {}),
+      ...(orderType === 'Dine In' ? { availableDineIn: true } : {}),
       OR: [{ outletIds: { isEmpty: true } }, { outletIds: { has: outlet.id } }],
     },
     include: {
@@ -145,7 +147,7 @@ export const quoteCart = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const createWebsiteOrder = asyncHandler(async (req: Request, res: Response) => {
-  const { outletId, orderType, items, dealCode, customerName, customerPhone, deliveryAddress, specialInstructions, clientRequestId } = req.body;
+  const { outletId, orderType, items, dealCode, customerName, customerPhone, deliveryAddress, deliveryLocation, specialInstructions, clientRequestId } = req.body;
   
   if (clientRequestId) {
     const existing = await prisma.order.findFirst({
@@ -193,6 +195,8 @@ export const createWebsiteOrder = asyncHandler(async (req: Request, res: Respons
   const orderNumber = await generateOrderNumber();
   const dbOrderType = orderType === 'Delivery' ? 'DELIVERY' : 'TAKE_AWAY';
   const now = new Date();
+  
+  const resolvedLocation = resolveDeliveryLocation(orderType, deliveryLocation);
 
   const order = await prisma.order.create({
     data: {
@@ -216,6 +220,8 @@ export const createWebsiteOrder = asyncHandler(async (req: Request, res: Respons
       staffId: null,
       staffName: 'Website',
       deliveryAddress: orderType === 'Delivery' ? deliveryAddress : null,
+      deliveryLat: resolvedLocation?.lat ?? null,
+      deliveryLng: resolvedLocation?.lng ?? null,
       orderSource: 'website',
       cashApproved: true,
       clientRequestId: clientRequestId || null,
@@ -294,8 +300,69 @@ export const getWebsiteOrderStatus = asyncHandler(async (req: Request, res: Resp
   }));
 });
 
+interface ReservationItemInput extends DealTaggedLine {
+  name: string;
+  qty: number;
+  modifierIds?: string[];
+  notes?: string | null;
+  dealId?: string | null;
+}
+
+// Same figures as /website/quote, for a booking: Dine In allowed, no stock check (the booking is for
+// a later date), no coupon code (a Minimum Spend deal still auto-applies inside the kernel).
+export const quoteWebsiteReservation = asyncHandler(async (req: Request, res: Response) => {
+  const { outletId, orderType, items } = req.body as { outletId: string; orderType: WebsiteBookingType; items: ReservationItemInput[] };
+
+  const outlet = await getActiveOutlet(outletId);
+  const settings = await getOutletSettings(outlet.id);
+  const config = readWebsiteConfig(settings?.websiteConfig);
+  const acceptingReservations = outlet.isActive && config.reservationsEnabled;
+
+  if (items.length === 0) {
+    // Only Dine In gets here (the schema requires items otherwise): a table booking with no pre-order.
+    res.json(ApiResponse.success({
+      acceptingReservations,
+      lines: [],
+      subtotal: 0,
+      discount: 0,
+      appliedDeal: null,
+      taxRate: settings?.taxRate != null ? Number(settings.taxRate) : 16,
+      tax: 0,
+      deliveryFee: 0,
+      total: 0,
+      minOrder: config.minOrder,
+      meetsMinOrder: true,
+      freeDeliveryAbove: config.freeDeliveryAbove,
+    }));
+    return;
+  }
+
+  const priced = await priceWebsiteCart(prisma, { outletId: outlet.id, orderType, items, checkStock: false });
+  res.json(ApiResponse.success({
+    acceptingReservations,
+    lines: priced.lines,
+    subtotal: priced.subtotal,
+    discount: priced.discount,
+    appliedDeal: priced.appliedDeal,
+    taxRate: priced.taxRate,
+    tax: priced.tax,
+    deliveryFee: priced.deliveryFee,
+    total: priced.total,
+    minOrder: priced.minOrder,
+    meetsMinOrder: priced.meetsMinOrder,
+    freeDeliveryAbove: priced.freeDeliveryAbove,
+  }));
+});
+
 export const createWebsiteReservation = asyncHandler(async (req: Request, res: Response) => {
-  const { outletId, customerName, customerPhone, date, time, guestCount, specialRequests } = req.body;
+  const {
+    outletId, customerName, customerPhone, date, time, guestCount, specialRequests,
+    orderType, items, deliveryAddress, deliveryLocation,
+  } = req.body as {
+    outletId: string; customerName: string; customerPhone: string; date: string; time: string;
+    guestCount: number; specialRequests?: string; orderType: WebsiteBookingType;
+    items: ReservationItemInput[]; deliveryAddress?: string; deliveryLocation?: unknown;
+  };
 
   const outlet = await getActiveOutlet(outletId);
   const settings = await getOutletSettings(outlet.id);
@@ -333,8 +400,39 @@ export const createWebsiteReservation = asyncHandler(async (req: Request, res: R
       time,
       guestCount: existing.guestCount,
       outletName: outlet.name,
+      orderType: existing.orderType,
+      totalAmount: Number(existing.totalAmount),
     }));
   }
+
+  // Price the pre-order before anything is written, so a bad item or deal rejects the whole booking.
+  const priced = items.length > 0
+    ? await priceWebsiteCart(prisma, { outletId: outlet.id, orderType, items, checkStock: false })
+    : null;
+  if (priced && !priced.meetsMinOrder) {
+    throw ApiError.badRequest(`Minimum order for delivery is Rs. ${priced.minOrder}`);
+  }
+  // Stored in the staff pre-order line shape; convertReservationToOrder revalidates deal lines again
+  // later, so the client's deal tags are put back on (attachDealTags).
+  const preOrderItems = priced
+    ? attachDealTags(priced.itemsData, items).map((i) => ({
+        menuItemId: i.menuItemId ?? null,
+        variantId: i.variantId ?? null,
+        name: i.name,
+        price: i.price,
+        qty: i.qty,
+        discount: i.discount ?? 0,
+        modifiers: i.modifiers ?? [],
+        modifierIds: i.modifierIds ?? [],
+        notes: i.notes ?? null,
+        dealId: i.dealId ?? null,
+        dealName: i.dealName ?? null,
+        dealLineId: i.dealLineId ?? null,
+        dealGroupId: i.dealGroupId ?? null,
+        dealRole: i.dealRole ?? null,
+      }))
+    : null;
+  const location = resolveDeliveryLocation(orderType, deliveryLocation);
 
   await findOrCreateWebsiteCustomer(prisma, { name: customerName, phone });
 
@@ -349,8 +447,18 @@ export const createWebsiteReservation = asyncHandler(async (req: Request, res: R
       specialRequests: specialRequests ?? null,
       source: 'website',
       outletId: outlet.id,
-      bookingType: 'table_reservation',
-      orderType: 'Dine In',
+      // Staff convention: a Dine In booking is a table reservation, Take Away / Delivery a future order.
+      bookingType: orderType === 'Dine In' ? 'table_reservation' : 'future_order',
+      orderType,
+      deliveryAddress: orderType === 'Delivery' ? deliveryAddress ?? null : null,
+      deliveryLat: location?.lat ?? null,
+      deliveryLng: location?.lng ?? null,
+      ...(preOrderItems ? { preOrderItems } : {}),
+      subtotal: priced?.subtotal ?? 0,
+      discount: priced?.discount ?? 0,
+      tax: priced?.tax ?? 0,
+      deliveryFee: priced?.deliveryFee ?? 0,
+      totalAmount: priced?.total ?? 0,
     }
   });
 
@@ -363,6 +471,8 @@ export const createWebsiteReservation = asyncHandler(async (req: Request, res: R
     time,
     guestCount,
     outletName: outlet.name,
+    orderType,
+    totalAmount: priced?.total ?? 0,
   }));
 });
 
@@ -389,6 +499,8 @@ export const getWebsiteReservationStatus = asyncHandler(async (req: Request, res
     time: reservation.time,
     guestCount: reservation.guestCount,
     outletName: reservation.outlet?.name,
+    orderType: reservation.orderType,
+    totalAmount: Number(reservation.totalAmount),
     createdAt: reservation.createdAt,
   }));
 });
