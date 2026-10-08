@@ -30,5 +30,6 @@ USER appuser
 # Expose API port
 EXPOSE 3001
 
-# Use retry wrapper for db push (handles Neon cold-start), then start server
-CMD ["sh", "-c", "node scripts/db-push.mjs && node dist/index.js"]
+# Schema sync runs once per deploy as Railway's preDeployCommand (railway.json), not here: with
+# Serverless on, this command runs again on every wake from sleep and `db push` would slow each one.
+CMD ["node", "dist/index.js"]

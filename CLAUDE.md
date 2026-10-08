@@ -81,8 +81,10 @@ database.
 
 ### Deployment
 
-`npm start` runs `scripts/db-push.mjs` **before** `dist/index.js`, so a deploy pushes the
-schema automatically. Socket.IO CORS additionally allows any `*.vercel.app` origin and
+A deploy pushes the schema automatically: `railway.json` `preDeployCommand: ["npm run db:push"]` runs
+`scripts/db-push.mjs` once per deploy, in a separate container with the service's env vars. If it fails
+the deploy doesn't proceed and the old build keeps serving. `npm start` / the Dockerfile `CMD` only run
+`node dist/index.js` (since 2026-10-08), so a wake from Railway Serverless sleep doesn't repeat the push. Socket.IO CORS additionally allows any `*.vercel.app` origin and
 localhost, which is how frontend preview deploys connect.
 
 ## Commands

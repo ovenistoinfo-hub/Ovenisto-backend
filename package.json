@@ -8,7 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "dev:nodemon": "nodemon --watch src --ext ts --exec \"tsx src/index.ts\"",
     "build": "prisma generate && tsc",
-    "start": "node scripts/db-push.mjs && node dist/index.js",
+    "start": "node dist/index.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:push": "node scripts/db-push.mjs",
