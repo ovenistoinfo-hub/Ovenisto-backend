@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, parseLocation, resolveDeliveryLocation, parseWebsiteBookingType, attachDealTags } from '../website.helpers.js';
+import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, parseLocation, resolveDeliveryLocation, parseWebsiteBookingType, attachDealTags, preOrderSignature } from '../website.helpers.js';
 
 describe('website.helpers.ts', () => {
   const dummyConfig: WebsiteConfig = {
@@ -280,6 +280,35 @@ describe('website.helpers.ts', () => {
       const tagged = attachDealTags([plain, orphan], [{ menuItemId: 'y', variantId: null, dealLineId: 'L9', dealGroupId: 'g' }]);
       expect(tagged[0]).toBe(plain);
       expect(tagged[1]).toBe(orphan);
+    });
+  });
+
+  describe('preOrderSignature', () => {
+    // What the website sends vs. what a reservation stores for the same cart.
+    const sent = [
+      { menuItemId: 'zinger', qty: 1, modifierIds: ['cheese', 'mayo'] },
+      { menuItemId: 'tikka', variantId: 'med', qty: 1, dealId: 'duo', dealLineId: 'client-1' },
+    ];
+    const stored = [
+      { menuItemId: 'tikka', variantId: 'med', qty: 1, dealId: 'duo', dealLineId: 'server-kept', price: 999 },
+      { menuItemId: 'zinger', variantId: null, qty: 1, dealId: null, modifierIds: [{ modifierId: 'mayo', qty: 1 }, { modifierId: 'cheese', qty: 1 }] },
+    ];
+
+    it('matches the same cart in either shape and order', () => {
+      expect(preOrderSignature(stored)).toBe(preOrderSignature(sent));
+    });
+
+    it('treats no pre-order and an empty one alike', () => {
+      expect(preOrderSignature(null)).toBe(preOrderSignature([]));
+    });
+
+    it('differs when a qty, size, modifier or deal changes', () => {
+      const base = preOrderSignature(sent);
+      expect(preOrderSignature([{ ...sent[0], qty: 2 }, sent[1]])).not.toBe(base);
+      expect(preOrderSignature([sent[0], { ...sent[1], variantId: 'large' }])).not.toBe(base);
+      expect(preOrderSignature([{ ...sent[0], modifierIds: ['cheese'] }, sent[1]])).not.toBe(base);
+      expect(preOrderSignature([sent[0], { ...sent[1], dealId: null }])).not.toBe(base);
+      expect(preOrderSignature([sent[0]])).not.toBe(base);
     });
   });
 });

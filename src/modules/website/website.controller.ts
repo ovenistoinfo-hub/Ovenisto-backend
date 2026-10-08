@@ -6,7 +6,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { buildPublicMenu } from '../menu/publicMenu.js';
 import { isDealCurrentlyValid, isDealAvailableForChannel, mapDealOutPublic } from '../deals/deal.pricing.js';
 import { getActiveOutlet, getOutletSettings, findOrCreateWebsiteCustomer } from './website.service.js';
-import { WEBSITE_ORDER_TYPES, readWebsiteConfig, isAcceptingOrders, WebsiteOrderType, WebsiteBookingType, parseWebsiteBookingType, normalizePkPhone, toWebsiteOrderStatus, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, resolveDeliveryLocation, attachDealTags, type DealTaggedLine } from './website.helpers.js';
+import { WEBSITE_ORDER_TYPES, readWebsiteConfig, isAcceptingOrders, WebsiteOrderType, WebsiteBookingType, parseWebsiteBookingType, normalizePkPhone, toWebsiteOrderStatus, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, resolveDeliveryLocation, attachDealTags, preOrderSignature, type DealTaggedLine, type PreOrderLineLike } from './website.helpers.js';
 import { priceWebsiteCart } from './website.pricing.js';
 import { emitOrderEvent } from '../../socket.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
@@ -381,18 +381,27 @@ export const createWebsiteReservation = asyncHandler(async (req: Request, res: R
     throw ApiError.badRequest(slotError);
   }
 
+  // A double-submit of the same booking gets the stored one back. The same slot with another type is a
+  // separate booking. The same type with a different pre-order is refused, never swallowed: the website
+  // clears the customer's cart once a booking succeeds.
   const existing = await prisma.reservation.findFirst({
     where: {
       outletId: outlet.id,
       customerPhone: phone,
       date: new Date(date),
       time,
+      orderType,
       source: 'website',
       status: { in: ['pending', 'confirmed'] },
     }
   });
 
   if (existing) {
+    const storedLines = Array.isArray(existing.preOrderItems) ? existing.preOrderItems as unknown as PreOrderLineLike[] : null;
+    if (preOrderSignature(storedLines) !== preOrderSignature(items)) {
+      const label = orderType === 'Take Away' ? 'pickup' : orderType === 'Delivery' ? 'delivery' : 'table';
+      throw ApiError.conflict(`You already have a ${label} booking at ${time} on ${date}. Pick another time, or call the branch to change it.`);
+    }
     return res.status(200).json(ApiResponse.success({
       reservationId: existing.id,
       status: existing.status,

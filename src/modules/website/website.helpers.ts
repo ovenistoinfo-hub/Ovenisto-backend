@@ -51,6 +51,37 @@ export function attachDealTags<T extends DealTaggedLine>(
   });
 }
 
+/** A pre-order line as the website sends it, or as a reservation stores it (`preOrderItems`). */
+export interface PreOrderLineLike {
+  menuItemId?: string | null;
+  variantId?: string | null;
+  qty?: number | string | null;
+  dealId?: string | null;
+  // The website sends modifier ids; a stored line holds [{ modifierId, qty }].
+  modifierIds?: unknown;
+}
+
+function modifierKey(raw: unknown): string {
+  if (!Array.isArray(raw)) return '';
+  return raw
+    .map((m) => (typeof m === 'string' ? m : (m && typeof m === 'object' && 'modifierId' in m ? String(m.modifierId) : '')))
+    .filter(Boolean)
+    .sort()
+    .join(',');
+}
+
+/**
+ * Order-independent fingerprint of a pre-order: item, size, qty, modifiers and deal per line. Prices
+ * are left out (the server re-prices) and so is the client-made dealLineId. Two bookings with the same
+ * signature are the same booking submitted twice.
+ */
+export function preOrderSignature(lines: PreOrderLineLike[] | null | undefined): string {
+  return (lines ?? [])
+    .map((l) => [l.menuItemId ?? '', l.variantId ?? '', Number(l.qty ?? 0), modifierKey(l.modifierIds), l.dealId ?? ''].join('|'))
+    .sort()
+    .join(';');
+}
+
 export interface WebsiteConfig {
   enabled: boolean;
   deliveryFee: number;
