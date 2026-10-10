@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
-import { getOutlets, getConfig, getMenu, getDeals, quoteCart, createWebsiteOrder, getWebsiteOrderStatus, createWebsiteReservation, getWebsiteReservationStatus, quoteWebsiteReservation } from './website.controller.js';
+import { getOutlets, getConfig, getMenu, getDeals, quoteCart, createWebsiteOrder, getWebsiteOrderStatus, createWebsiteReservation, getWebsiteReservationStatus, quoteWebsiteReservation, getMyWebsiteOrders, getMyWebsiteReservations } from './website.controller.js';
+import { requireWebsiteCustomer } from './website.auth.js';
 import { validateRequest } from '../../middleware/validateRequest.js';
 import { quoteCartSchema, createOrderSchema, reservationSchema, quoteReservationSchema } from './website.schema.js';
 
@@ -44,10 +45,14 @@ websiteRouter.get('/menu', readLimiter, getMenu);
 websiteRouter.get('/deals', readLimiter, getDeals);
 
 websiteRouter.post('/quote', quoteLimiter, validateRequest({ body: quoteCartSchema }), quoteCart);
-websiteRouter.post('/orders', orderLimiter, validateRequest({ body: createOrderSchema }), createWebsiteOrder);
+// Placing an order or a booking needs a signed-in customer (Firebase ID token); browsing and quotes don't.
+websiteRouter.post('/orders', orderLimiter, requireWebsiteCustomer, validateRequest({ body: createOrderSchema }), createWebsiteOrder);
 websiteRouter.get('/orders/:id/status', readLimiter, getWebsiteOrderStatus);
 
 websiteRouter.post('/reservations/quote', quoteLimiter, validateRequest({ body: quoteReservationSchema }), quoteWebsiteReservation);
-websiteRouter.post('/reservations', reservationLimiter, validateRequest({ body: reservationSchema }), createWebsiteReservation);
+websiteRouter.post('/reservations', reservationLimiter, requireWebsiteCustomer, validateRequest({ body: reservationSchema }), createWebsiteReservation);
 websiteRouter.get('/reservations/:id/status', readLimiter, getWebsiteReservationStatus);
+
+websiteRouter.get('/my/orders', readLimiter, requireWebsiteCustomer, getMyWebsiteOrders);
+websiteRouter.get('/my/reservations', readLimiter, requireWebsiteCustomer, getMyWebsiteReservations);
 

@@ -263,3 +263,9 @@ export function resolveBranchContact(
     city: (outlet?.city && outlet.city.trim() !== '') ? outlet.city.trim() : null,
   };
 }
+
+/** The token from an `Authorization: Bearer <token>` header, or null when there is none. */
+export function parseBearerToken(header: string | undefined): string | null {
+  const match = /^Bearer\s+(\S+)\s*$/i.exec(header ?? '');
+  return match ? match[1] : null;
+}

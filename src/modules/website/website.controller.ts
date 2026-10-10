@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
@@ -225,6 +225,7 @@ export const createWebsiteOrder = asyncHandler(async (req: Request, res: Respons
       orderSource: 'website',
       cashApproved: true,
       clientRequestId: clientRequestId || null,
+      customerUid: res.locals.customerUid ?? null,
       items: {
         create: priced.itemsData.map(i => ({
           menuItemId: i.menuItemId,
@@ -267,37 +268,58 @@ export const getWebsiteOrderStatus = asyncHandler(async (req: Request, res: Resp
     throw ApiError.badRequest('Invalid order ID format');
   }
 
-  const order = await prisma.order.findUnique({ 
+  const order = await prisma.order.findUnique({
     where: { id },
-    include: {
-      items: { where: { status: 'active' } },
-      deliveries: { where: { status: { not: 'returned' } }, orderBy: { assignedAt: 'desc' }, take: 1 },
-      outlet: { select: { name: true } }
-    }
+    include: ORDER_STATUS_INCLUDE,
   });
 
   if (!order || order.orderSource !== 'website') {
     throw ApiError.notFound('Order not found');
   }
-  
-  const activeAssignmentStatus = order.deliveries.length > 0 ? order.deliveries[0].status : null;
-  const status = toWebsiteOrderStatus(order, activeAssignmentStatus);
-  
-  const displayType = order.type === 'DELIVERY' ? 'Delivery' : 'Take Away';
 
   res.setHeader('Cache-Control', 'no-store');
-  res.json(ApiResponse.success({
+  res.json(ApiResponse.success(toOrderStatusView(order)));
+});
+
+// The order status view, shared by /orders/:id/status and /my/orders.
+const ORDER_STATUS_INCLUDE = {
+  items: { where: { status: 'active' } },
+  deliveries: { where: { status: { not: 'returned' } }, orderBy: { assignedAt: 'desc' }, take: 1 },
+  outlet: { select: { name: true } },
+} satisfies Prisma.OrderInclude;
+
+function toOrderStatusView(order: Prisma.OrderGetPayload<{ include: typeof ORDER_STATUS_INCLUDE }>) {
+  const activeAssignmentStatus = order.deliveries.length > 0 ? order.deliveries[0].status : null;
+  return {
     orderId: order.id,
     orderNumber: order.orderNumber,
-    type: displayType,
-    status,
+    type: order.type === 'DELIVERY' ? 'Delivery' : 'Take Away',
+    status: toWebsiteOrderStatus(order, activeAssignmentStatus),
     rejectionReason: order.rejectionReason,
     total: Number(order.total),
     deliveryFee: Number(order.deliveryFee || 0),
     items: order.items.map(i => ({ name: i.name, qty: i.qty })),
     outletName: order.outlet?.name || 'Unknown',
     createdAt: order.createdAt
-  }));
+  };
+}
+
+/** The signed-in customer's Firebase uid (set by requireWebsiteCustomer). Never query without one. */
+function signedInUid(res: Response): string {
+  const uid = res.locals.customerUid as string | undefined;
+  if (!uid) throw ApiError.unauthorized('Please sign in to continue');
+  return uid;
+}
+
+export const getMyWebsiteOrders = asyncHandler(async (req: Request, res: Response) => {
+  const orders = await prisma.order.findMany({
+    where: { customerUid: signedInUid(res), orderSource: 'website' },
+    include: ORDER_STATUS_INCLUDE,
+    orderBy: { createdAt: 'desc' },
+    take: 50,
+  });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(ApiResponse.success(orders.map(toOrderStatusView)));
 });
 
 interface ReservationItemInput extends DealTaggedLine {
@@ -468,6 +490,7 @@ export const createWebsiteReservation = asyncHandler(async (req: Request, res: R
       tax: priced?.tax ?? 0,
       deliveryFee: priced?.deliveryFee ?? 0,
       totalAmount: priced?.total ?? 0,
+      customerUid: res.locals.customerUid ?? null,
     }
   });
 
@@ -493,7 +516,7 @@ export const getWebsiteReservationStatus = asyncHandler(async (req: Request, res
 
   const reservation = await prisma.reservation.findUnique({
     where: { id },
-    include: { outlet: true }
+    include: RESERVATION_STATUS_INCLUDE,
   });
 
   if (!reservation || reservation.source !== 'website') {
@@ -501,7 +524,14 @@ export const getWebsiteReservationStatus = asyncHandler(async (req: Request, res
   }
 
   res.setHeader('Cache-Control', 'no-store');
-  res.json(ApiResponse.success({
+  res.json(ApiResponse.success(toReservationStatusView(reservation)));
+});
+
+// The booking status view, shared by /reservations/:id/status and /my/reservations.
+const RESERVATION_STATUS_INCLUDE = { outlet: { select: { name: true } } } satisfies Prisma.ReservationInclude;
+
+function toReservationStatusView(reservation: Prisma.ReservationGetPayload<{ include: typeof RESERVATION_STATUS_INCLUDE }>) {
+  return {
     reservationId: reservation.id,
     status: toWebsiteReservationStatus(reservation.status),
     date: reservation.date.toISOString().slice(0, 10),
@@ -511,6 +541,17 @@ export const getWebsiteReservationStatus = asyncHandler(async (req: Request, res
     orderType: reservation.orderType,
     totalAmount: Number(reservation.totalAmount),
     createdAt: reservation.createdAt,
-  }));
+  };
+}
+
+export const getMyWebsiteReservations = asyncHandler(async (req: Request, res: Response) => {
+  const reservations = await prisma.reservation.findMany({
+    where: { customerUid: signedInUid(res), source: 'website' },
+    include: RESERVATION_STATUS_INCLUDE,
+    orderBy: { createdAt: 'desc' },
+    take: 50,
+  });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(ApiResponse.success(reservations.map(toReservationStatusView)));
 });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, parseLocation, resolveDeliveryLocation, parseWebsiteBookingType, attachDealTags, preOrderSignature } from '../website.helpers.js';
+import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, parseLocation, resolveDeliveryLocation, parseWebsiteBookingType, attachDealTags, preOrderSignature, parseBearerToken } from '../website.helpers.js';
 
 describe('website.helpers.ts', () => {
   const dummyConfig: WebsiteConfig = {
@@ -309,6 +309,21 @@ describe('website.helpers.ts', () => {
       expect(preOrderSignature([{ ...sent[0], modifierIds: ['cheese'] }, sent[1]])).not.toBe(base);
       expect(preOrderSignature([sent[0], { ...sent[1], dealId: null }])).not.toBe(base);
       expect(preOrderSignature([sent[0]])).not.toBe(base);
+    });
+  });
+
+  describe('parseBearerToken', () => {
+    it('returns the token from a Bearer header', () => {
+      expect(parseBearerToken('Bearer abc.def.ghi')).toBe('abc.def.ghi');
+      expect(parseBearerToken('bearer  abc ')).toBe('abc');
+    });
+
+    it('returns null when there is no usable token', () => {
+      expect(parseBearerToken(undefined)).toBeNull();
+      expect(parseBearerToken('')).toBeNull();
+      expect(parseBearerToken('Bearer ')).toBeNull();
+      expect(parseBearerToken('Basic abc')).toBeNull();
+      expect(parseBearerToken('Bearer a b')).toBeNull();
     });
   });
 });

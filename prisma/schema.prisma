@@ -884,6 +884,8 @@ model Order {
   // returns the existing row instead of creating a duplicate. Null for every order created the
   // normal (online, non-queued) way.
   clientRequestId String?     @unique @db.VarChar(64)
+  // Firebase uid of the signed-in website customer who placed it (website orders only): "My orders".
+  customerUid     String?     @db.VarChar(128)
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
@@ -914,6 +916,7 @@ model Order {
   @@index([riderId])
   @@index([outletId, createdAt])
   @@index([appliedDealId])
+  @@index([customerUid])
   @@map("orders")
 }
 
@@ -1708,6 +1711,8 @@ model Reservation {
   deliveryLng       Float?
   orderId           String?
   isAdvanceAdjusted Boolean  @default(false)
+  // Firebase uid of the signed-in website customer who booked it (website bookings only).
+  customerUid       String?  @db.VarChar(128)
   createdAt         DateTime @default(now())
 
   // Relations
@@ -1715,6 +1720,7 @@ model Reservation {
   outlet Outlet?          @relation(fields: [outletId], references: [id])
 
   @@index([outletId])
+  @@index([customerUid])
   @@map("reservations")
 }
 

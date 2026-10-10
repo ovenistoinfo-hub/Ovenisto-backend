@@ -693,6 +693,12 @@ plus a body explaining _why_ the change was made when that is not obvious.
 <!-- code-review-graph MCP tools -->
 ## Public Website API (/api/website)
 - **Endpoints:** `GET /api/website/outlets`, `/api/website/config`, `/api/website/menu`, `/api/website/deals`, `POST /api/website/quote`, `POST /api/website/orders`, `GET /api/website/orders/:id/status`.
+- **Customer sign-in (2026-10-10):**
+  - **Gate:** `POST /website/orders` and `POST /website/reservations` require a signed-in website customer, and so do the new `GET /website/my/orders` + `/website/my/reservations` (newest 50, the same views as the `/status` endpoints). Browsing, quotes and status stay public.
+  - **Token check:** `website.auth.ts` `requireWebsiteCustomer` verifies the Firebase ID token (project `ovenisto-rider`, `FIREBASE_PROJECT_ID` else that default) and puts its uid on `res.locals.customerUid`; a missing or bad token gives 401. It uses its own named firebase-admin app `website-customers` with only a project id: verifying needs Google's public keys, not the push service account.
+  - **push.service fix:** `getFirebaseApp` now reuses only the `[DEFAULT]` app. Before, it took `getApps()[0]`, which could be the credential-less customer app.
+  - **Storage:** the uid is stored on `Order.customerUid` / `Reservation.customerUid` (`VarChar(128)`, nullable, indexed, not unique). `signedInUid()` guards the `/my/*` queries so a missing uid can never become `where: { customerUid: undefined }` (= every row).
+  - **Tests and DB:** pure `parseBearerToken` has tests in `website.helpers.test.ts`. The columns need `npm run db:push`. Until then the regenerated client makes every order/reservation read fail with "Database error".
 - **Branch location (Step 10, 2026-10-06):** `websiteConfig.location {lat,lng}`, read by `readWebsiteConfig` through pure `parseLocation` (finite numbers or numeric strings, in range, `(0,0)` rejected, else `null`). `GET /website/outlets` returns `location` per branch; the website uses it to auto-select the nearest branch. No schema column; branch Admins set it in staff Settings → Website.
 - **Website reservations with pre-orders (Step 12a, 2026-10-07):**
   - **Endpoints and types:**

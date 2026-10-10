@@ -42,10 +42,11 @@ function getFirebaseApp(): App | null {
       privateKey = privateKey.replace(/\\n/g, '\n');
     }
 
-    // Reuse default app if already initialized (e.g. in hot-reloading or tests)
-    const existingApps = getApps();
-    if (existingApps.length > 0 && existingApps[0]) {
-      firebaseApp = existingApps[0];
+    // Reuse default app if already initialized (e.g. in hot-reloading or tests). Only the default one:
+    // website.auth.ts runs a credential-less named app for checking customer sign-ins.
+    const defaultApp = getApps().find((a) => a.name === '[DEFAULT]');
+    if (defaultApp) {
+      firebaseApp = defaultApp;
     } else {
       firebaseApp = initializeApp({
         credential: cert({
