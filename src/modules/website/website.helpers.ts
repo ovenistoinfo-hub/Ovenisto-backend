@@ -90,6 +90,18 @@ export interface WebsiteConfig {
   prepTimeMinutes: number;
   reservationsEnabled: boolean;
   location: { lat: number; lng: number } | null;
+  /** Opening hours, 24h "HH:mm" PKT. A `close` at or before `open` means it closes after midnight. */
+  hours: { open: string; close: string } | null;
+}
+
+const HH_MM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** `{ open, close }` as two valid, different "HH:mm" times, else null (not set). */
+export function parseHours(value: unknown): { open: string; close: string } | null {
+  if (!value || typeof value !== 'object') return null;
+  const { open, close } = value as Record<string, unknown>;
+  if (typeof open !== 'string' || typeof close !== 'string' || !HH_MM.test(open) || !HH_MM.test(close) || open === close) return null;
+  return { open, close };
 }
 
 function parseNumber(value: unknown, defaultValue: number): number {
@@ -141,6 +153,7 @@ export function readWebsiteConfig(raw: unknown): WebsiteConfig {
     prepTimeMinutes: 30,
     reservationsEnabled: false,
     location: null,
+    hours: null,
   };
 
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -169,8 +182,9 @@ export function readWebsiteConfig(raw: unknown): WebsiteConfig {
   }
 
   const location = parseLocation(obj.location);
+  const hours = parseHours(obj.hours);
 
-  return { enabled, deliveryFee, freeDeliveryAbove, minOrder, prepTimeMinutes, reservationsEnabled, location };
+  return { enabled, deliveryFee, freeDeliveryAbove, minOrder, prepTimeMinutes, reservationsEnabled, location, hours };
 }
 
 export function isAcceptingOrders(params: { outletActive: boolean; onlineOrders: boolean; config: WebsiteConfig }): boolean {
@@ -262,6 +276,14 @@ export function resolveBranchContact(
     email: getVal(settings?.email, outlet?.email),
     city: (outlet?.city && outlet.city.trim() !== '') ? outlet.city.trim() : null,
   };
+}
+
+/**
+ * True for an email + password account whose address isn't verified yet (Firebase ID token claims).
+ * Google and phone sign-ins prove the account themselves, so only the password provider is checked.
+ */
+export function isUnverifiedEmailAccount(claims: { email_verified?: boolean; firebase?: { sign_in_provider?: string } }): boolean {
+  return claims.firebase?.sign_in_provider === 'password' && claims.email_verified !== true;
 }
 
 /** The token from an `Authorization: Bearer <token>` header, or null when there is none. */

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, parseLocation, resolveDeliveryLocation, parseWebsiteBookingType, attachDealTags, preOrderSignature, parseBearerToken } from '../website.helpers.js';
+import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, parseLocation, resolveDeliveryLocation, parseWebsiteBookingType, attachDealTags, preOrderSignature, parseBearerToken, isUnverifiedEmailAccount, parseHours } from '../website.helpers.js';
 
 describe('website.helpers.ts', () => {
   const dummyConfig: WebsiteConfig = {
@@ -10,6 +10,7 @@ describe('website.helpers.ts', () => {
     prepTimeMinutes: 30,
     reservationsEnabled: true,
     location: null,
+    hours: null,
   };
 
   describe('computeDeliveryFee', () => {
@@ -124,6 +125,25 @@ describe('website.helpers.ts', () => {
       const def = readWebsiteConfig(null);
       expect(def.enabled).toBe(false);
       expect(def.deliveryFee).toBe(0);
+      expect(def.hours).toBeNull();
+    });
+
+    it('reads opening hours', () => {
+      expect(readWebsiteConfig({ hours: { open: '12:00', close: '00:00' } }).hours).toEqual({ open: '12:00', close: '00:00' });
+    });
+  });
+
+  describe('parseHours', () => {
+    it('keeps two valid, different HH:mm times (close may be after midnight)', () => {
+      expect(parseHours({ open: '11:30', close: '23:00' })).toEqual({ open: '11:30', close: '23:00' });
+      expect(parseHours({ open: '18:00', close: '02:00' })).toEqual({ open: '18:00', close: '02:00' });
+    });
+    it('returns null for anything else', () => {
+      expect(parseHours(null)).toBeNull();
+      expect(parseHours({ open: '12:00' })).toBeNull();
+      expect(parseHours({ open: '12:00', close: '12:00' })).toBeNull();
+      expect(parseHours({ open: '9:00', close: '22:00' })).toBeNull();
+      expect(parseHours({ open: '12:00', close: '24:00' })).toBeNull();
     });
   });
 
@@ -324,6 +344,16 @@ describe('website.helpers.ts', () => {
       expect(parseBearerToken('Bearer ')).toBeNull();
       expect(parseBearerToken('Basic abc')).toBeNull();
       expect(parseBearerToken('Bearer a b')).toBeNull();
+    });
+  });
+
+  describe('isUnverifiedEmailAccount', () => {
+    it('flags only email + password accounts without a verified email', () => {
+      expect(isUnverifiedEmailAccount({ email_verified: false, firebase: { sign_in_provider: 'password' } })).toBe(true);
+      expect(isUnverifiedEmailAccount({ firebase: { sign_in_provider: 'password' } })).toBe(true);
+      expect(isUnverifiedEmailAccount({ email_verified: true, firebase: { sign_in_provider: 'password' } })).toBe(false);
+      expect(isUnverifiedEmailAccount({ email_verified: false, firebase: { sign_in_provider: 'google.com' } })).toBe(false);
+      expect(isUnverifiedEmailAccount({ firebase: { sign_in_provider: 'phone' } })).toBe(false);
     });
   });
 });

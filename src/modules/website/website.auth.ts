@@ -1,9 +1,9 @@
 import type { Request, Response, NextFunction } from 'express';
 import { getApps, initializeApp } from 'firebase-admin/app';
-import { getAuth } from 'firebase-admin/auth';
+import { getAuth, type DecodedIdToken } from 'firebase-admin/auth';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { ApiError } from '../../utils/ApiError.js';
-import { parseBearerToken } from './website.helpers.js';
+import { parseBearerToken, isUnverifiedEmailAccount } from './website.helpers.js';
 
 // Website customers sign in with Firebase Auth (project "ovenisto-rider", the rider app's). Checking an
 // ID token needs only the project id (Google's public keys), not push.service's service account, so it
@@ -20,10 +20,16 @@ function customerAuth() {
 export const requireWebsiteCustomer = asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
   const token = parseBearerToken(req.headers.authorization);
   if (!token) throw ApiError.unauthorized('Please sign in to continue');
+  let claims: DecodedIdToken;
   try {
-    res.locals.customerUid = (await customerAuth().verifyIdToken(token)).uid;
+    claims = await customerAuth().verifyIdToken(token);
   } catch {
     throw ApiError.unauthorized('Your sign-in has expired. Please sign in again.');
   }
+  // An email sign-up must confirm its address first, so a made-up email can't place orders.
+  if (isUnverifiedEmailAccount(claims)) {
+    throw ApiError.forbidden('Please verify your email address first. Check your inbox for the link.');
+  }
+  res.locals.customerUid = claims.uid;
   next();
 });

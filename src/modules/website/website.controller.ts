@@ -48,6 +48,7 @@ export const getOutlets = asyncHandler(async (req: Request, res: Response) => {
       acceptingOrders,
       acceptingReservations,
       location: config.location,
+      hours: config.hours,
     };
   });
 
