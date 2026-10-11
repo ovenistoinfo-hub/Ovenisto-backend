@@ -19,6 +19,8 @@ import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { revalidateDealLines, resolveOrderDiscount, withDealItemKeys } from '../deals/deal.revalidate.js';
 import { isDealCurrentlyValid, isDealAvailableForChannel, mapDealOutPublic, round2 } from '../deals/deal.pricing.js';
 import { buildPublicMenu } from '../menu/publicMenu.js';
+import { loadBranchMealTypes, assertServedAt } from '../menu/mealTimes.js';
+import { pktMinuteNow } from '../website/website.helpers.js';
 
 /** GET /api/self-order/table/:tableId */
 export const getTableForSelfOrder = asyncHandler(async (req: Request, res: Response) => {
@@ -89,8 +91,9 @@ export const getSelfOrderMenu = asyncHandler(async (req: Request, res: Response)
     outletId = table?.outletId ?? null;
   }
 
-  const result = await buildPublicMenu(prisma, { outletId });
-  res.json(ApiResponse.success(result));
+  // mealTypes: the table's branch serving times, so the menu can mark dishes outside their meal time.
+  const [result, mealTypes] = await Promise.all([buildPublicMenu(prisma, { outletId }), loadBranchMealTypes(prisma, outletId)]);
+  res.json(ApiResponse.success({ ...result, mealTypes }));
 });
 
 /** GET /api/self-order/deals?tableId=<id> — public, unauthenticated deal
@@ -206,6 +209,9 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
   const settings = (await prisma.settings.findFirst({ where: { outletId: table.outletId } }))
     ?? (await prisma.settings.findFirst());
   const taxRatePercent = settings ? Number(settings.taxRate) : 16;
+  // A dish outside its meal time (Breakfast at lunch) is refused, same rule as the website.
+  const mealTypes = await loadBranchMealTypes(prisma, table.outletId);
+  const nowMinute = pktMinuteNow();
 
   let computedSubtotal = 0;
   const itemsData = plainItems.map((item: any) => {
@@ -213,6 +219,7 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
     if (item.menuItemId && !menuItem) {
       throw ApiError.badRequest(`Item "${item.name || 'unknown'}" is no longer available`);
     }
+    if (menuItem) assertServedAt(menuItem, mealTypes, nowMinute, 'Please remove it from your order.');
 
     let unitPrice = menuItem ? Number(menuItem.price) : 0;
     let variantId: string | null = null;

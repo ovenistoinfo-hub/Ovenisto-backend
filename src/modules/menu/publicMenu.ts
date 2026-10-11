@@ -66,6 +66,7 @@ export function toPublicMenuItem(
     price: orderType ? resolveChannelPrice(parsePrices(item), orderType) : Number(item.price),
     image: item.image ?? null,
     category: item.category ? { id: item.category.id, name: item.category.name } : null,
+    mealTypeIds: item.mealTypeIds ?? [],
     available,
     variants,
     modifiers: item.modifiers

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { requiresAcceptance, isAwaitingAcceptance } from '../order.acceptance.js';
+import { requiresAcceptance, isAwaitingAcceptance, canApproveOrder } from '../order.acceptance.js';
 
 describe('order.acceptance.ts', () => {
   describe('requiresAcceptance', () => {
@@ -35,5 +35,16 @@ describe('order.acceptance.ts', () => {
     it('returns false if order requires acceptance but status is not PENDING', () => {
       expect(isAwaitingAcceptance({ type: 'DELIVERY', orderSource: 'website', status: 'ACCEPTED', acceptedById: null })).toBe(false);
     });
+  });
+});
+
+describe('canApproveOrder', () => {
+  it('lets only managers approve a website order', () => {
+    for (const role of ['Super Admin', 'Admin', 'Manager', 'Delivery Manager']) expect(canApproveOrder({ orderSource: 'website' }, role)).toBe(true);
+    for (const role of ['Cashier', 'Waiter', 'Floor Manager', undefined]) expect(canApproveOrder({ orderSource: 'website' }, role)).toBe(false);
+  });
+  it('leaves self-orders to the route roles', () => {
+    expect(canApproveOrder({ orderSource: 'self-order' }, 'Waiter')).toBe(true);
+    expect(canApproveOrder({ orderSource: null }, 'Cashier')).toBe(true);
   });
 });

@@ -14,7 +14,7 @@ import { fifoDrawdown } from '../stock/dough.helpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
 import { emitSelfOrderEventForOrder } from '../self-order/self-order.socket.js';
-import { requiresAcceptance, isAwaitingAcceptance, AWAITING_ACCEPTANCE_WHERE } from './order.acceptance.js';
+import { requiresAcceptance, isAwaitingAcceptance, canApproveOrder, AWAITING_ACCEPTANCE_WHERE } from './order.acceptance.js';
 import { revalidateDealLines, resolveOrderDiscount, withDealItemKeys } from '../deals/deal.revalidate.js';
 import { round2 } from '../deals/deal.pricing.js';
 import { computeCogs, splitOrderTotalByLine, orderUsedPaymentMethod, type CogsItem, type CogsRecipe } from '../reports/reports.helpers.js';
@@ -1825,6 +1825,7 @@ export const acceptOrder = asyncHandler(async (req: Request, res: Response) => {
   const scope = resolveOutletScope(req);
   if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
   if (!requiresAcceptance(existing)) throw ApiError.badRequest('This order does not need acceptance');
+  if (!canApproveOrder(existing, req.user?.role)) throw ApiError.forbidden('Website orders are approved by a manager on Order Monitor');
 
   const result = await prisma.order.updateMany({
     where: { id, acceptedById: null, status: 'PENDING' },
@@ -1935,6 +1936,7 @@ export const rejectOrder = asyncHandler(async (req: Request, res: Response) => {
   const scope = resolveOutletScope(req);
   if (scope && existing.outletId !== scope) throw ApiError.notFound('Order not found');
   if (!requiresAcceptance(existing)) throw ApiError.badRequest('This order does not need acceptance');
+  if (!canApproveOrder(existing, req.user?.role)) throw ApiError.forbidden('Website orders are approved by a manager on Order Monitor');
   if (existing.status !== 'PENDING' || existing.acceptedById) {
     throw ApiError.badRequest('This order can no longer be declined');
   }

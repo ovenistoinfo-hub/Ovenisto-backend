@@ -92,6 +92,8 @@ export interface WebsiteConfig {
   location: { lat: number; lng: number } | null;
   /** Opening hours, 24h "HH:mm" PKT. A `close` at or before `open` means it closes after midnight. */
   hours: { open: string; close: string } | null;
+  /** Serving times per MealType id (same shape as `hours`). A meal type without an entry is served all day. */
+  mealHours: Record<string, { open: string; close: string }>;
 }
 
 const HH_MM = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -102,6 +104,60 @@ export function parseHours(value: unknown): { open: string; close: string } | nu
   const { open, close } = value as Record<string, unknown>;
   if (typeof open !== 'string' || typeof close !== 'string' || !HH_MM.test(open) || !HH_MM.test(close) || open === close) return null;
   return { open, close };
+}
+
+/** `{ [mealTypeId]: { open, close } }`, keeping only valid entries. */
+export function parseMealHours(value: unknown): Record<string, { open: string; close: string }> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out: Record<string, { open: string; close: string }> = {};
+  for (const [id, h] of Object.entries(value)) {
+    const parsed = parseHours(h);
+    if (parsed) out[id] = parsed;
+  }
+  return out;
+}
+
+/** "08:30" → 510. */
+export const toMinutes = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+
+/** Minutes after midnight in PKT (UTC+5, no DST). */
+export const pktMinuteNow = (nowMs = Date.now()) => {
+  const pkt = new Date(nowMs + 5 * 60 * 60 * 1000);
+  return pkt.getUTCHours() * 60 + pkt.getUTCMinutes();
+};
+
+/** Whether `minute` (minutes after midnight, PKT) is inside [open, close); a window past midnight wraps. */
+export function inHoursWindow(hours: { open: string; close: string }, minute: number): boolean {
+  const open = toMinutes(hours.open);
+  const close = toMinutes(hours.close);
+  return open < close ? minute >= open && minute < close : minute >= open || minute < close;
+}
+
+/**
+ * Whether a dish tagged with `mealTypeIds` is served at `minute`. Untagged dishes, and dishes with any meal
+ * type that has no serving time (e.g. All-Day Dining left blank), are always served; otherwise the minute
+ * must fall inside one of its meal types' windows. `mealHours` should hold active meal types only.
+ */
+export function isServedAt(mealTypeIds: string[], mealHours: Record<string, { open: string; close: string }>, minute: number): boolean {
+  if (mealTypeIds.length === 0 || mealTypeIds.some((id) => !mealHours[id])) return true;
+  return mealTypeIds.some((id) => inHoursWindow(mealHours[id], minute));
+}
+
+/** A branch's timed meals for display ("Breakfast 08:00–11:00"…), in serving order; untimed meals are left out. */
+export function listMealTimes(
+  mealTypes: { id: string; name: string }[],
+  mealHours: Record<string, { open: string; close: string }>,
+): { name: string; open: string; close: string }[] {
+  return mealTypes
+    .filter((m) => mealHours[m.id])
+    .map((m) => ({ name: m.name, ...mealHours[m.id] }))
+    .sort((a, b) => a.open.localeCompare(b.open));
+}
+
+/** "19:30" → "7:30 PM". */
+export function format12h(time: string): string {
+  const h = Number(time.slice(0, 2));
+  return `${h % 12 || 12}:${time.slice(3, 5)} ${h >= 12 ? 'PM' : 'AM'}`;
 }
 
 function parseNumber(value: unknown, defaultValue: number): number {
@@ -154,6 +210,7 @@ export function readWebsiteConfig(raw: unknown): WebsiteConfig {
     reservationsEnabled: false,
     location: null,
     hours: null,
+    mealHours: {},
   };
 
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -183,8 +240,9 @@ export function readWebsiteConfig(raw: unknown): WebsiteConfig {
 
   const location = parseLocation(obj.location);
   const hours = parseHours(obj.hours);
+  const mealHours = parseMealHours(obj.mealHours);
 
-  return { enabled, deliveryFee, freeDeliveryAbove, minOrder, prepTimeMinutes, reservationsEnabled, location, hours };
+  return { enabled, deliveryFee, freeDeliveryAbove, minOrder, prepTimeMinutes, reservationsEnabled, location, hours, mealHours };
 }
 
 export function isAcceptingOrders(params: { outletActive: boolean; onlineOrders: boolean; config: WebsiteConfig }): boolean {

@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { WebsiteOrderType, WebsiteBookingType, WebsiteConfig, computeDeliveryFee } from './website.helpers.js';
 import { getActiveOutlet, getOutletSettings } from './website.service.js';
 import { readWebsiteConfig, isAcceptingOrders } from './website.helpers.js';
+import { loadBranchMealTypes, assertServedAt } from '../menu/mealTimes.js';
 import { validateOrderStock } from '../order/order.controller.js';
 import { parsePrices } from '../menu/publicMenu.js';
 import { resolveChannelPrice } from '../deals/deal.pricing.js';
@@ -14,8 +15,10 @@ function round2(num: number): number {
 
 // `checkStock: false` is for reservation pre-orders: a booking days ahead must not be refused on
 // today's stock (the staff Reservations picker skips the check for the same reason).
-export async function priceWebsiteCart(prisma: PrismaClient, req: { outletId: string, orderType: WebsiteBookingType, items: any[], dealCode?: string | null, checkStock?: boolean }) {
-  const { outletId, orderType, items, dealCode, checkStock = true } = req;
+// `servedAt`: refuse a dish whose meal types (Breakfast, Lunch…) aren't served at that PKT minute; `hint`
+// ends the message. Deal lines are not meal-checked (a deal has its own days/time window).
+export async function priceWebsiteCart(prisma: PrismaClient, req: { outletId: string, orderType: WebsiteBookingType, items: any[], dealCode?: string | null, checkStock?: boolean, servedAt?: { minute: number; hint: string } }) {
+  const { outletId, orderType, items, dealCode, checkStock = true, servedAt } = req;
 
   const outlet = await getActiveOutlet(outletId);
   const settings = await getOutletSettings(outlet.id);
@@ -42,9 +45,11 @@ export async function priceWebsiteCart(prisma: PrismaClient, req: { outletId: st
       where: { id: { in: itemIds }, available: true },
       include: { 
         variants: true, 
-        modifiers: { include: { modifier: true } } 
+        modifiers: { include: { modifier: true } }
       }
     });
+
+    const mealTypes = servedAt ? await loadBranchMealTypes(prisma, outlet.id) : [];
 
     for (const reqItem of plainItems) {
       if (!reqItem.menuItemId) {
@@ -54,6 +59,7 @@ export async function priceWebsiteCart(prisma: PrismaClient, req: { outletId: st
       if (!dbItem) {
         throw ApiError.badRequest(`Item "${reqItem.name}" is no longer available`);
       }
+      if (servedAt) assertServedAt(dbItem, mealTypes, servedAt.minute, servedAt.hint);
 
       let pricingSource = dbItem;
       const variant = reqItem.variantId ? dbItem.variants.find(v => v.id === reqItem.variantId) : undefined;

@@ -4,9 +4,10 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { buildPublicMenu } from '../menu/publicMenu.js';
+import { loadBranchMealTypes } from '../menu/mealTimes.js';
 import { isDealCurrentlyValid, isDealAvailableForChannel, mapDealOutPublic } from '../deals/deal.pricing.js';
 import { getActiveOutlet, getOutletSettings, findOrCreateWebsiteCustomer } from './website.service.js';
-import { WEBSITE_ORDER_TYPES, readWebsiteConfig, isAcceptingOrders, WebsiteOrderType, WebsiteBookingType, parseWebsiteBookingType, normalizePkPhone, toWebsiteOrderStatus, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, resolveDeliveryLocation, attachDealTags, preOrderSignature, type DealTaggedLine, type PreOrderLineLike } from './website.helpers.js';
+import { WEBSITE_ORDER_TYPES, readWebsiteConfig, isAcceptingOrders, WebsiteOrderType, WebsiteBookingType, parseWebsiteBookingType, normalizePkPhone, toWebsiteOrderStatus, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, resolveDeliveryLocation, pktMinuteNow, toMinutes, listMealTimes, attachDealTags, preOrderSignature, type DealTaggedLine, type PreOrderLineLike } from './website.helpers.js';
 import { priceWebsiteCart } from './website.pricing.js';
 import { emitOrderEvent } from '../../socket.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
@@ -27,6 +28,7 @@ export const getOutlets = asyncHandler(async (req: Request, res: Response) => {
     select: { outletId: true, onlineOrders: true, websiteConfig: true, phone: true, address: true, email: true },
   });
   const settingsByOutlet = Object.fromEntries(settings.map(s => [s.outletId, s]));
+  const mealTypes = await prisma.mealType.findMany({ where: { status: 'active' }, select: { id: true, name: true } });
 
   const result = outlets.map(o => {
     const s = settingsByOutlet[o.id];
@@ -49,6 +51,7 @@ export const getOutlets = asyncHandler(async (req: Request, res: Response) => {
       acceptingReservations,
       location: config.location,
       hours: config.hours,
+      mealTimes: listMealTimes(mealTypes, config.mealHours),
     };
   });
 
@@ -96,10 +99,14 @@ export const getMenu = asyncHandler(async (req: Request, res: Response) => {
   const orderType = parseWebsiteBookingType(req.query.orderType);
   if (!orderType) throw ApiError.badRequest('Invalid orderType');
 
-  const menu = await buildPublicMenu(prisma, { outletId: outlet.id, orderType });
+  // mealTypes: this branch's serving time per meal type (null = all day), for the filter and "served" labels.
+  const [menu, mealTypes] = await Promise.all([
+    buildPublicMenu(prisma, { outletId: outlet.id, orderType }),
+    loadBranchMealTypes(prisma, outlet.id),
+  ]);
 
   res.setHeader('Cache-Control', 'no-cache');
-  res.json(ApiResponse.success(menu));
+  res.json(ApiResponse.success({ ...menu, mealTypes }));
 });
 
 export const getDeals = asyncHandler(async (req: Request, res: Response) => {
@@ -140,7 +147,7 @@ export const getDeals = asyncHandler(async (req: Request, res: Response) => {
 export const quoteCart = asyncHandler(async (req: Request, res: Response) => {
   const { outletId, orderType, items, dealCode } = req.body;
   
-  const quote = await priceWebsiteCart(prisma, { outletId, orderType, items, dealCode });
+  const quote = await priceWebsiteCart(prisma, { outletId, orderType, items, dealCode, servedAt: { minute: pktMinuteNow(), hint: 'Remove it from your cart, or pre-order it for later from Reservations.' } });
   
   // Return format omitting outlet and itemsData
   const { outlet, itemsData, ...publicQuote } = quote;
@@ -165,7 +172,7 @@ export const createWebsiteOrder = asyncHandler(async (req: Request, res: Respons
     }
   }
 
-  const priced = await priceWebsiteCart(prisma, { outletId, orderType, items, dealCode });
+  const priced = await priceWebsiteCart(prisma, { outletId, orderType, items, dealCode, servedAt: { minute: pktMinuteNow(), hint: 'Remove it from your cart, or pre-order it for later from Reservations.' } });
 
   if (!priced.acceptingOrders) {
     throw ApiError.conflict('This branch is not taking online orders right now');
@@ -331,10 +338,12 @@ interface ReservationItemInput extends DealTaggedLine {
   dealId?: string | null;
 }
 
+const RESERVATION_MEAL_HINT = 'Remove it from your pre-order, or pick another time.';
+
 // Same figures as /website/quote, for a booking: Dine In allowed, no stock check (the booking is for
 // a later date), no coupon code (a Minimum Spend deal still auto-applies inside the kernel).
 export const quoteWebsiteReservation = asyncHandler(async (req: Request, res: Response) => {
-  const { outletId, orderType, items } = req.body as { outletId: string; orderType: WebsiteBookingType; items: ReservationItemInput[] };
+  const { outletId, orderType, items, time } = req.body as { outletId: string; orderType: WebsiteBookingType; items: ReservationItemInput[]; time?: string };
 
   const outlet = await getActiveOutlet(outletId);
   const settings = await getOutletSettings(outlet.id);
@@ -360,7 +369,9 @@ export const quoteWebsiteReservation = asyncHandler(async (req: Request, res: Re
     return;
   }
 
-  const priced = await priceWebsiteCart(prisma, { outletId: outlet.id, orderType, items, checkStock: false });
+  // Once a time is picked, dishes are checked against it (Breakfast items at a lunch booking are refused).
+  const servedAt = time ? { minute: toMinutes(time), hint: RESERVATION_MEAL_HINT } : undefined;
+  const priced = await priceWebsiteCart(prisma, { outletId: outlet.id, orderType, items, checkStock: false, servedAt });
   res.json(ApiResponse.success({
     acceptingReservations,
     lines: priced.lines,
@@ -439,7 +450,7 @@ export const createWebsiteReservation = asyncHandler(async (req: Request, res: R
 
   // Price the pre-order before anything is written, so a bad item or deal rejects the whole booking.
   const priced = items.length > 0
-    ? await priceWebsiteCart(prisma, { outletId: outlet.id, orderType, items, checkStock: false })
+    ? await priceWebsiteCart(prisma, { outletId: outlet.id, orderType, items, checkStock: false, servedAt: { minute: toMinutes(time), hint: RESERVATION_MEAL_HINT } })
     : null;
   if (priced && !priced.meetsMinOrder) {
     throw ApiError.badRequest(`Minimum order for delivery is Rs. ${priced.minOrder}`);

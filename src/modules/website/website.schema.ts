@@ -76,4 +76,6 @@ export const quoteReservationSchema = z.object({
   outletId: z.string().uuid('Invalid outletId'),
   orderType: bookingTypeSchema,
   items: z.array(itemSchema).max(50, 'Cart cannot have more than 50 distinct items').optional().default([]),
+  // The booking time once picked ("HH:mm" PKT): dishes are checked against their meal type's serving time.
+  time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/,'Invalid time (HH:mm)').optional(),
 }).superRefine(requireItemsUnlessDineIn);

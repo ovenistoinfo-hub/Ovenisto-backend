@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, parseLocation, resolveDeliveryLocation, parseWebsiteBookingType, attachDealTags, preOrderSignature, parseBearerToken, isUnverifiedEmailAccount, parseHours } from '../website.helpers.js';
+import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, parseLocation, resolveDeliveryLocation, parseWebsiteBookingType, attachDealTags, preOrderSignature, parseBearerToken, isUnverifiedEmailAccount, parseHours, parseMealHours, inHoursWindow, isServedAt, format12h, pktMinuteNow, listMealTimes } from '../website.helpers.js';
 
 describe('website.helpers.ts', () => {
   const dummyConfig: WebsiteConfig = {
@@ -11,6 +11,7 @@ describe('website.helpers.ts', () => {
     reservationsEnabled: true,
     location: null,
     hours: null,
+    mealHours: {},
   };
 
   describe('computeDeliveryFee', () => {
@@ -144,6 +145,55 @@ describe('website.helpers.ts', () => {
       expect(parseHours({ open: '12:00', close: '12:00' })).toBeNull();
       expect(parseHours({ open: '9:00', close: '22:00' })).toBeNull();
       expect(parseHours({ open: '12:00', close: '24:00' })).toBeNull();
+    });
+  });
+
+  describe('meal serving times', () => {
+    const breakfast = { open: '08:00', close: '11:00' };
+    const dinner = { open: '19:00', close: '02:00' };
+    const mealHours = { bf: breakfast, dn: dinner };
+
+    it('reads only valid mealHours entries', () => {
+      expect(parseMealHours({ bf: breakfast, bad: { open: '8:00', close: '11:00' }, x: null })).toEqual({ bf: breakfast });
+      expect(parseMealHours([breakfast])).toEqual({});
+      expect(readWebsiteConfig({ mealHours: { dn: dinner } }).mealHours).toEqual({ dn: dinner });
+      expect(readWebsiteConfig(null).mealHours).toEqual({});
+    });
+
+    it('checks a window, including one past midnight', () => {
+      expect(inHoursWindow(breakfast, 8 * 60)).toBe(true);
+      expect(inHoursWindow(breakfast, 11 * 60)).toBe(false);
+      expect(inHoursWindow(dinner, 23 * 60)).toBe(true);
+      expect(inHoursWindow(dinner, 60)).toBe(true);
+      expect(inHoursWindow(dinner, 2 * 60)).toBe(false);
+      expect(inHoursWindow(dinner, 12 * 60)).toBe(false);
+    });
+
+    it('serves untagged dishes and dishes with an all-day meal type at any time', () => {
+      expect(isServedAt([], mealHours, 13 * 60)).toBe(true);
+      expect(isServedAt(['bf', 'allday'], mealHours, 13 * 60)).toBe(true);
+    });
+
+    it('serves a tagged dish only inside one of its windows', () => {
+      expect(isServedAt(['bf'], mealHours, 9 * 60)).toBe(true);
+      expect(isServedAt(['bf'], mealHours, 13 * 60)).toBe(false);
+      expect(isServedAt(['bf', 'dn'], mealHours, 20 * 60)).toBe(true);
+      expect(isServedAt(['bf', 'dn'], mealHours, 15 * 60)).toBe(false);
+    });
+
+    it('lists a branch\'s timed meals in serving order', () => {
+      const types = [{ id: 'dn', name: 'Dinner' }, { id: 'bf', name: 'Breakfast' }, { id: 'all', name: 'All-Day Dining' }];
+      expect(listMealTimes(types, mealHours)).toEqual([
+        { name: 'Breakfast', open: '08:00', close: '11:00' },
+        { name: 'Dinner', open: '19:00', close: '02:00' },
+      ]);
+    });
+
+    it('formats 12-hour times and reads the PKT clock', () => {
+      expect(format12h('08:00')).toBe('8:00 AM');
+      expect(format12h('00:30')).toBe('12:30 AM');
+      expect(format12h('19:05')).toBe('7:05 PM');
+      expect(pktMinuteNow(Date.UTC(2026, 9, 11, 20, 15))).toBe(1 * 60 + 15); // 20:15 UTC = 01:15 PKT
     });
   });
 
