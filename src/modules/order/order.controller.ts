@@ -371,7 +371,8 @@ async function resolveOrdersWhere(req: Request): Promise<any> {
     // Comma-separated list supported ("completed,cancelled") so a caller can ask for exactly a
     // finished-orders set without changing what an absent status means — several live boards
     // (Kitchen Panel, Order Monitor, POS, Waiter Panel) call this endpoint with no status filter
-    // and rely on PENDING/PREPARING/READY orders still coming back by default.
+    // and rely on PENDING/PREPARING/READY orders still coming back by default. An absent status also
+    // hides AWAITING_PAYMENT (website orders still waiting for their online payment).
     const parts = String(status).split(',').map((s) => s.trim()).filter(Boolean);
     const mapped = parts.map((s) => STATUS_TO_PRISMA[s] ?? s.toUpperCase());
     where.status = mapped.length > 1 ? { in: mapped } : mapped[0];

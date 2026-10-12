@@ -712,6 +712,34 @@ plus a body explaining _why_ the change was made when that is not obvious.
   With `reservationId` set the cashier gets total − advance (for an `Advance (…), Net (…)` string: only the
   `parseNetParts` parts). An untracked `Advance + Net` string now credits advance + net — it used to drop the net.
 
+## Website online payment — Safepay (2026-10-12, owner)
+- **Module `src/modules/payments/`:** `safepay.ts` (our own client matching SDK `@sfpy/node-sdk` 3.0.2: `POST /order/v1/init` → tracker,
+  checkout URL with `beacon`, return `sig` = HMAC-SHA256(v1Secret, tracker), webhook `x-sfpy-signature` = HMAC-SHA512(webhookSecret,
+  JSON.stringify(body.data)); tested), `payment.rules.ts` (pure, tested), `payment.service.ts` (DB), `payment.controller.ts` + `payment.routes.ts`
+  at `/api/payments`. Env (all optional, all four = on): `SAFEPAY_ENV` (sandbox|production), `SAFEPAY_API_KEY`, `SAFEPAY_V1_SECRET`,
+  `SAFEPAY_WEBHOOK_SECRET`. The SDK has **no refund call**: refunds are done in the Safepay dashboard.
+- **Flow:** `POST /website/orders` `paymentChoice: 'online'` (default `cash`; needs `websiteConfig.onlinePayment` and the keys, else 409)
+  creates the order as **`OrderStatus.AWAITING_PAYMENT`** without `order:created`, starts a tracker and returns `checkoutUrl` (null if
+  Safepay is down). `POST /api/payments/safepay/return?pid=` (signed) and `/webhook` (signed) both run `confirmPayment(tracker)`:
+  locks the order row; `decideConfirm` → activate (PENDING + `paymentMethod 'Online (Safepay)'` + `order:created`) / mark-paid
+  (switched-to-cash, still unpaid) / refund-only. `POST /website/orders/:id/pay` (retry) and `/pay-cash` (→ normal cash order). An
+  order still unpaid 30 min after its latest checkout was opened (or after it was placed) is cancelled "Payment not completed" by
+  `expireStalePaymentOrders` (`payments: { none: { createdAt >= cutoff } }`) on read paths only (status, my orders, pay, pay-cash,
+  refunds-due). The two Safepay paths skip CORS in `app.ts` (Safepay's domain would 500 the origin check).
+- **Hidden until paid:** `resolveOrdersWhere` adds `status: { not: 'AWAITING_PAYMENT' }` when no status is asked for; also the sales
+  report count, the dashboard live-status groupBy, unassigned deliveries and customer stats. Reports already filter COMPLETED.
+- **Money:** `classifyOrderCash` returns null for `Online (Safepay)` (bank, not a drawer). Riders collect 0 (already true for any paid
+  method). `updateOrder` on a paid-online order refuses (409) another `paymentMethod` or a total above what was paid
+  (`onlinePaidEditBlock`).
+- **Refunds:** `OrderPayment` (`order_payments`: tracker unique, amount, status initiated|paid, `refundedAmount`). Refund due is
+  **derived** (`refundsDueForOrder`): cancelled / paid another way / duplicate → full; the kept payment owes `amount − total` when items were
+  removed; minus `refundedAmount`. `GET /api/payments/refunds-due`, `POST /api/payments/:id/refunded` (website-order approver roles; guarded
+  update so a double click records once). Customer status views carry `payment: { status: awaiting|paid|refund_pending|refunded, amount,
+  refundDue } | null`.
+- **Return never fails the customer:** if `confirmPayment` throws after a valid return signature, `safepayReturn` logs it and still 303s with `?payment=done` (the webhook confirms). `GET /api/payments/refunds-due` finds candidates with one raw-SQL pre-query (cancelled / not `Online (Safepay)` / paid twice / paid above total, with something unrefunded), then `refundsDueForOrder` — no row cap.
+- **To confirm in the sandbox:** amount unit (rupees assumed), the redirect POST fields, the webhook payload (`webhookTracker` guesses
+  `data.tracker` + `payment:created`/`PAID`/`TRACKER_ENDED`), a tracker status lookup. Schema arrives with the deploy's `db:push` (additive).
+
 ## Public Website API (/api/website)
 - **Endpoints:** `GET /api/website/outlets`, `/api/website/config`, `/api/website/menu`, `/api/website/deals`, `POST /api/website/quote`, `POST /api/website/orders`, `GET /api/website/orders/:id/status`.
 - **Customer sign-in (2026-10-10):**
