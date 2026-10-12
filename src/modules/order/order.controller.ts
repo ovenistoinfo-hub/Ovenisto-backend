@@ -14,7 +14,7 @@ import { fifoDrawdown } from '../stock/dough.helpers.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
 import { emitSelfOrderEventForOrder } from '../self-order/self-order.socket.js';
-import { requiresAcceptance, isAwaitingAcceptance, canApproveOrder, AWAITING_ACCEPTANCE_WHERE } from './order.acceptance.js';
+import { requiresAcceptance, isAwaitingAcceptance, canApproveOrder, AWAITING_ACCEPTANCE_WHERE, isUnpaidWebsitePickup, UNPAID_WEBSITE_PICKUP_MESSAGE } from './order.acceptance.js';
 import { revalidateDealLines, resolveOrderDiscount, withDealItemKeys } from '../deals/deal.revalidate.js';
 import { round2 } from '../deals/deal.pricing.js';
 import { computeCogs, splitOrderTotalByLine, orderUsedPaymentMethod, type CogsItem, type CogsRecipe } from '../reports/reports.helpers.js';
@@ -1023,6 +1023,22 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
   if (staffName !== undefined) dataToUpdate.staffName = staffName || null;
   if (isUrgent !== undefined) dataToUpdate.isUrgent = Boolean(isUrgent);
   if (customerType !== undefined) dataToUpdate.customerType = customerType || null;
+
+  // Same rule as updateOrderStatus: this endpoint can also set status, so it must not leave a website
+  // pickup COMPLETED and unpaid. Only checked when this call touches status or payment, so an
+  // unrelated edit to an old completed-unpaid row still goes through.
+  if (dataToUpdate.status !== undefined || dataToUpdate.paymentMethod !== undefined) {
+    const nextStatus = dataToUpdate.status ?? existing.status;
+    const nextOrder = {
+      orderSource: existing.orderSource,
+      type: dataToUpdate.type ?? existing.type,
+      paymentMethod: dataToUpdate.paymentMethod !== undefined ? dataToUpdate.paymentMethod : existing.paymentMethod,
+    };
+    if (nextStatus === 'COMPLETED' && isUnpaidWebsitePickup(nextOrder)) {
+      throw ApiError.conflict(UNPAID_WEBSITE_PICKUP_MESSAGE);
+    }
+  }
+
   const order = await prisma.$transaction(async (tx) => {
     if (cashApproved !== undefined) {
       try {
@@ -1606,6 +1622,10 @@ export const updateOrderStatus = asyncHandler(async (req: Request, res: Response
 
   if (isAwaitingAcceptance(existing) && ['PREPARING', 'READY', 'COMPLETED'].includes(prismaStatus)) {
     throw ApiError.conflict('Cannot change status: order is awaiting acceptance');
+  }
+
+  if (prismaStatus === 'COMPLETED' && isUnpaidWebsitePickup(existing)) {
+    throw ApiError.conflict(UNPAID_WEBSITE_PICKUP_MESSAGE);
   }
 
   const order = await prisma.$transaction(async (tx) => {

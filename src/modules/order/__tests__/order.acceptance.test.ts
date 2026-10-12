@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { requiresAcceptance, isAwaitingAcceptance, canApproveOrder } from '../order.acceptance.js';
+import { requiresAcceptance, isAwaitingAcceptance, canApproveOrder, isUnpaidWebsitePickup } from '../order.acceptance.js';
 
 describe('order.acceptance.ts', () => {
   describe('requiresAcceptance', () => {
@@ -46,5 +46,26 @@ describe('canApproveOrder', () => {
   it('leaves self-orders to the route roles', () => {
     expect(canApproveOrder({ orderSource: 'self-order' }, 'Waiter')).toBe(true);
     expect(canApproveOrder({ orderSource: null }, 'Cashier')).toBe(true);
+  });
+});
+
+describe('isUnpaidWebsitePickup', () => {
+  const pickup = { orderSource: 'website', type: 'TAKE_AWAY', paymentMethod: 'Pending' as string | null };
+
+  it('is true for a website Take Away with no real payment', () => {
+    for (const paymentMethod of [null, '', 'Pending', 'pending', ' UNPAID ']) {
+      expect(isUnpaidWebsitePickup({ ...pickup, paymentMethod })).toBe(true);
+    }
+  });
+
+  it('is false once a payment method is recorded', () => {
+    expect(isUnpaidWebsitePickup({ ...pickup, paymentMethod: 'Cash' })).toBe(false);
+    expect(isUnpaidWebsitePickup({ ...pickup, paymentMethod: 'Cash: Rs.900, JazzCash: Rs.779' })).toBe(false);
+  });
+
+  it('ignores website deliveries and non-website orders', () => {
+    expect(isUnpaidWebsitePickup({ ...pickup, type: 'DELIVERY' })).toBe(false);
+    expect(isUnpaidWebsitePickup({ ...pickup, orderSource: null })).toBe(false);
+    expect(isUnpaidWebsitePickup({ ...pickup, orderSource: 'self-order' })).toBe(false);
   });
 });

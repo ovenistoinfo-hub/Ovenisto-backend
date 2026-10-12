@@ -20,3 +20,16 @@ export const AWAITING_ACCEPTANCE_WHERE: Prisma.OrderWhereInput = {
   acceptedById: null,
   OR: [{ type: 'SELF_ORDER' }, { orderSource: 'website' }],
 };
+
+/**
+ * A website pickup (Take Away) is paid at the POS counter, not online. It is created with
+ * `cashApproved: true`, so once COMPLETED every report counts it as revenue — while Cash Hub skips a
+ * `Pending` payment and the money is on nobody's balance. Completing one is refused until paid.
+ */
+export const UNPAID_WEBSITE_PICKUP_MESSAGE = 'Collect payment for this website pickup on POS first';
+
+export function isUnpaidWebsitePickup(o: { orderSource: string | null; type: string; paymentMethod: string | null }): boolean {
+  if (o.orderSource !== 'website' || o.type !== 'TAKE_AWAY') return false;
+  const pm = (o.paymentMethod ?? '').trim().toLowerCase();
+  return pm === '' || pm === 'pending' || pm === 'unpaid';
+}
