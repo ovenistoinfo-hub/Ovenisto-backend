@@ -41,7 +41,7 @@ export const getSalesReport = asyncHandler(async (req: Request, res: Response) =
   const completedWhere = { ...baseWhere, status: COMPLETED as never, cashApproved: true };
 
   const [totalOrders, completed] = await Promise.all([
-    prisma.order.count({ where: baseWhere }),
+    prisma.order.count({ where: { ...baseWhere, status: { not: 'AWAITING_PAYMENT' } } }),
     prisma.order.findMany({
       where: completedWhere,
       select: { total: true, createdAt: true },
@@ -456,7 +456,7 @@ export const getDashboard = asyncHandler(async (req: Request, res: Response) => 
     prisma.order.groupBy({
       by: ['status'],
       _count: { _all: true },
-      where: { ...outletFilter, createdAt: { gte: day.gte, lte: day.lte } },
+      where: { ...outletFilter, createdAt: { gte: day.gte, lte: day.lte }, status: { not: 'AWAITING_PAYMENT' } },
     }),
     prisma.restaurantTable.groupBy({
       by: ['status'],

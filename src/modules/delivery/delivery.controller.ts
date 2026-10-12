@@ -280,7 +280,7 @@ export const getMyAssignments = asyncHandler(async (req: Request, res: Response)
             outletId: scope,
             type: 'DELIVERY',
             riderId: null,
-            status: { notIn: ['CANCELLED', 'COMPLETED'] },
+            status: { notIn: ['CANCELLED', 'COMPLETED', 'AWAITING_PAYMENT'] },
             isFutureSale: false,
             createdAt: { gte: today },
             deliveries: { none: { status: { notIn: ['returned'] } } },

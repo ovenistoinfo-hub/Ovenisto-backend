@@ -17,7 +17,7 @@ import { parseDateRange } from '../reports/reports.helpers.js';
  */
 async function getCustomerStatsMap(gte?: Date, lte?: Date) {
   const orders = await prisma.order.findMany({
-    where: gte && lte ? { createdAt: { gte, lte } } : {},
+    where: { status: { not: 'AWAITING_PAYMENT' }, ...(gte && lte ? { createdAt: { gte, lte } } : {}) },
     select: {
       customerId: true,
       customerName: true,

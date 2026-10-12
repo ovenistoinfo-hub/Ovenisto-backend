@@ -3,6 +3,7 @@ import { prisma } from '../../config/database.js';
 import { getConfiguredPaymentMethods } from '../settings/settings.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { emitToOutlets } from '../../socket.js';
+import { isOnlinePaid } from '../payments/payment.rules.js';
 
 // Tag on each order in a staff balance identifying where the sale came from —
 // shown in Cash Hub, and used by createSettlement to route each order to its
@@ -342,6 +343,8 @@ export interface CashSplit {
 export function classifyOrderCash(order: CashOrderInput): CashSplit | null {
   const orderTotal = Number(order.total || 0);
   const pm = order.paymentMethod || '';
+  // Paid online (Safepay): the money went to the business bank account, not to anyone's drawer.
+  if (isOnlinePaid(pm)) return null;
   const pmLower = pm.toLowerCase().trim();
   const hasAdvanceInPM  = /advance\s*\(/i.test(pm);
   const hasCODBalanceInPM = /cod balance\s*\(/i.test(pm);

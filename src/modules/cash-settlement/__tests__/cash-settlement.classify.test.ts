@@ -34,6 +34,11 @@ describe('classifyOrderCash — unchanged cases', () => {
     expect(classifyOrderCash(order('Advance (JazzCash: Rs.507), COD Balance (Cash): Rs.1001', { advancePayment: 507, riderId: 'r1', type: 'DELIVERY' })))
       .toEqual({ cashierAmount: 507, cashierPm: 'JazzCash', riderAmount: 1001, riderPm: 'Cash' });
   });
+
+  it('skips an order paid online: the money is in the bank, not a drawer', () => {
+    expect(classifyOrderCash(order('Online (Safepay)'))).toBeNull();
+    expect(classifyOrderCash(order('Online (Safepay)', { type: 'DELIVERY', riderId: 'r1' }))).toBeNull();
+  });
 });
 
 describe('classifyOrderCash — advance paid earlier, rest at the counter', () => {

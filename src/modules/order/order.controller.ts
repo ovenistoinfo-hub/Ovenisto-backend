@@ -20,6 +20,7 @@ import { revalidateDealLines, resolveOrderDiscount, withDealItemKeys } from '../
 import { round2 } from '../deals/deal.pricing.js';
 import { computeCogs, splitOrderTotalByLine, orderUsedPaymentMethod, type CogsItem, type CogsRecipe } from '../reports/reports.helpers.js';
 import { sendPushToUser } from '../notifications/push.service.js';
+import { isOnlinePaid, onlinePaidEditBlock } from '../payments/payment.rules.js';
 
 // ── Enum conversion helpers ──
 
@@ -374,6 +375,9 @@ async function resolveOrdersWhere(req: Request): Promise<any> {
     const parts = String(status).split(',').map((s) => s.trim()).filter(Boolean);
     const mapped = parts.map((s) => STATUS_TO_PRISMA[s] ?? s.toUpperCase());
     where.status = mapped.length > 1 ? { in: mapped } : mapped[0];
+  } else {
+    // A website order still waiting for its online payment isn't an order staff should see yet.
+    where.status = { not: 'AWAITING_PAYMENT' };
   }
   if (type) {
     // Comma-separated list supported ("Dine In,Take Away,Delivery"), same idiom as status
@@ -1161,6 +1165,20 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
           dealItemKey: item.dealItemKey ?? null,
         })),
       };
+    }
+    // Paid online: the method can't change, and the total can't go above what was paid.
+    if (isOnlinePaid(existing.paymentMethod)) {
+      const kept = await tx.orderPayment.findFirst({
+        where: { orderId: id, status: 'paid' },
+        orderBy: { paidAt: 'asc' },
+        select: { amount: true },
+      });
+      const block = onlinePaidEditBlock({
+        newPaymentMethod: dataToUpdate.paymentMethod,
+        newTotal: dataToUpdate.total !== undefined ? Number(dataToUpdate.total) : undefined,
+        paidAmount: kept ? Number(kept.amount) : 0,
+      });
+      if (block) throw ApiError.conflict(block);
     }
     return tx.order.update({
       where: { id },
