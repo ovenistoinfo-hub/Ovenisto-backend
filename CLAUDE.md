@@ -691,6 +691,27 @@ plus a body explaining _why_ the change was made when that is not obvious.
 
 
 <!-- code-review-graph MCP tools -->
+## Reservation advances in Cash Hub (2026-10-12, owner: "Track who took the advance")
+- **Who took it:** `Reservation.advanceCollectedById/Name/At` are stamped with the logged-in staff member when a
+  booking is created or edited with `advancePaid > 0` and no collector yet (pure `reservation.advance.ts`, tested).
+  Advances recorded before this have no collector ("untracked") and behave as before.
+- **Cash Hub line:** a tracked advance (collector set, `advanceSettlementId` null, `advanceRefunded` false) is its
+  own line on the collector's balance in `getActiveBalances`, channel `RESERVATION_ADVANCE_CHANNEL` =
+  `'Reservation Advance'`, from the moment it is recorded (a no-show's too). `createSettlement` claims it with
+  `reservation.updateMany({ advanceSettlementId: null, advanceRefunded: false })` + a count guard, like orders;
+  settlement history lists it via `reservationAdvances` (`mapReservationAdvance`, `orderNumber` "Booking <date> <time>").
+- **Cancel:** the staff app asks "was the advance refunded?" and sends `advanceRefunded`. `advanceChangesOnUpdate`
+  allows `true` only for a cancelled booking whose advance is neither settled nor on an order; re-opening clears it.
+  It also refuses changing the amount once settled or on an order. `deleteReservation` refuses a booking with an
+  open advance (`advanceDeleteBlock`) — cancel it instead.
+- **Paying the rest:** `Order.reservationId` (no FK, indexed) marks the order that carries a tracked advance. Set
+  server-side only: `convertReservationToOrder`; `createOrder`/`updateOrder` `reservationId` (POS loaded booking,
+  Waiter Pay Bill) through `loadAdvanceReservation` — ignored when the booking is gone, of another outlet or
+  untracked; 409 when another order already has it; `advancePayment` is then taken from the booking.
+- **`classifyOrderCash(order)`** (extracted from `getActiveBalances`, tested) is the per-order cashier/rider split.
+  With `reservationId` set the cashier gets total − advance (for an `Advance (…), Net (…)` string: only the
+  `parseNetParts` parts). An untracked `Advance + Net` string now credits advance + net — it used to drop the net.
+
 ## Public Website API (/api/website)
 - **Endpoints:** `GET /api/website/outlets`, `/api/website/config`, `/api/website/menu`, `/api/website/deals`, `POST /api/website/quote`, `POST /api/website/orders`, `GET /api/website/orders/:id/status`.
 - **Customer sign-in (2026-10-10):**

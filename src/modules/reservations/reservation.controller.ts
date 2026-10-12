@@ -6,6 +6,7 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope, resolveCreateOutlet } from '../../middleware/outletScope.js';
 import { emitOrderEvent, emitReservationEvent } from '../../socket.js';
 import { revalidateDealLines, type IncomingOrderItem } from '../deals/deal.revalidate.js';
+import { isTrackedAdvance, advanceStampOnCreate, advanceChangesOnUpdate, advanceDeleteBlock } from './reservation.advance.js';
 
 export function mapReservation(r: any) {
   return {
@@ -101,6 +102,8 @@ export const createReservation = asyncHandler(async (req: Request, res: Response
       subtotal: subtotal ? Number(subtotal) : 0,
       tax: tax ? Number(tax) : 0,
       totalAmount: totalAmount ? Number(totalAmount) : 0,
+      // Whoever records the advance is responsible for it in Cash Hub until it is settled.
+      ...advanceStampOnCreate(advancePaid, req.user, new Date()),
     },
   });
 
@@ -117,13 +120,23 @@ export const updateReservation = asyncHandler(async (req: Request, res: Response
     customerName, customerPhone, date, time, guestCount, tableId, tableNumber,
     status, specialRequests, source, bookingType, orderType, deliveryAddress,
     advancePaid, paymentMethod, paymentStatus, depositRef, preOrderItems,
-    subtotal, tax, totalAmount, isAdvanceAdjusted, orderId,
+    subtotal, tax, totalAmount, isAdvanceAdjusted, orderId, advanceRefunded,
   } = req.body;
 
   const existing = await prisma.reservation.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Reservation not found');
   const scope = resolveOutletScope(req);
   if (scope && existing.outletId !== scope) throw ApiError.notFound('Reservation not found');
+
+  // The advance's Cash Hub side: stamp who took it, and refuse a change that would move money
+  // already settled or already counted on an order.
+  const linkedOrder = await prisma.order.findFirst({ where: { reservationId: id }, select: { orderNumber: true } });
+  const advance = advanceChangesOnUpdate(
+    existing,
+    { advancePaid, status, advanceRefunded },
+    { user: req.user, now: new Date(), linkedOrderNumber: linkedOrder?.orderNumber ?? null }
+  );
+  if (!advance.ok) throw ApiError.badRequest(advance.message);
 
   const reservation = await prisma.reservation.update({
     where: { id },
@@ -151,6 +164,7 @@ export const updateReservation = asyncHandler(async (req: Request, res: Response
       ...(totalAmount !== undefined && { totalAmount: Number(totalAmount) }),
       ...(isAdvanceAdjusted !== undefined && { isAdvanceAdjusted: Boolean(isAdvanceAdjusted) }),
       ...(orderId !== undefined && { orderId: orderId || null }),
+      ...advance.data,
     },
   });
 
@@ -166,6 +180,8 @@ export const deleteReservation = asyncHandler(async (req: Request, res: Response
   if (!existing) throw ApiError.notFound('Reservation not found');
   const scope = resolveOutletScope(req);
   if (scope && existing.outletId !== scope) throw ApiError.notFound('Reservation not found');
+  const deleteBlock = advanceDeleteBlock(existing);
+  if (deleteBlock) throw ApiError.badRequest(deleteBlock);
 
   await prisma.reservation.delete({ where: { id: req.params.id } });
   emitReservationEvent('reservation:deleted', { id: req.params.id }, [existing.outletId]);
@@ -268,6 +284,9 @@ export const convertReservationToOrder = asyncHandler(async (req: Request, res: 
         scheduledTime: existing.time,
         futureNotes: existing.specialRequests || null,
         advancePayment: existing.advancePaid ? Number(existing.advancePaid) : 0,
+        // A tracked advance is already on its collector's Cash Hub balance; this tells Cash Hub not
+        // to credit it again to whoever collects the rest of this order.
+        reservationId: isTrackedAdvance(existing) ? existing.id : null,
         orderSource: 'reservation',
         items: itemsToCreate.length > 0 ? { create: itemsToCreate } : undefined,
       },

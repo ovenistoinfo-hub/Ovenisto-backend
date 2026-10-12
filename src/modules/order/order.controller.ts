@@ -15,6 +15,7 @@ import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
 import { emitSelfOrderEventForOrder } from '../self-order/self-order.socket.js';
 import { requiresAcceptance, isAwaitingAcceptance, canApproveOrder, AWAITING_ACCEPTANCE_WHERE, isUnpaidWebsitePickup, UNPAID_WEBSITE_PICKUP_MESSAGE } from './order.acceptance.js';
+import { isTrackedAdvance } from '../reservations/reservation.advance.js';
 import { revalidateDealLines, resolveOrderDiscount, withDealItemKeys } from '../deals/deal.revalidate.js';
 import { round2 } from '../deals/deal.pricing.js';
 import { computeCogs, splitOrderTotalByLine, orderUsedPaymentMethod, type CogsItem, type CogsRecipe } from '../reports/reports.helpers.js';
@@ -784,13 +785,33 @@ export const validateCoupon = asyncHandler(async (req: Request, res: Response) =
   res.json(ApiResponse.success(result));
 });
 
+/**
+ * The booking whose tracked advance an order is about to carry (`reservationId` from POS or Waiter
+ * Panel), or null when none was sent, the booking is gone, or its advance isn't tracked (then nothing
+ * changes).
+ * One booking's advance can sit on one order only.
+ */
+async function loadAdvanceReservation(reservationId: unknown, scope: string | null, orderId: string | null) {
+  if (!reservationId) return null;
+  const reservation = await prisma.reservation.findUnique({ where: { id: String(reservationId) } });
+  // A booking deleted (or of another branch) since the cart was loaded must not block the sale.
+  if (!reservation || (scope && reservation.outletId !== scope)) return null;
+  if (!isTrackedAdvance(reservation)) return null;
+  const other = await prisma.order.findFirst({
+    where: { reservationId: reservation.id, ...(orderId ? { id: { not: orderId } } : {}) },
+    select: { orderNumber: true },
+  });
+  if (other) throw ApiError.conflict(`This booking's advance is already on order ${other.orderNumber}`);
+  return reservation;
+}
+
 /** POST /api/orders */
 export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   const {
     customerName, phone, customerId, type, subtotal, discount, tax, total,
     paymentMethod, tableNumber, deliveryAddress, riderId, staffName,
     items, isFutureSale, scheduledDate, scheduledTime, futureNotes, advancePayment,
-    isUrgent, customerType, orderSource, cashApproved, dealCode, clientRequestId,
+    isUrgent, customerType, orderSource, cashApproved, dealCode, clientRequestId, reservationId,
   } = req.body;
 
   if (!items?.length) throw ApiError.badRequest('Order must have at least one item');
@@ -829,6 +850,10 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
   if (scope === null && req.user?.role === 'Super Admin') {
     throw ApiError.badRequest('Select a specific outlet before creating');
   }
+
+  // A booking paid off at POS: its tracked advance rides on this order (the amount comes from the
+  // booking, not the client), so Cash Hub credits the cashier only with what they collect now.
+  const advanceReservation = await loadAdvanceReservation(reservationId, scope, null);
 
   const effectiveCashApproved = typeof cashApproved === 'boolean'
     ? cashApproved
@@ -913,7 +938,8 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
       scheduledDate: scheduledDate ? new Date(scheduledDate) : null,
       scheduledTime: scheduledTime || null,
       futureNotes: futureNotes || null,
-      advancePayment: advancePayment ?? 0,
+      advancePayment: advanceReservation ? Number(advanceReservation.advancePaid) : (advancePayment ?? 0),
+      reservationId: advanceReservation?.id ?? null,
       isUrgent: isUrgent ?? false,
       customerType: customerType || null,
       orderSource: orderSource || 'pos',
@@ -990,10 +1016,18 @@ export const updateOrder = asyncHandler(async (req: Request, res: Response) => {
   const {
     customerName, phone, type, status, subtotal, discount, tax, total,
     paymentMethod, tableNumber, deliveryAddress, riderId, staffName,
-    items, isUrgent, customerType, cashApproved, dealCode,
+    items, isUrgent, customerType, cashApproved, dealCode, reservationId,
   } = req.body;
 
   const dataToUpdate: any = {};
+  // Waiter Panel's Pay Bill puts a table's booking advance on one of its orders.
+  if (reservationId) {
+    const advanceReservation = await loadAdvanceReservation(reservationId, scope, id);
+    if (advanceReservation) {
+      dataToUpdate.reservationId = advanceReservation.id;
+      dataToUpdate.advancePayment = Number(advanceReservation.advancePaid);
+    }
+  }
   if (customerName !== undefined) dataToUpdate.customerName = customerName || null;
   if (phone !== undefined) dataToUpdate.phone = phone || null;
   if (type) dataToUpdate.type = (TYPE_TO_PRISMA[type] ?? type.toUpperCase()) as any;

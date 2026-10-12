@@ -8,6 +8,8 @@ import { emitToOutlets } from '../../socket.js';
 // shown in Cash Hub, and used by createSettlement to route each order to its
 // correct settlement field per-order rather than guessing once for the whole batch.
 const RIDER_CHANNEL = 'Delivery Rider (COD)';
+// A booking's advance, on the balance of whoever took it (Reservation.advanceCollectedById).
+export const RESERVATION_ADVANCE_CHANNEL = 'Reservation Advance';
 
 export function getCashierPaymentMethodString(pmString: string | null | undefined): string {
   if (!pmString) return 'Cash';
@@ -194,6 +196,41 @@ const SETTLEMENT_ORDER_SELECT = {
   outletId: true,
 } as const;
 
+const SETTLEMENT_ADVANCE_SELECT = {
+  id: true,
+  customerName: true,
+  advancePaid: true,
+  paymentMethod: true,
+  status: true,
+  date: true,
+  time: true,
+  createdAt: true,
+  advanceCollectedAt: true,
+  outletId: true,
+  advanceCollectedById: true,
+} as const;
+
+/** A booking's advance as a Cash Hub line, in the same shape as an order (`mapOrder`). */
+export function mapReservationAdvance(r: any) {
+  const day = r.date instanceof Date ? r.date.toISOString().split('T')[0] : String(r.date ?? '');
+  return {
+    id: r.id,
+    orderNumber: `Booking ${day} ${r.time ?? ''}`.trim(),
+    customerName: r.customerName || 'Walk-in',
+    total: Number(r.advancePaid),
+    subtotal: 0,
+    tax: 0,
+    discount: 0,
+    paymentMethod: r.paymentMethod || 'Cash',
+    status: r.status,
+    type: RESERVATION_ADVANCE_CHANNEL,
+    createdAt: r.advanceCollectedAt ?? r.createdAt,
+    outletId: r.outletId,
+    staffId: r.advanceCollectedById,
+    riderId: null,
+  };
+}
+
 export function mapOrder(o: any) {
   return {
     id: o.id,
@@ -218,14 +255,17 @@ export function mapOrder(o: any) {
 // an order is only ever linked via exactly one of the three FKs, so no
 // dedup is needed.
 function settlementOrders(s: any) {
-  if (s.orders == null && s.cashierOrders == null && s.riderOrders == null) {
+  if (s.orders == null && s.cashierOrders == null && s.riderOrders == null && s.reservationAdvances == null) {
     return undefined;
   }
   return [
-    ...(s.orders ?? []),
-    ...(s.cashierOrders ?? []),
-    ...(s.riderOrders ?? []),
-  ].map(mapOrder);
+    ...[
+      ...(s.orders ?? []),
+      ...(s.cashierOrders ?? []),
+      ...(s.riderOrders ?? []),
+    ].map(mapOrder),
+    ...(s.reservationAdvances ?? []).map((r: any) => mapOrder(mapReservationAdvance(r))),
+  ];
 }
 
 function settlementOrderCount(s: any) {
@@ -260,6 +300,119 @@ export function mapSettlement(s: any) {
     staff: s.staff ? { id: s.staff.id, name: s.staff.name, role: s.staff.role } : undefined,
     settledBy: s.settledBy ? { id: s.settledBy.id, name: s.settledBy.name, role: s.settledBy.role } : undefined,
   };
+}
+
+/** The "Net (method): Rs.X" parts of a payment string: what was collected at the counter after an advance. */
+export function parseNetParts(pm: string | null | undefined): { method: string; amount: number }[] {
+  const parts: { method: string; amount: number }[] = [];
+  const re = /Net\s*\(([^)]+)\)\s*:\s*(?:Rs\.?|PKR)?\s*([\d,]+(?:\.\d+)?)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(pm ?? '')) !== null) {
+    const amount = parseFloat(m[2].replace(/,/g, ''));
+    if (amount > 0) parts.push({ method: m[1].trim(), amount });
+  }
+  return parts;
+}
+
+const partsToPaymentString = (parts: { method: string; amount: number }[]) =>
+  parts.length === 1 ? parts[0].method : parts.map((p) => `${p.method}: Rs.${p.amount}`).join(', ');
+
+export interface CashOrderInput {
+  total: unknown;
+  paymentMethod: string | null;
+  advancePayment: unknown;
+  riderId: string | null;
+  type: string;
+  reservationId?: string | null;
+}
+
+export interface CashSplit {
+  cashierAmount: number;
+  cashierPm: string;
+  riderAmount: number;
+  riderPm: string;
+}
+
+/**
+ * How much of an order's money the cashier (or waiter) and the rider each hold, and in which methods —
+ * or null when nobody has been paid yet. A booking's tracked advance (`reservationId` set) is already on
+ * its collector's balance as its own line, so it is never credited again here: the cashier gets
+ * total − advance (the "Net (…)" parts of a POS "Advance (…), Net (…)" string).
+ */
+export function classifyOrderCash(order: CashOrderInput): CashSplit | null {
+  const orderTotal = Number(order.total || 0);
+  const pm = order.paymentMethod || '';
+  const pmLower = pm.toLowerCase().trim();
+  const hasAdvanceInPM  = /advance\s*\(/i.test(pm);
+  const hasCODBalanceInPM = /cod balance\s*\(/i.test(pm);
+  const advanceAmount = Number(order.advancePayment || 0);
+  const trackedAdvance = order.reservationId && advanceAmount > 0 ? Math.min(advanceAmount, orderTotal) : 0;
+
+  const isCODPM = pmLower === 'cash on delivery' || pmLower === 'cod' || pmLower === 'cash-on-delivery' || hasCODBalanceInPM;
+  // isPrepaid: advance covers entire order (advance >= total AND advance > 0), OR
+  // paymentMethod is a direct paid string (e.g. "Cash", "JazzCash", "Credit Card", "Cash: Rs.1500") and NOT COD and NOT Advance.
+  const isPrepaid = (advanceAmount > 0 && advanceAmount >= orderTotal) || (!isCODPM && !hasAdvanceInPM && pmLower !== 'pending' && pmLower !== 'unpaid' && pmLower !== '');
+
+  // Pure COD orders not yet delivered: paymentMethod is still "Cash on Delivery" (or similar).
+  // No money has been collected by anyone — skip this order entirely.
+  if (!isPrepaid && !hasAdvanceInPM && (
+    pmLower === 'cash on delivery' ||
+    pmLower === 'cod' ||
+    pmLower === 'cash-on-delivery' ||
+    pmLower === 'pending' ||
+    pmLower === 'unpaid'
+  )) {
+    return null;
+  }
+
+  let cashierAmount = 0;
+  let cashierPm = '';
+  let riderAmount = 0;
+  let riderPm = '';
+
+  if (isPrepaid) {
+    // Full prepaid (Dine In, Takeaway, or Delivery Prepaid) — POS cashier/online collected full bill
+    // (minus a tracked booking advance, which its collector holds).
+    cashierAmount = orderTotal - trackedAdvance;
+    cashierPm = pm;
+  } else if (hasAdvanceInPM && hasCODBalanceInPM) {
+    // Rider has delivered and updated payment method for split advance order:
+    // "Advance (JazzCash: Rs.507), COD Balance (Cash): Rs.1000"
+    // Cashier keeps the advance, rider gets the remaining COD
+    cashierAmount = advanceAmount - trackedAdvance;
+    cashierPm = getCashierPaymentMethodString(pm);  // → "JazzCash"
+    riderAmount = Math.max(0, orderTotal - advanceAmount);
+    riderPm = getRiderPaymentMethodString(pm);      // → "Cash"
+  } else if (hasAdvanceInPM) {
+    const net = parseNetParts(pm);
+    if (net.length > 0) {
+      // The advance was paid earlier and the rest at the counter: "Advance (Cash): Rs.500, Net (JazzCash): Rs.1008".
+      // Untracked advance → the cashier holds both parts; tracked → only the net part.
+      const netSum = net.reduce((sum, p) => sum + p.amount, 0);
+      cashierAmount = (trackedAdvance > 0 ? 0 : advanceAmount) + netSum;
+      cashierPm = trackedAdvance > 0 ? partsToPaymentString(net) : pm;
+    } else {
+      // Advance collected by cashier, but rider has NOT delivered yet (no COD Balance).
+      // Only credit cashier with the advance; rider's COD is still outstanding.
+      cashierAmount = advanceAmount - trackedAdvance;
+      cashierPm = getCashierPaymentMethodString(pm);  // → "JazzCash"
+    }
+  } else if (hasCODBalanceInPM || ((order.riderId || (order.type as any) === 'Delivery' || (order.type as any) === 'DELIVERY') && isCODPM)) {
+    // Delivered Full COD Delivery Order (no advance payment):
+    // The Delivery Rider collected the entire order total at doorstep!
+    // Rider gets orderTotal, Cashier gets 0.
+    riderAmount = orderTotal;
+    riderPm = getRiderPaymentMethodString(pm);
+  } else {
+    // Regular non-delivery payment (dine-in, takeaway) —
+    // cashier collected the entire amount.
+    cashierAmount = orderTotal - trackedAdvance;
+    cashierPm = pm;
+  }
+
+  cashierAmount = Math.max(0, cashierAmount);
+  if (cashierAmount <= 0 && riderAmount <= 0) return null;
+  return { cashierAmount, cashierPm, riderAmount, riderPm };
 }
 
 export async function getActiveBalances(outletScope: string | null) {
@@ -410,66 +563,9 @@ export async function getActiveBalances(outletScope: string | null) {
   };
 
   for (const order of orders) {
-    const orderTotal = Number(order.total || 0);
-    const pm = order.paymentMethod || '';
-    const pmLower = pm.toLowerCase().trim();
-    const hasAdvanceInPM  = /advance\s*\(/i.test(pm);
-    const hasCODBalanceInPM = /cod balance\s*\(/i.test(pm);
-    const advanceAmount = Number(order.advancePayment || 0);
-
-    const isCODPM = pmLower === 'cash on delivery' || pmLower === 'cod' || pmLower === 'cash-on-delivery' || hasCODBalanceInPM;
-    // isPrepaid: advance covers entire order (advance >= total AND advance > 0), OR
-    // paymentMethod is a direct paid string (e.g. "Cash", "JazzCash", "Credit Card", "Cash: Rs.1500") and NOT COD and NOT Advance.
-    const isPrepaid = (advanceAmount > 0 && advanceAmount >= orderTotal) || (!isCODPM && !hasAdvanceInPM && pmLower !== 'pending' && pmLower !== 'unpaid' && pmLower !== '');
-
-    // Pure COD orders not yet delivered: paymentMethod is still "Cash on Delivery" (or similar).
-    // No money has been collected by anyone — skip this order entirely.
-    if (!isPrepaid && !hasAdvanceInPM && (
-      pmLower === 'cash on delivery' ||
-      pmLower === 'cod' ||
-      pmLower === 'cash-on-delivery' ||
-      pmLower === 'pending' ||
-      pmLower === 'unpaid'
-    )) {
-      continue;
-    }
-
-    let cashierAmount = 0;
-    let cashierPm = '';
-    let riderAmount = 0;
-    let riderPm = '';
-
-    if (isPrepaid) {
-      // Full prepaid (Dine In, Takeaway, or Delivery Prepaid) — POS cashier/online collected full bill
-      cashierAmount = orderTotal;
-      cashierPm = pm;
-    } else if (hasAdvanceInPM && hasCODBalanceInPM) {
-      // Rider has delivered and updated payment method for split advance order:
-      // "Advance (JazzCash: Rs.507), COD Balance (Cash): Rs.1000"
-      // Cashier keeps the advance, rider gets the remaining COD
-      cashierAmount = advanceAmount;
-      cashierPm = getCashierPaymentMethodString(pm);  // → "JazzCash"
-      riderAmount = Math.max(0, orderTotal - advanceAmount);
-      riderPm = getRiderPaymentMethodString(pm);      // → "Cash"
-    } else if (hasAdvanceInPM) {
-      // Advance collected by cashier, but rider has NOT delivered yet (no COD Balance).
-      // Only credit cashier with the advance; rider's COD is still outstanding.
-      cashierAmount = advanceAmount;
-      cashierPm = getCashierPaymentMethodString(pm);  // → "JazzCash"
-      // riderAmount stays 0 until delivered
-    } else if (hasCODBalanceInPM || ((order.riderId || (order.type as any) === 'Delivery' || (order.type as any) === 'DELIVERY') && isCODPM)) {
-      // Delivered Full COD Delivery Order (no advance payment):
-      // The Delivery Rider collected the entire order total at doorstep!
-      // Rider gets orderTotal, Cashier gets 0.
-      riderAmount = orderTotal;
-      riderPm = getRiderPaymentMethodString(pm);
-      cashierAmount = 0;
-    } else {
-      // Regular non-delivery payment (dine-in, takeaway) —
-      // cashier collected the entire amount.
-      cashierAmount = orderTotal;
-      cashierPm = pm;
-    }
+    const split = classifyOrderCash(order);
+    if (!split) continue;
+    const { cashierAmount, cashierPm, riderAmount, riderPm } = split;
 
     // Only allocate cashier portion if it hasn't been independently settled yet.
     // cashierSettlementId is null for regular orders (handled via legacy settlementId)
@@ -541,6 +637,32 @@ export async function getActiveBalances(outletScope: string | null) {
         RIDER_CHANNEL
       );
     }
+  }
+
+  // Booking advances: on whoever took them from the moment they were recorded (a no-show's too),
+  // until settled — or until the booking is cancelled with the advance refunded.
+  const advances = await prisma.reservation.findMany({
+    where: {
+      advancePaid: { gt: 0 },
+      advanceCollectedById: { not: null },
+      advanceSettlementId: null,
+      advanceRefunded: false,
+      ...(outletScope ? { outletId: outletScope } : {}),
+    },
+    include: { advanceCollectedBy: { select: { id: true, name: true, role: true } } },
+    orderBy: { createdAt: 'desc' },
+  });
+  for (const r of advances) {
+    allocateToStaffGroup(
+      r.advanceCollectedById!,
+      r.advanceCollectedBy?.name || r.advanceCollectedByName || 'Staff',
+      r.advanceCollectedBy?.role || 'Staff',
+      !!r.advanceCollectedBy,
+      r.paymentMethod || 'Cash',
+      Number(r.advancePaid),
+      mapReservationAdvance(r),
+      RESERVATION_ADVANCE_CHANNEL
+    );
   }
 
   const result = Array.from(staffMap.values())
@@ -721,7 +843,14 @@ export async function createSettlement(
   const cashierAdvanceOrderIds: string[] = [];
   const riderOrderIds: string[] = [];
 
+  const reservationAdvanceIds: string[] = [];
+
   for (const o of staffBalance.orders as any[]) {
+    if (o.channel === RESERVATION_ADVANCE_CHANNEL) {
+      // A booking's advance — its id is the reservation's, settled on the reservation row.
+      reservationAdvanceIds.push(o.id);
+      continue;
+    }
     if (o.channel === RIDER_CHANNEL) {
       // This specific order was collected via Delivery Rider COD
       riderOrderIds.push(o.id);
@@ -801,6 +930,16 @@ export async function createSettlement(
       });
       if (claimed.count !== riderOrderIds.length) {
         throw ApiError.badRequest('Some COD orders were already settled by another request. Please refresh and try again.');
+      }
+    }
+
+    if (reservationAdvanceIds.length > 0) {
+      const claimed = await tx.reservation.updateMany({
+        where: { id: { in: reservationAdvanceIds }, advanceSettlementId: null, advanceRefunded: false },
+        data: { advanceSettlementId: settlement.id },
+      });
+      if (claimed.count !== reservationAdvanceIds.length) {
+        throw ApiError.badRequest('Some booking advances were already settled or refunded. Please refresh and try again.');
       }
     }
 
@@ -897,6 +1036,7 @@ export async function getSettlementHistory(
         orders: { select: SETTLEMENT_ORDER_SELECT },
         cashierOrders: { select: SETTLEMENT_ORDER_SELECT },
         riderOrders: { select: SETTLEMENT_ORDER_SELECT },
+        reservationAdvances: { select: SETTLEMENT_ADVANCE_SELECT },
         staff: { select: { id: true, name: true, role: true } },
         settledBy: { select: { id: true, name: true, role: true } },
       },

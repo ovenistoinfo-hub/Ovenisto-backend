@@ -123,6 +123,7 @@ model User {
   purchasePayments          PurchasePayment[]
   staffSettlements          CashSettlement[]           @relation("StaffSettlements")
   managerSettlements        CashSettlement[]           @relation("ManagerApprovedSettlements")
+  reservationAdvancesCollected Reservation[]          @relation("ReservationAdvanceCollector")
   deviceTokens              DeviceToken[]
 
   @@map("users")
@@ -879,6 +880,9 @@ model Order {
   settlementId           String?
   cashierSettlementId    String?  // tracks cashier's advance portion settlement
   riderSettlementId      String?  // tracks rider's COD portion settlement
+  // The booking whose tracked advance this order's advancePayment is (set server-side only). Cash Hub
+  // then credits the cashier with total − advance; the advance is on the booking's collector.
+  reservationId          String?
   // Client-generated idempotency key for the offline order queue (POS/WaiterPanel) — a resend of
   // an order already created (e.g. after a client-side timeout on a slow-but-successful request)
   // returns the existing row instead of creating a duplicate. Null for every order created the
@@ -917,6 +921,7 @@ model Order {
   @@index([outletId, createdAt])
   @@index([appliedDealId])
   @@index([customerUid])
+  @@index([reservationId])
   @@map("orders")
 }
 
@@ -1093,6 +1098,7 @@ model CashSettlement {
   orders         Order[]
   cashierOrders  Order[]   @relation("CashierSettledOrders")
   riderOrders    Order[]   @relation("RiderSettledOrders")
+  reservationAdvances Reservation[] @relation("ReservationAdvanceSettlement")
 
   @@index([outletId, createdAt])
   @@index([staffId])
@@ -1713,14 +1719,25 @@ model Reservation {
   isAdvanceAdjusted Boolean  @default(false)
   // Firebase uid of the signed-in website customer who booked it (website bookings only).
   customerUid       String?  @db.VarChar(128)
+  // Who took the advance (stamped when it is first recorded), so it sits on their Cash Hub
+  // balance until settled. Null on advances recorded before this existed.
+  advanceCollectedById   String?
+  advanceCollectedByName String?   @db.VarChar(100)
+  advanceCollectedAt     DateTime?
+  advanceSettlementId    String?
+  // Set when the booking is cancelled and the advance was handed back; it then leaves Cash Hub.
+  advanceRefunded        Boolean   @default(false)
   createdAt         DateTime @default(now())
 
   // Relations
-  table  RestaurantTable? @relation(fields: [tableId], references: [id])
-  outlet Outlet?          @relation(fields: [outletId], references: [id])
+  table             RestaurantTable? @relation(fields: [tableId], references: [id])
+  outlet            Outlet?          @relation(fields: [outletId], references: [id])
+  advanceCollectedBy User?           @relation("ReservationAdvanceCollector", fields: [advanceCollectedById], references: [id], onDelete: SetNull)
+  advanceSettlement CashSettlement?  @relation("ReservationAdvanceSettlement", fields: [advanceSettlementId], references: [id], onDelete: SetNull)
 
   @@index([outletId])
   @@index([customerUid])
+  @@index([advanceCollectedById])
   @@map("reservations")
 }
 
