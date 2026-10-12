@@ -11,10 +11,15 @@ import { safepayConfig, confirmPayment, listRefundsDue, markRefunded } from './p
 /** POST /api/payments/safepay/return?pid= — Safepay posts the customer's browser here after checkout. */
 export const safepayReturn = asyncHandler(async (req: Request, res: Response) => {
   const pid = typeof req.query.pid === 'string' ? req.query.pid : '';
-  const payment = pid ? await prisma.orderPayment.findUnique({ where: { id: pid } }) : null;
+  const tracker = req.body?.tracker;
+  let payment = pid ? await prisma.orderPayment.findUnique({ where: { id: pid } }) : null;
+  // Safepay might drop or rewrite the redirect URL's query string: find the payment by the posted
+  // tracker instead. The signature below is still checked against that row's tracker.
+  if (!payment && typeof tracker === 'string' && tracker.length > 0) {
+    payment = await prisma.orderPayment.findUnique({ where: { tracker } });
+  }
   if (!payment || !payment.returnOrigin) throw ApiError.notFound('Payment not found');
 
-  const tracker = req.body?.tracker;
   const ok = !!safepayConfig && tracker === payment.tracker && isValidReturnSignature(safepayConfig, tracker, req.body?.sig);
   if (ok) {
     // The customer has paid: whatever happens to the save, they go back to the order page (it polls and

@@ -117,16 +117,22 @@ export function resolveReturnOrigin(origin: string | undefined, allowedOrigins: 
   return ok ? url.origin : null;
 }
 
+/** An event type that says the payment did not complete (or was reversed): never a confirmation. */
+const FAILURE_TYPE = /fail|cancel|expire|error|declin|void|refund/i;
+
 /**
  * The tracker of a Safepay webhook that reports a completed payment, else null. The payload shape is
  * to be confirmed against a real sandbox webhook (see the spec); keep this function and its test in step.
+ * An event whose type names a failure is refused even when its state looks paid.
  */
 export function webhookTracker(body: unknown): string | null {
   if (!body || typeof body !== 'object') return null;
   const b = body as Record<string, any>;
   const data = b.data && typeof b.data === 'object' ? b.data : {};
   const tracker = data.tracker ?? data.notification?.tracker ?? data.token;
-  const type = String(b.type ?? data.type ?? '').toLowerCase();
+  const rawType = String(b.type ?? data.type ?? '');
+  if (FAILURE_TYPE.test(rawType)) return null;
+  const type = rawType.toLowerCase();
   const state = String(data.state ?? data.notification?.state ?? '').toUpperCase();
   const paid = type === 'payment:created' || type === 'payment.succeeded' || state === 'PAID' || state === 'TRACKER_ENDED';
   return typeof tracker === 'string' && tracker.length > 0 && paid ? tracker : null;

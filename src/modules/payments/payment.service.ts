@@ -28,9 +28,14 @@ const ORDER_EVENT_INCLUDE = {
   items: { include: { menuItem: { select: { category: { select: { name: true } } } } } },
 } satisfies Prisma.OrderInclude;
 
+/** Best effort: a failed read or socket emit after a committed change must not turn into a 500 (a webhook retry, a failed Mark refunded). */
 async function emitOrder(orderId: string, event: 'order:created' | 'order:updated') {
-  const order = await prisma.order.findUnique({ where: { id: orderId }, include: ORDER_EVENT_INCLUDE });
-  if (order) emitOrderEvent(event, mapOrderOut(order));
+  try {
+    const order = await prisma.order.findUnique({ where: { id: orderId }, include: ORDER_EVENT_INCLUDE });
+    if (order) emitOrderEvent(event, mapOrderOut(order));
+  } catch (err) {
+    console.error(`[payments] could not announce ${event} for order ${orderId}`, err);
+  }
 }
 
 /** Starts a Safepay checkout for an order waiting for payment; returns the URL to send the customer to. */
@@ -191,7 +196,7 @@ export async function markRefunded(
   // Guarded on the amount read above, so a double click can't record the refund twice.
   const updated = await prisma.orderPayment.updateMany({
     where: { id: paymentId, refundedAmount: payment.refundedAmount },
-    data: { refundedAmount: { increment: due }, refundedAt: new Date(), refundedByName: by?.name ?? null, refundReference: reference },
+    data: { refundedAmount: { increment: due }, refundedAt: new Date(), refundedByName: by?.name ?? null, ...(reference ? { refundReference: reference } : {}) },
   });
   if (updated.count === 0) throw ApiError.conflict('This refund was just recorded. Refresh to see it.');
   await emitOrder(payment.orderId, 'order:updated');

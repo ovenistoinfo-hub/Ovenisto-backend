@@ -21,12 +21,19 @@ const CHECKOUT_URL: Record<SafepayEnv, string> = {
   production: 'https://getsafepay.com/checkout',
 };
 
-/** The gateway is on only when all four settings are present. */
+/**
+ * The gateway is on only when all four settings are present. Values are trimmed (a key pasted into
+ * Railway often carries a trailing space or newline, which would silently break every signature) and
+ * a blank one counts as missing.
+ */
 export function readSafepayConfig(e: Record<string, string | undefined>): SafepayConfig | null {
-  const env = e.SAFEPAY_ENV;
+  const env = e.SAFEPAY_ENV?.trim();
+  const apiKey = e.SAFEPAY_API_KEY?.trim();
+  const v1Secret = e.SAFEPAY_V1_SECRET?.trim();
+  const webhookSecret = e.SAFEPAY_WEBHOOK_SECRET?.trim();
   if (env !== 'sandbox' && env !== 'production') return null;
-  if (!e.SAFEPAY_API_KEY || !e.SAFEPAY_V1_SECRET || !e.SAFEPAY_WEBHOOK_SECRET) return null;
-  return { env, apiKey: e.SAFEPAY_API_KEY, v1Secret: e.SAFEPAY_V1_SECRET, webhookSecret: e.SAFEPAY_WEBHOOK_SECRET };
+  if (!apiKey || !v1Secret || !webhookSecret) return null;
+  return { env, apiKey, v1Secret, webhookSecret };
 }
 
 /** Safepay's hosted checkout page for a tracker token. */

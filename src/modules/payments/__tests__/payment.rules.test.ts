@@ -112,6 +112,11 @@ describe('webhookTracker', () => {
     expect(webhookTracker({ type: 'payment:created', data: {} })).toBeNull();
     expect(webhookTracker(null)).toBeNull();
   });
+  it('refuses an event whose type says it failed, even when the state looks paid', () => {
+    expect(webhookTracker({ type: 'payment:failed', data: { tracker: 't', state: 'TRACKER_ENDED' } })).toBeNull();
+    expect(webhookTracker({ type: 'payment:cancelled', data: { tracker: 't', state: 'PAID' } })).toBeNull();
+    expect(webhookTracker({ data: { type: 'payment.refunded', tracker: 't', state: 'PAID' } })).toBeNull();
+  });
 });
 
 describe('onlinePaidEditBlock', () => {

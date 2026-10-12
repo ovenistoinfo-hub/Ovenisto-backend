@@ -3,7 +3,7 @@ import { prisma } from '../../config/database.js';
 import { getConfiguredPaymentMethods } from '../settings/settings.service.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { emitToOutlets } from '../../socket.js';
-import { isOnlinePaid } from '../payments/payment.rules.js';
+import { isOnlinePaid, ONLINE_PAYMENT_METHOD } from '../payments/payment.rules.js';
 
 // Tag on each order in a staff balance identifying where the sale came from —
 // shown in Cash Hub, and used by createSettlement to route each order to its
@@ -431,7 +431,9 @@ export async function getActiveBalances(outletScope: string | null) {
     AND: [
       {
         paymentMethod: {
-          notIn: ['Pending', 'Unpaid', 'pending', 'unpaid', 'PENDING', 'UNPAID'],
+          // Online-paid website orders are in the bank, never in a drawer: don't even load them.
+          // classifyOrderCash still skips them, as a second lock.
+          notIn: ['Pending', 'Unpaid', 'pending', 'unpaid', 'PENDING', 'UNPAID', ONLINE_PAYMENT_METHOD],
         },
       },
       {

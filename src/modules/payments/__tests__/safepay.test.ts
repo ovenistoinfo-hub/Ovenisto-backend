@@ -12,6 +12,21 @@ describe('readSafepayConfig', () => {
     expect(readSafepayConfig({ SAFEPAY_ENV: 'live', SAFEPAY_API_KEY: 'k', SAFEPAY_V1_SECRET: 's', SAFEPAY_WEBHOOK_SECRET: 'w' })).toBeNull();
     expect(readSafepayConfig({})).toBeNull();
   });
+
+  it('trims the values, since a pasted key often carries a space or newline', () => {
+    expect(readSafepayConfig({ SAFEPAY_ENV: ' sandbox\n', SAFEPAY_API_KEY: '  k ', SAFEPAY_V1_SECRET: 's\n', SAFEPAY_WEBHOOK_SECRET: '\tw ' }))
+      .toEqual({ env: 'sandbox', apiKey: 'k', v1Secret: 's', webhookSecret: 'w' });
+  });
+
+  it('treats a whitespace-only value as missing', () => {
+    expect(readSafepayConfig({ SAFEPAY_ENV: 'sandbox', SAFEPAY_API_KEY: '   ', SAFEPAY_V1_SECRET: 's', SAFEPAY_WEBHOOK_SECRET: 'w' })).toBeNull();
+    expect(readSafepayConfig({ SAFEPAY_ENV: 'sandbox', SAFEPAY_API_KEY: 'k', SAFEPAY_V1_SECRET: 's', SAFEPAY_WEBHOOK_SECRET: '\n' })).toBeNull();
+  });
+
+  it('accepts production', () => {
+    expect(readSafepayConfig({ SAFEPAY_ENV: 'production', SAFEPAY_API_KEY: 'k', SAFEPAY_V1_SECRET: 's', SAFEPAY_WEBHOOK_SECRET: 'w' }))
+      .toEqual({ env: 'production', apiKey: 'k', v1Secret: 's', webhookSecret: 'w' });
+  });
 });
 
 describe('buildCheckoutUrl', () => {
