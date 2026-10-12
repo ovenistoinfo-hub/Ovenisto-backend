@@ -12,6 +12,7 @@ describe('website.helpers.ts', () => {
     location: null,
     hours: null,
     mealHours: {},
+    onlinePayment: false,
   };
 
   describe('computeDeliveryFee', () => {
@@ -118,6 +119,10 @@ describe('website.helpers.ts', () => {
 
     it('maps anything else to pending', () => {
       expect(toWebsiteOrderStatus({ status: 'UNKNOWN_STATUS', type: 'DELIVERY' }, null)).toBe('pending');
+    });
+
+    it('maps AWAITING_PAYMENT to awaiting_payment', () => {
+      expect(toWebsiteOrderStatus({ status: 'AWAITING_PAYMENT', type: 'DELIVERY' }, null)).toBe('awaiting_payment');
     });
   });
 
@@ -404,6 +409,16 @@ describe('website.helpers.ts', () => {
       expect(isUnverifiedEmailAccount({ email_verified: true, firebase: { sign_in_provider: 'password' } })).toBe(false);
       expect(isUnverifiedEmailAccount({ email_verified: false, firebase: { sign_in_provider: 'google.com' } })).toBe(false);
       expect(isUnverifiedEmailAccount({ firebase: { sign_in_provider: 'phone' } })).toBe(false);
+    });
+  });
+
+  describe('readWebsiteConfig onlinePayment', () => {
+    it('is off unless the branch switched it on', () => {
+      expect(readWebsiteConfig(null).onlinePayment).toBe(false);
+      expect(readWebsiteConfig({}).onlinePayment).toBe(false);
+      expect(readWebsiteConfig({ onlinePayment: true }).onlinePayment).toBe(true);
+      expect(readWebsiteConfig({ onlinePayment: 'true' }).onlinePayment).toBe(true);
+      expect(readWebsiteConfig({ onlinePayment: 'yes' }).onlinePayment).toBe(false);
     });
   });
 });

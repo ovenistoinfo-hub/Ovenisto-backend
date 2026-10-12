@@ -808,6 +808,7 @@ enum OrderStatus {
   COMPLETED @map("completed")
   CANCELLED @map("cancelled")
   SCHEDULED @map("scheduled")
+  AWAITING_PAYMENT @map("awaiting_payment") // website order waiting for its online payment; staff don't see it
 }
 
 enum WarehouseType {
@@ -908,6 +909,7 @@ model Order {
   staffPenalties       StaffPenalty[]
   kitchenProgress      OrderKitchenProgress[]
   kitchenDealProgress  OrderKitchenDealProgress[]
+  payments             OrderPayment[]
   settlement           CashSettlement?        @relation(fields: [settlementId], references: [id])
   cashierSettlement    CashSettlement?        @relation("CashierSettledOrders", fields: [cashierSettlementId], references: [id])
   riderSettlement      CashSettlement?        @relation("RiderSettledOrders", fields: [riderSettlementId], references: [id])
@@ -959,6 +961,31 @@ model OrderItem {
   @@index([menuItemId])
   @@index([dealId])
   @@map("order_items")
+}
+
+// One online payment attempt (Safepay) for a website order. What is owed back is derived from these
+// rows (payments/payment.rules.ts refundsDueForOrder), never stored.
+model OrderPayment {
+  id              String    @id @default(uuid())
+  orderId         String
+  provider        String    @default("safepay") @db.VarChar(20)
+  tracker         String    @unique @db.VarChar(100)
+  amount          Decimal   @db.Decimal(10, 2)
+  status          String    @default("initiated") @db.VarChar(20) // initiated | paid
+  refundedAmount  Decimal   @default(0) @db.Decimal(10, 2)
+  returnOrigin    String?   @db.VarChar(200)
+  paidAt          DateTime?
+  refundedAt      DateTime?
+  refundedByName  String?   @db.VarChar(100)
+  refundReference String?   @db.VarChar(100)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([status])
+  @@map("order_payments")
 }
 
 model OrderKitchenProgress {
