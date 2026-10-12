@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
-import { getOutlets, getConfig, getMenu, getDeals, quoteCart, createWebsiteOrder, getWebsiteOrderStatus, createWebsiteReservation, getWebsiteReservationStatus, quoteWebsiteReservation, getMyWebsiteOrders, getMyWebsiteReservations } from './website.controller.js';
+import { getOutlets, getConfig, getMenu, getDeals, quoteCart, createWebsiteOrder, getWebsiteOrderStatus, createWebsiteReservation, getWebsiteReservationStatus, quoteWebsiteReservation, getMyWebsiteOrders, getMyWebsiteReservations, payWebsiteOrder, payCashWebsiteOrder } from './website.controller.js';
 import { requireWebsiteCustomer } from './website.auth.js';
 import { validateRequest } from '../../middleware/validateRequest.js';
 import { quoteCartSchema, createOrderSchema, reservationSchema, quoteReservationSchema } from './website.schema.js';
@@ -47,6 +47,8 @@ websiteRouter.get('/deals', readLimiter, getDeals);
 websiteRouter.post('/quote', quoteLimiter, validateRequest({ body: quoteCartSchema }), quoteCart);
 // Placing an order or a booking needs a signed-in customer (Firebase ID token); browsing and quotes don't.
 websiteRouter.post('/orders', orderLimiter, requireWebsiteCustomer, validateRequest({ body: createOrderSchema }), createWebsiteOrder);
+websiteRouter.post('/orders/:id/pay', orderLimiter, requireWebsiteCustomer, payWebsiteOrder);
+websiteRouter.post('/orders/:id/pay-cash', orderLimiter, requireWebsiteCustomer, payCashWebsiteOrder);
 websiteRouter.get('/orders/:id/status', readLimiter, getWebsiteOrderStatus);
 
 websiteRouter.post('/reservations/quote', quoteLimiter, validateRequest({ body: quoteReservationSchema }), quoteWebsiteReservation);

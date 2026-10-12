@@ -13,6 +13,8 @@ import { emitOrderEvent } from '../../socket.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
 import { emitReservationEvent } from '../../socket.js';
 import { mapOrderOut, generateOrderNumber } from '../order/order.controller.js';
+import { safepayConfig, startPayment, switchToCash, expireStalePaymentOrders, returnOriginOf, apiBaseOf } from '../payments/payment.service.js';
+import { toPaymentView, toPaymentLike, ONLINE_ORIGIN_MESSAGE } from '../payments/payment.rules.js';
 
 const prisma = new PrismaClient();
 
@@ -74,6 +76,8 @@ export const getConfig = asyncHandler(async (req: Request, res: Response) => {
   });
 
   const acceptingReservations = outlet.isActive && config.reservationsEnabled;
+  // "Pay online" shows only when the branch switched it on AND the server has the Safepay keys.
+  const onlinePaymentAvailable = acceptingOrders && config.onlinePayment && !!safepayConfig;
 
   res.setHeader('Cache-Control', 'no-cache');
   res.json(ApiResponse.success({
@@ -81,6 +85,7 @@ export const getConfig = asyncHandler(async (req: Request, res: Response) => {
     outletName: outlet.name,
     acceptingOrders,
     acceptingReservations,
+    onlinePaymentAvailable,
     reservationsEnabled: config.reservationsEnabled,
     orderTypes: WEBSITE_ORDER_TYPES,
     deliveryFee: config.deliveryFee,
@@ -155,7 +160,7 @@ export const quoteCart = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const createWebsiteOrder = asyncHandler(async (req: Request, res: Response) => {
-  const { outletId, orderType, items, dealCode, customerName, customerPhone, deliveryAddress, deliveryLocation, specialInstructions, clientRequestId } = req.body;
+  const { outletId, orderType, items, dealCode, customerName, customerPhone, deliveryAddress, deliveryLocation, specialInstructions, clientRequestId, paymentChoice } = req.body;
   
   if (clientRequestId) {
     const existing = await prisma.order.findFirst({
@@ -166,7 +171,8 @@ export const createWebsiteOrder = asyncHandler(async (req: Request, res: Respons
         orderId: existing.id,
         orderNumber: existing.orderNumber,
         total: Number(existing.total),
-        status: 'pending'
+        status: toWebsiteOrderStatus(existing, null),
+        checkoutUrl: null,
       }));
       return;
     }
@@ -184,6 +190,18 @@ export const createWebsiteOrder = asyncHandler(async (req: Request, res: Respons
   const phone = normalizePkPhone(customerPhone);
   if (!phone) {
     throw ApiError.badRequest('Enter a valid mobile number (03XX-XXXXXXX)');
+  }
+
+  // Pay online: the branch must offer it and the server must have the Safepay keys. The browser's origin
+  // is where Safepay sends the customer back, so it has to be one the CORS rule allows.
+  const payOnline = paymentChoice === 'online';
+  const returnOrigin = payOnline ? returnOriginOf(req) : null;
+  if (payOnline) {
+    const branchConfig = readWebsiteConfig((await getOutletSettings(priced.outlet.id))?.websiteConfig);
+    if (!branchConfig.onlinePayment || !safepayConfig) {
+      throw ApiError.conflict("Online payment isn't available for this branch right now");
+    }
+    if (!returnOrigin) throw ApiError.badRequest(ONLINE_ORIGIN_MESSAGE);
   }
 
   // Find or create customer
@@ -223,6 +241,7 @@ export const createWebsiteOrder = asyncHandler(async (req: Request, res: Respons
       appliedDealCode: priced.appliedDeal?.code || null,
       appliedDealName: priced.appliedDeal?.dealName || null,
       paymentMethod: 'Pending',
+      status: payOnline ? 'AWAITING_PAYMENT' : 'PENDING',
       date: now,
       time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
       staffId: null,
@@ -258,6 +277,25 @@ export const createWebsiteOrder = asyncHandler(async (req: Request, res: Respons
     }
   });
 
+  if (payOnline && returnOrigin) {
+    // Staff see it only once Safepay confirms the payment (payment.service.ts confirmPayment).
+    let checkoutUrl: string | null = null;
+    try {
+      checkoutUrl = await startPayment(order, { returnOrigin, apiBase: apiBaseOf(req) });
+    } catch (err) {
+      // The order page still offers Pay now / Pay cash instead.
+      console.error(`[safepay] could not start a payment for ${order.orderNumber}:`, err);
+    }
+    res.status(201).json(ApiResponse.success({
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      total: Number(order.total),
+      status: 'awaiting_payment',
+      checkoutUrl,
+    }));
+    return;
+  }
+
   const createdOut = mapOrderOut(order);
   emitOrderEvent('order:created', createdOut);
 
@@ -265,7 +303,8 @@ export const createWebsiteOrder = asyncHandler(async (req: Request, res: Respons
     orderId: order.id,
     orderNumber: order.orderNumber,
     total: Number(order.total),
-    status: 'pending'
+    status: 'pending',
+    checkoutUrl: null,
   }));
 });
 
@@ -275,6 +314,8 @@ export const getWebsiteOrderStatus = asyncHandler(async (req: Request, res: Resp
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
     throw ApiError.badRequest('Invalid order ID format');
   }
+
+  await expireStalePaymentOrders({ id });
 
   const order = await prisma.order.findUnique({
     where: { id },
@@ -294,6 +335,7 @@ const ORDER_STATUS_INCLUDE = {
   items: { where: { status: 'active' } },
   deliveries: { where: { status: { not: 'returned' } }, orderBy: { assignedAt: 'desc' }, take: 1 },
   outlet: { select: { name: true } },
+  payments: { select: { id: true, status: true, amount: true, refundedAmount: true, paidAt: true } },
 } satisfies Prisma.OrderInclude;
 
 function toOrderStatusView(order: Prisma.OrderGetPayload<{ include: typeof ORDER_STATUS_INCLUDE }>) {
@@ -308,7 +350,11 @@ function toOrderStatusView(order: Prisma.OrderGetPayload<{ include: typeof ORDER
     deliveryFee: Number(order.deliveryFee || 0),
     items: order.items.map(i => ({ name: i.name, qty: i.qty })),
     outletName: order.outlet?.name || 'Unknown',
-    createdAt: order.createdAt
+    createdAt: order.createdAt,
+    payment: toPaymentView(
+      { status: order.status, total: Number(order.total), paymentMethod: order.paymentMethod },
+      order.payments.map(toPaymentLike)
+    ),
   };
 }
 
@@ -320,14 +366,53 @@ function signedInUid(res: Response): string {
 }
 
 export const getMyWebsiteOrders = asyncHandler(async (req: Request, res: Response) => {
+  const uid = signedInUid(res);
+  await expireStalePaymentOrders({ customerUid: uid });
   const orders = await prisma.order.findMany({
-    where: { customerUid: signedInUid(res), orderSource: 'website' },
+    where: { customerUid: uid, orderSource: 'website' },
     include: ORDER_STATUS_INCLUDE,
     orderBy: { createdAt: 'desc' },
     take: 50,
   });
   res.setHeader('Cache-Control', 'no-store');
   res.json(ApiResponse.success(orders.map(toOrderStatusView)));
+});
+
+const ORDER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** The signed-in customer's own website order that is still waiting for its online payment. */
+async function loadAwaitingOrder(req: Request, res: Response) {
+  const uid = signedInUid(res);
+  const { id } = req.params;
+  if (!ORDER_ID_RE.test(id)) throw ApiError.badRequest('Invalid order ID format');
+  await expireStalePaymentOrders({ id });
+  const order = await prisma.order.findUnique({ where: { id } });
+  if (!order || order.orderSource !== 'website' || order.customerUid !== uid) throw ApiError.notFound('Order not found');
+  if (order.status !== 'AWAITING_PAYMENT') throw ApiError.conflict('This order is no longer waiting for payment');
+  return order;
+}
+
+/** POST /website/orders/:id/pay — a new Safepay checkout for the same order (try again). */
+export const payWebsiteOrder = asyncHandler(async (req: Request, res: Response) => {
+  const order = await loadAwaitingOrder(req, res);
+  const returnOrigin = returnOriginOf(req);
+  if (!returnOrigin) throw ApiError.badRequest(ONLINE_ORIGIN_MESSAGE);
+  let checkoutUrl: string;
+  try {
+    checkoutUrl = await startPayment(order, { returnOrigin, apiBase: apiBaseOf(req) });
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    console.error(`[safepay] could not start a payment for ${order.orderNumber}:`, err);
+    throw ApiError.conflict("Couldn't open the payment page. Try again in a minute, or pay cash instead.");
+  }
+  res.json(ApiResponse.success({ checkoutUrl }));
+});
+
+/** POST /website/orders/:id/pay-cash — give up on paying online; it becomes a normal cash order. */
+export const payCashWebsiteOrder = asyncHandler(async (req: Request, res: Response) => {
+  const order = await loadAwaitingOrder(req, res);
+  await switchToCash(order.id);
+  res.json(ApiResponse.success({ orderId: order.id, status: 'pending' }));
 });
 
 interface ReservationItemInput extends DealTaggedLine {

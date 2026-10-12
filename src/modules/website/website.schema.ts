@@ -28,6 +28,7 @@ export const createOrderSchema = quoteCartSchema.extend({
   deliveryLocation: z.object({ lat: z.number(), lng: z.number() }).optional(),
   specialInstructions: z.string().max(500).optional(),
   clientRequestId: z.string().max(64).optional(),
+  paymentChoice: z.enum(['online', 'cash']).optional().default('cash'),
 }).superRefine((data, ctx) => {
   if (data.orderType === 'Delivery') {
     if (!data.deliveryAddress || data.deliveryAddress.length < 10) {

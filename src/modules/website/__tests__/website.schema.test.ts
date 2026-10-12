@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { reservationSchema, quoteReservationSchema } from '../website.schema.js';
+import { reservationSchema, quoteReservationSchema, createOrderSchema } from '../website.schema.js';
 
 const OUTLET = '143113a2-e108-41f7-81f7-03db9ba1e55c';
 const ITEM = { menuItemId: '1600dc6c-469f-418c-8740-96c875cb3afd', name: 'Zinger', qty: 1 };
@@ -30,5 +30,21 @@ describe('quoteReservationSchema', () => {
   it('allows an empty Dine In quote but not an empty Delivery one', () => {
     expect(quoteReservationSchema.safeParse({ outletId: OUTLET, orderType: 'Dine In' }).success).toBe(true);
     expect(quoteReservationSchema.safeParse({ outletId: OUTLET, orderType: 'Delivery', items: [] }).success).toBe(false);
+  });
+});
+
+describe('createOrderSchema paymentChoice', () => {
+  const order = { outletId: OUTLET, orderType: 'Take Away', items: [ITEM], customerName: 'Test', customerPhone: '0300-1234567' };
+
+  it('defaults to cash, so an older website keeps working', () => {
+    expect(createOrderSchema.parse(order).paymentChoice).toBe('cash');
+  });
+
+  it('accepts online', () => {
+    expect(createOrderSchema.parse({ ...order, paymentChoice: 'online' }).paymentChoice).toBe('online');
+  });
+
+  it('rejects anything else', () => {
+    expect(createOrderSchema.safeParse({ ...order, paymentChoice: 'card' }).success).toBe(false);
   });
 });

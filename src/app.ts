@@ -22,7 +22,7 @@ app.set('trust proxy', 1); // Railway = one proxy hop; rate limiters then key on
 // CORS - Allow frontend to access API (supports exact origins, wildcards, and all *.vercel.app preview URLs)
 const allowedOrigins = env.CORS_ORIGIN.split(',').map((o) => o.trim());
 
-app.use(
+const corsMiddleware = (
   cors({
     origin: (origin, callback) => {
       // Allow requests with no origin (e.g. mobile apps, curl, server-to-server)
@@ -44,6 +44,11 @@ app.use(
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Outlet-Id'],
   })
 );
+
+// Safepay posts the customer's browser back to /api/payments/safepay/return from its own domain, and calls
+// the webhook from its server. Neither needs CORS headers, and the origin check would reject Safepay's
+// domain with a 500, so these two paths skip it. They check Safepay's signature instead.
+app.use((req, res, next) => (req.path.startsWith('/api/payments/safepay/') ? next() : corsMiddleware(req, res, next)));
 
 // gzip-compress all responses — shrinks large JSON list payloads (POS menu, orders)
 // by ~70-85%, which matters most on slow restaurant tablet WiFi/4G.
