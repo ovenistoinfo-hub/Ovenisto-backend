@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  ONLINE_PAYMENT_METHOD, PAYMENT_WINDOW_MS, isOnlinePaid, isPaymentExpired, decideConfirm, refundsDueForOrder,
+  ONLINE_PAYMENT_METHOD, isOnlinePaid, decideConfirm, refundsDueForOrder,
   toPaymentView, toPaymentLike, resolveReturnOrigin, webhookTracker, onlinePaidEditBlock, PAID_ONLINE_EDIT_MESSAGE,
   type PaymentLike,
 } from '../payment.rules.js';
@@ -16,17 +16,6 @@ describe('isOnlinePaid', () => {
     expect(isOnlinePaid(' Online (Safepay) ')).toBe(true);
     expect(isOnlinePaid('Cash')).toBe(false);
     expect(isOnlinePaid(null)).toBe(false);
-  });
-});
-
-describe('isPaymentExpired', () => {
-  const now = Date.parse('2026-10-12T12:00:00Z');
-  it('expires an awaiting order after the window', () => {
-    expect(isPaymentExpired({ status: 'AWAITING_PAYMENT', createdAt: new Date(now - PAYMENT_WINDOW_MS - 1) }, now)).toBe(true);
-    expect(isPaymentExpired({ status: 'AWAITING_PAYMENT', createdAt: new Date(now - PAYMENT_WINDOW_MS + 60_000) }, now)).toBe(false);
-  });
-  it('never expires an order that is not waiting for payment', () => {
-    expect(isPaymentExpired({ status: 'PENDING', createdAt: new Date(0) }, now)).toBe(false);
   });
 });
 

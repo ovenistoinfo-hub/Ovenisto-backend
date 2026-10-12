@@ -308,10 +308,12 @@ export const createWebsiteOrder = asyncHandler(async (req: Request, res: Respons
   }));
 });
 
+const ORDER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 export const getWebsiteOrderStatus = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+  if (!ORDER_ID_RE.test(id)) {
     throw ApiError.badRequest('Invalid order ID format');
   }
 
@@ -377,8 +379,6 @@ export const getMyWebsiteOrders = asyncHandler(async (req: Request, res: Respons
   res.setHeader('Cache-Control', 'no-store');
   res.json(ApiResponse.success(orders.map(toOrderStatusView)));
 });
-
-const ORDER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** The signed-in customer's own website order that is still waiting for its online payment. */
 async function loadAwaitingOrder(req: Request, res: Response) {

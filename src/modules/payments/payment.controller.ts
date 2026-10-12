@@ -16,8 +16,18 @@ export const safepayReturn = asyncHandler(async (req: Request, res: Response) =>
 
   const tracker = req.body?.tracker;
   const ok = !!safepayConfig && tracker === payment.tracker && isValidReturnSignature(safepayConfig, tracker, req.body?.sig);
-  if (ok) await confirmPayment(payment.tracker);
-  else console.warn(`[safepay] return with a bad signature for payment ${payment.id}`);
+  if (ok) {
+    // The customer has paid: whatever happens to the save, they go back to the order page (it polls and
+    // says it is confirming), and the webhook confirms the payment if this attempt failed.
+    try {
+      await confirmPayment(payment.tracker);
+    } catch (err) {
+      console.error(`[safepay] confirming payment ${payment.id} on return failed; the webhook will retry`, err);
+    }
+  } else {
+    const reason = !safepayConfig ? 'Safepay keys are not set' : tracker !== payment.tracker ? 'tracker does not match' : 'bad signature';
+    console.warn(`[safepay] return rejected for payment ${payment.id}: ${reason}`);
+  }
 
   res.redirect(303, `${payment.returnOrigin}/order/${payment.orderId}?payment=${ok ? 'done' : 'failed'}`);
 });

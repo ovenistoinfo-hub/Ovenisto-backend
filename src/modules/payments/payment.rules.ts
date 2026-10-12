@@ -7,16 +7,15 @@ export const ONLINE_PAYMENT_METHOD = 'Online (Safepay)';
 
 export const isOnlinePaid = (paymentMethod: string | null | undefined) => (paymentMethod ?? '').trim() === ONLINE_PAYMENT_METHOD;
 
-/** An order still waiting for its online payment after this long is cancelled (on the next read). */
+/**
+ * An order still waiting for its online payment is cancelled (on the next read) once this long has passed
+ * since the customer's latest checkout start, or since the order was placed if none was started.
+ */
 export const PAYMENT_WINDOW_MS = 30 * 60 * 1000;
 export const PAYMENT_EXPIRED_REASON = 'Payment not completed';
 export const ONLINE_ORIGIN_MESSAGE = 'Online payment has to be started from the Ovenisto website';
 export const PAID_ONLINE_EDIT_MESSAGE =
   "This order was paid online: its payment method can't change and its total can't go above what was paid. Add extra items as a new order.";
-
-export function isPaymentExpired(order: { status: string; createdAt: Date }, nowMs = Date.now()): boolean {
-  return order.status === 'AWAITING_PAYMENT' && nowMs - order.createdAt.getTime() > PAYMENT_WINDOW_MS;
-}
 
 const isUnpaidMethod = (pm: string | null | undefined) => {
   const v = (pm ?? '').trim().toLowerCase();

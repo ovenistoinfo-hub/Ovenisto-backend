@@ -80,10 +80,15 @@ export async function confirmPayment(tracker: string): Promise<void> {
   if (result) await emitOrder(result.orderId, result.event);
 }
 
-/** Cancels orders whose online payment window has passed. Read paths call this; there is no timer. */
+/**
+ * Cancels orders whose online payment window has passed. The window runs from the customer's latest
+ * checkout start (or from placing the order, if none was started), so tapping Pay late never cancels an
+ * order mid-payment. Read paths call this; there is no timer.
+ */
 export async function expireStalePaymentOrders(where: Prisma.OrderWhereInput = {}): Promise<void> {
+  const cutoff = new Date(Date.now() - PAYMENT_WINDOW_MS);
   await prisma.order.updateMany({
-    where: { ...where, status: 'AWAITING_PAYMENT', createdAt: { lt: new Date(Date.now() - PAYMENT_WINDOW_MS) } },
+    where: { ...where, status: 'AWAITING_PAYMENT', createdAt: { lt: cutoff }, payments: { none: { createdAt: { gte: cutoff } } } },
     data: { status: 'CANCELLED', rejectionReason: PAYMENT_EXPIRED_REASON },
   });
 }
