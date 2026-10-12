@@ -405,6 +405,7 @@ export async function getActiveBalances(outletScope: string | null) {
     const src = (orderObj.orderSource || '').toLowerCase();
     if (src === 'waiter' || src === 'table') return 'Waiter Panel';
     if (src === 'self-order') return 'Self-Order (QR)';
+    if (src === 'website' && orderObj.type === 'TAKE_AWAY') return 'Website Pickup';
     return 'POS Counter';
   };
 
