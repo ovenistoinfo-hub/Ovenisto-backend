@@ -1,7 +1,7 @@
 // Website online payment (Safepay): the DB side. Decisions are the pure rules in payment.rules.ts;
 // the gateway calls are in safepay.ts.
 import type { Request } from 'express';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database.js';
 import { env } from '../../config/env.js';
 import { ApiError } from '../../utils/ApiError.js';
@@ -114,14 +114,35 @@ const REFUND_ORDER_SELECT = {
   payments: { select: { id: true, status: true, amount: true, refundedAmount: true, paidAt: true, tracker: true } },
 } satisfies Prisma.OrderSelect;
 
-/** Every website payment with money owed back, for the outlet (newest orders first). */
+/**
+ * Every website payment with money owed back, for the outlet (newest orders first). Almost every online
+ * order is paid and owes nothing, so fetching "the newest N paid orders" would push an older order that
+ * does owe a refund off the list, and refund due is derived, never stored, so this list is the only place
+ * staff see it. A SQL pre-query therefore narrows to the ids of orders that can owe something back
+ * (cancelled, paid another way, paid twice, or paid more than the total, with money still unrefunded);
+ * it is a superset of what is owed, and `refundsDueForOrder` stays the source of truth for the exact
+ * amounts and reasons. Because only those orders are loaded, there is no cap.
+ */
 export async function listRefundsDue(scope: string | null): Promise<RefundDueRow[]> {
   await expireStalePaymentOrders(scope ? { outletId: scope } : {});
+  const scopeClause = scope ? Prisma.sql`AND o."outletId" = ${scope}` : Prisma.empty;
+  const candidates = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT o.id
+    FROM "orders" o
+    JOIN "order_payments" p ON p."orderId" = o.id AND p.status = 'paid'
+    WHERE o."orderSource" = 'website' ${scopeClause}
+    GROUP BY o.id
+    HAVING SUM(p.amount - p."refundedAmount") > 0
+       AND (o.status = 'cancelled'
+            OR o."paymentMethod" IS DISTINCT FROM ${ONLINE_PAYMENT_METHOD}
+            OR COUNT(*) > 1
+            OR SUM(p.amount - p."refundedAmount") > o.total)
+  `;
+  if (candidates.length === 0) return [];
   const orders = await prisma.order.findMany({
-    where: { ...(scope ? { outletId: scope } : {}), orderSource: 'website', payments: { some: { status: 'paid' } } },
+    where: { id: { in: candidates.map((c) => c.id) } },
     select: REFUND_ORDER_SELECT,
     orderBy: { createdAt: 'desc' },
-    take: 200,
   });
   return orders.flatMap((o) =>
     refundsDueForOrder({ status: o.status, total: Number(o.total), paymentMethod: o.paymentMethod }, o.payments.map(toPaymentLike))
