@@ -11,7 +11,7 @@ in this file.
 
 ## Architecture
 
-Express 5 + TypeScript (ESM) + Prisma over PostgreSQL (**Railway Postgres** since ~2026-09-22; was Neon), with Socket.IO for push. The local `.env` `DATABASE_URL` points at the same production database (`*.proxy.rlwy.net`).
+Express 5 + TypeScript (ESM) + Prisma over PostgreSQL (**Railway Postgres** since ~2026-09-22; was Neon), with Socket.IO for push. On the owner's machine the local `.env` `DATABASE_URL` (`altaria.proxy.rlwy.net:32268`) is the **staging** database, not production (verified 2026-10-02 and 2026-10-13: rows written through it show on the staging API, and production has no outlets). It is still shared: no `db:push`, scripts or test rows without the owner's OK, and test rows are named ZZTEST and deleted afterwards.
 `src/index.ts` boots the HTTP server, wires Socket.IO, and starts a 60-second
 `autoProcessExpiredBatches` interval; `src/app.ts` is the Express app alone (CORS,
 compression, morgan, 10mb JSON limit, `/health`, `/health/db`, `/api`, error handler).
@@ -739,6 +739,21 @@ plus a body explaining _why_ the change was made when that is not obvious.
 - **Return never fails the customer:** if `confirmPayment` throws after a valid return signature, `safepayReturn` logs it and still 303s with `?payment=done` (the webhook confirms). `GET /api/payments/refunds-due` finds candidates with one raw-SQL pre-query (cancelled / not `Online (Safepay)` / paid twice / paid above total, with something unrefunded), then `refundsDueForOrder` — no row cap.
 - **To confirm in the sandbox:** amount unit (rupees assumed), the redirect POST fields, the webhook payload (`webhookTracker` guesses
   `data.tracker` + `payment:created`/`PAID`/`TRACKER_ENDED`), a tracker status lookup. Schema arrives with the deploy's `db:push` (additive).
+- **Sandbox run 2026-10-13 (ORD-047, paid with test card 4456 5300 0000 1005) — this supersedes the return and "signed" wording above:**
+  - **What Safepay really does:** the amount is in **rupees**. It sends the browser back with a **GET**, no `sig`, and appends
+    `?order_id=…&tracker=…` to our redirect URL even though it already has a query (so `pid` reads `<id>?order_id=…`). No webhook
+    arrived (both dashboard logs stayed empty). The POST-only route answered 404, so the paid order stayed AWAITING_PAYMENT.
+  - **Fix (same day): Safepay's own record is the source of truth.** `safepay.ts` `fetchTracker` = `GET {API}/order/v1/{tracker}` (no
+    auth; the docs' `/reporter/api/v1/payments/{tracker}` does not find these trackers) and pure `isTrackerPaid` (tested): state
+    `TRACKER_ENDED` + a transaction on our `client` for the amount whose `signature` = HMAC-SHA256(Secret key, tracker). A started
+    tracker reads `TRACKER_STARTED`, a cancelled one `TRACKER_CANCELLED`.
+  - `payment.service.ts` `settlePayment` looks a tracker up and confirms it ('paid' | 'unpaid' | 'unknown', never throws). The return
+    (`GET` or `POST /safepay/return`) trusts nothing in the request and uses it; paid at Safepay redirects `?payment=done` even if the
+    save failed. The customer's reads call `refreshPaymentOrders` (status, my orders, pay, pay-cash), which settles their open
+    checkouts first, so a paid order heals without any return or webhook and "Pay now" can't start a second payment.
+    `expireStalePaymentOrders` asks Safepay before cancelling and leaves an order it couldn't ask about for the next read.
+  - Dashboard "Public key" = `SAFEPAY_API_KEY`, "Secret key" = `SAFEPAY_V1_SECRET`. The sandbox checkout offers cards only.
+  - **Still unconfirmed:** webhooks (`webhookTracker` and the webhook signature have never run against a real one).
 - **Deploy steps:** set the four `SAFEPAY_*` vars on the Railway service; register `https://<api host>/api/payments/safepay/webhook` as the webhook URL in the Safepay dashboard; the production website origin must be in `CORS_ORIGIN` (only `*.vercel.app` and localhost are allowed by pattern) or online payment is refused with 400 'has to be started from the Ovenisto website'; switch on Settings → Website → Accept online payment per branch.
 - **Final-review hardening (2026-10-12):** `POST /safepay/return` is rate-limited (60/min per IP; the webhook is not, its HMAC check runs before any DB work) and finds the payment by the posted `tracker` when `?pid=` is missing (the signature is still checked against that row); `webhookTracker` refuses an event whose `type` names a failure (`fail|cancel|expire|error|declin|void|refund`) even when the state looks paid; `readSafepayConfig` trims all four values and counts a blank one as missing; `emitOrder` is best-effort (try/catch + `console.error`) so a socket or read error after a committed change never becomes a 500; `markRefunded` keeps a stored `refundReference` when none is sent; `getActiveBalances` no longer loads `Online (Safepay)` orders at all (`classifyOrderCash` still skips them).
 

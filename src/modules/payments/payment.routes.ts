@@ -17,7 +17,9 @@ const returnLimiter = rateLimit({
   message: { success: false, error: 'Too many requests - please wait a moment and try again.' },
 });
 
-// Safepay calls these (the customer's browser, and Safepay's server): no staff login, the signature is the check.
+// Safepay calls these (the customer's browser, and Safepay's server): no staff login. The return arrives as a
+// GET with no signature (seen in the sandbox), so its handler asks Safepay itself; POST is kept for the SDK's flow.
+paymentsRouter.get('/safepay/return', returnLimiter, safepayReturn);
 paymentsRouter.post('/safepay/return', returnLimiter, safepayReturn);
 paymentsRouter.post('/safepay/webhook', safepayWebhook);
 

@@ -7,7 +7,7 @@ import { env } from '../../config/env.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { emitOrderEvent } from '../../socket.js';
 import { mapOrderOut } from '../order/order.controller.js';
-import { readSafepayConfig, createTracker, buildCheckoutUrl } from './safepay.js';
+import { readSafepayConfig, createTracker, buildCheckoutUrl, fetchTracker, isTrackerPaid } from './safepay.js';
 import {
   ONLINE_PAYMENT_METHOD, PAYMENT_WINDOW_MS, PAYMENT_EXPIRED_REASON, decideConfirm, refundsDueForOrder,
   resolveReturnOrigin, toPaymentLike, type RefundReason,
@@ -86,16 +86,62 @@ export async function confirmPayment(tracker: string): Promise<void> {
 }
 
 /**
+ * Asks Safepay whether one of our checkouts was paid, and records it if so. Safepay's record is the
+ * source of truth: the redirect back carries no signature, and a webhook may never arrive.
+ * 'unknown' means Safepay couldn't be asked. Never throws.
+ */
+export async function settlePayment(p: { tracker: string; amount: unknown }): Promise<'paid' | 'unpaid' | 'unknown'> {
+  if (!safepayConfig) return 'unknown';
+  let paid: boolean;
+  try {
+    paid = isTrackerPaid(safepayConfig, p.tracker, Number(p.amount), await fetchTracker(safepayConfig, p.tracker));
+  } catch (err) {
+    console.warn(`[safepay] could not look up tracker ${p.tracker}`, err);
+    return 'unknown';
+  }
+  if (!paid) return 'unpaid';
+  try {
+    await confirmPayment(p.tracker);
+  } catch (err) {
+    // Safepay has the money; the next read of the order tries the save again.
+    console.error(`[safepay] tracker ${p.tracker} is paid but saving it failed`, err);
+  }
+  return 'paid';
+}
+
+/** Settles every checkout of these orders we still hold as unpaid; returns the orders Safepay couldn't be asked about. */
+async function settleOpenPayments(orderWhere: Prisma.OrderWhereInput): Promise<string[]> {
+  if (!safepayConfig) return [];
+  const open = await prisma.orderPayment.findMany({
+    where: { status: 'initiated', order: orderWhere },
+    select: { tracker: true, amount: true, orderId: true },
+  });
+  const results = await Promise.all(open.map(async (p) => ({ orderId: p.orderId, result: await settlePayment(p) })));
+  return [...new Set(results.filter((r) => r.result === 'unknown').map((r) => r.orderId))];
+}
+
+/**
  * Cancels orders whose online payment window has passed. The window runs from the customer's latest
  * checkout start (or from placing the order, if none was started), so tapping Pay late never cancels an
- * order mid-payment. Read paths call this; there is no timer.
+ * order mid-payment. Safepay is asked first: an order it was paid for is activated instead, and one it
+ * couldn't be asked about is left for the next read. Read paths call this; there is no timer.
  */
 export async function expireStalePaymentOrders(where: Prisma.OrderWhereInput = {}): Promise<void> {
   const cutoff = new Date(Date.now() - PAYMENT_WINDOW_MS);
+  const stale: Prisma.OrderWhereInput = {
+    ...where, status: 'AWAITING_PAYMENT', createdAt: { lt: cutoff }, payments: { none: { createdAt: { gte: cutoff } } },
+  };
+  const unchecked = await settleOpenPayments(stale);
   await prisma.order.updateMany({
-    where: { ...where, status: 'AWAITING_PAYMENT', createdAt: { lt: cutoff }, payments: { none: { createdAt: { gte: cutoff } } } },
+    where: unchecked.length > 0 ? { AND: [stale, { id: { notIn: unchecked } }] } : stale,
     data: { status: 'CANCELLED', rejectionReason: PAYMENT_EXPIRED_REASON },
   });
+}
+
+/** The customer's own reads: settle their open checkouts with Safepay, then expire what nobody paid. */
+export async function refreshPaymentOrders(where: Prisma.OrderWhereInput): Promise<void> {
+  await settleOpenPayments({ ...where, status: 'AWAITING_PAYMENT' });
+  await expireStalePaymentOrders(where);
 }
 
 /** "Pay cash instead": the order becomes a normal cash website order and reaches staff now. */

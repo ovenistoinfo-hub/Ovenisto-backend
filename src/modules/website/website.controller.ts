@@ -13,7 +13,7 @@ import { emitOrderEvent } from '../../socket.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
 import { emitReservationEvent } from '../../socket.js';
 import { mapOrderOut, generateOrderNumber } from '../order/order.controller.js';
-import { safepayConfig, startPayment, switchToCash, expireStalePaymentOrders, returnOriginOf, apiBaseOf } from '../payments/payment.service.js';
+import { safepayConfig, startPayment, switchToCash, refreshPaymentOrders, returnOriginOf, apiBaseOf } from '../payments/payment.service.js';
 import { toPaymentView, toPaymentLike, ONLINE_ORIGIN_MESSAGE } from '../payments/payment.rules.js';
 
 const prisma = new PrismaClient();
@@ -317,7 +317,7 @@ export const getWebsiteOrderStatus = asyncHandler(async (req: Request, res: Resp
     throw ApiError.badRequest('Invalid order ID format');
   }
 
-  await expireStalePaymentOrders({ id });
+  await refreshPaymentOrders({ id });
 
   const order = await prisma.order.findUnique({
     where: { id },
@@ -369,7 +369,7 @@ function signedInUid(res: Response): string {
 
 export const getMyWebsiteOrders = asyncHandler(async (req: Request, res: Response) => {
   const uid = signedInUid(res);
-  await expireStalePaymentOrders({ customerUid: uid });
+  await refreshPaymentOrders({ customerUid: uid });
   const orders = await prisma.order.findMany({
     where: { customerUid: uid, orderSource: 'website' },
     include: ORDER_STATUS_INCLUDE,
@@ -385,7 +385,7 @@ async function loadAwaitingOrder(req: Request, res: Response) {
   const uid = signedInUid(res);
   const { id } = req.params;
   if (!ORDER_ID_RE.test(id)) throw ApiError.badRequest('Invalid order ID format');
-  await expireStalePaymentOrders({ id });
+  await refreshPaymentOrders({ id });
   const order = await prisma.order.findUnique({ where: { id } });
   if (!order || order.orderSource !== 'website' || order.customerUid !== uid) throw ApiError.notFound('Order not found');
   if (order.status !== 'AWAITING_PAYMENT') throw ApiError.conflict('This order is no longer waiting for payment');

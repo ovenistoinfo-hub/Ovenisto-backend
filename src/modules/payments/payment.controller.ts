@@ -4,37 +4,30 @@ import { ApiError } from '../../utils/ApiError.js';
 import { ApiResponse } from '../../utils/ApiResponse.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
 import { prisma } from '../../config/database.js';
-import { isValidReturnSignature, isValidWebhookSignature } from './safepay.js';
+import { isValidWebhookSignature } from './safepay.js';
 import { webhookTracker } from './payment.rules.js';
-import { safepayConfig, confirmPayment, listRefundsDue, markRefunded } from './payment.service.js';
+import { safepayConfig, confirmPayment, settlePayment, listRefundsDue, markRefunded } from './payment.service.js';
 
-/** POST /api/payments/safepay/return?pid= — Safepay posts the customer's browser here after checkout. */
+/**
+ * GET (or POST) /api/payments/safepay/return?pid= — Safepay sends the customer's browser here after checkout.
+ * Seen in the sandbox: a GET with no signature, and "?order_id=…&tracker=…" appended even though our URL
+ * already has a query, so `pid` arrives as "<id>?order_id=…". Nothing in the request is trusted: the
+ * payment counts only if Safepay's own record says it was paid (settlePayment).
+ */
 export const safepayReturn = asyncHandler(async (req: Request, res: Response) => {
-  const pid = typeof req.query.pid === 'string' ? req.query.pid : '';
-  const tracker = req.body?.tracker;
+  const pid = typeof req.query.pid === 'string' ? req.query.pid.split('?')[0] : '';
+  const rawTracker = req.body?.tracker ?? req.query.tracker;
   let payment = pid ? await prisma.orderPayment.findUnique({ where: { id: pid } }) : null;
-  // Safepay might drop or rewrite the redirect URL's query string: find the payment by the posted
-  // tracker instead. The signature below is still checked against that row's tracker.
-  if (!payment && typeof tracker === 'string' && tracker.length > 0) {
-    payment = await prisma.orderPayment.findUnique({ where: { tracker } });
+  if (!payment && typeof rawTracker === 'string' && rawTracker.length > 0) {
+    payment = await prisma.orderPayment.findUnique({ where: { tracker: rawTracker } });
   }
   if (!payment || !payment.returnOrigin) throw ApiError.notFound('Payment not found');
 
-  const ok = !!safepayConfig && tracker === payment.tracker && isValidReturnSignature(safepayConfig, tracker, req.body?.sig);
-  if (ok) {
-    // The customer has paid: whatever happens to the save, they go back to the order page (it polls and
-    // says it is confirming), and the webhook confirms the payment if this attempt failed.
-    try {
-      await confirmPayment(payment.tracker);
-    } catch (err) {
-      console.error(`[safepay] confirming payment ${payment.id} on return failed; the webhook will retry`, err);
-    }
-  } else {
-    const reason = !safepayConfig ? 'Safepay keys are not set' : tracker !== payment.tracker ? 'tracker does not match' : 'bad signature';
-    console.warn(`[safepay] return rejected for payment ${payment.id}: ${reason}`);
-  }
+  // Paid at Safepay means "done" even if saving it failed here: the order page's next status check saves it.
+  const paid = payment.status === 'paid' || (await settlePayment(payment)) === 'paid';
+  if (!paid) console.warn(`[safepay] return for payment ${payment.id}: Safepay does not report it paid`);
 
-  res.redirect(303, `${payment.returnOrigin}/order/${payment.orderId}?payment=${ok ? 'done' : 'failed'}`);
+  res.redirect(303, `${payment.returnOrigin}/order/${payment.orderId}?payment=${paid ? 'done' : 'failed'}`);
 });
 
 /** POST /api/payments/safepay/webhook — Safepay's server-to-server notice. */

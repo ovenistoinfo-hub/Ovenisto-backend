@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { describe, it, expect } from 'vitest';
-import { readSafepayConfig, buildCheckoutUrl, isValidReturnSignature, isValidWebhookSignature, type SafepayConfig } from '../safepay.js';
+import { readSafepayConfig, buildCheckoutUrl, isValidReturnSignature, isValidWebhookSignature, isTrackerPaid, type SafepayConfig } from '../safepay.js';
 
 const cfg: SafepayConfig = { env: 'sandbox', apiKey: 'sec_test', v1Secret: 'v1-secret', webhookSecret: 'wh-secret' };
 
@@ -80,5 +80,29 @@ describe('isValidWebhookSignature', () => {
     expect(isValidWebhookSignature(cfg, { ...data, state: 'FAILED' }, signature)).toBe(false);
     expect(isValidWebhookSignature(cfg, data, 'nope')).toBe(false);
     expect(isValidWebhookSignature(cfg, undefined, signature)).toBe(false);
+  });
+});
+
+describe('isTrackerPaid', () => {
+  const tracker = 'track_1';
+  const signature = crypto.createHmac('sha256', cfg.v1Secret).update(tracker).digest('hex');
+  // The shape Safepay's GET /order/v1/{tracker} returned for a paid sandbox order.
+  const paid = { token: tracker, client: cfg.apiKey, state: 'TRACKER_ENDED', transaction: { tracker, amount: 2411, signature } };
+
+  it('accepts an ended tracker with a signed transaction for the amount', () => {
+    expect(isTrackerPaid(cfg, tracker, 2411, paid)).toBe(true);
+  });
+
+  it('rejects a tracker that was only started or was cancelled', () => {
+    expect(isTrackerPaid(cfg, tracker, 2411, { token: tracker, client: cfg.apiKey, state: 'TRACKER_STARTED', transaction: null })).toBe(false);
+    expect(isTrackerPaid(cfg, tracker, 2411, { ...paid, state: 'TRACKER_CANCELLED' })).toBe(false);
+    expect(isTrackerPaid(cfg, tracker, 2411, null)).toBe(false);
+  });
+
+  it('rejects a smaller amount, another account, another tracker or a bad signature', () => {
+    expect(isTrackerPaid(cfg, tracker, 2500, paid)).toBe(false);
+    expect(isTrackerPaid(cfg, tracker, 2411, { ...paid, client: 'sec_other' })).toBe(false);
+    expect(isTrackerPaid(cfg, 'track_2', 2411, paid)).toBe(false);
+    expect(isTrackerPaid(cfg, tracker, 2411, { ...paid, transaction: { ...paid.transaction, signature: 'nope' } })).toBe(false);
   });
 });

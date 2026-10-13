@@ -1,5 +1,5 @@
 // Safepay (website online payment): the calls we use, written to match the official SDK
-// `@sfpy/node-sdk` 3.0.2 without pulling in its axios dependency. Pure except createTracker.
+// `@sfpy/node-sdk` 3.0.2 without pulling in its axios dependency. Pure except createTracker and fetchTracker.
 import crypto from 'crypto';
 
 export type SafepayEnv = 'sandbox' | 'production';
@@ -60,7 +60,7 @@ function hmacMatches(algorithm: 'sha256' | 'sha512', secret: string, payload: st
   return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
 }
 
-/** The redirect back after checkout: `sig` = HMAC-SHA256(v1Secret, tracker), hex. */
+/** HMAC-SHA256(v1Secret, tracker), hex: the SDK's redirect `sig`, and the `signature` on a paid tracker's transaction. */
 export function isValidReturnSignature(cfg: SafepayConfig, tracker: unknown, sig: unknown): boolean {
   if (typeof tracker !== 'string' || tracker.length === 0) return false;
   return hmacMatches('sha256', cfg.v1Secret, tracker, sig);
@@ -86,4 +86,36 @@ export async function createTracker(cfg: SafepayConfig, amount: number): Promise
     throw new Error(`Safepay init failed (HTTP ${res.status})`);
   }
   return token;
+}
+
+/** A tracker as Safepay reports it (the fields we read). */
+export interface TrackerRecord {
+  token?: unknown;
+  client?: unknown;
+  state?: unknown;
+  transaction?: { tracker?: unknown; amount?: unknown; signature?: unknown } | null;
+}
+
+/**
+ * Whether Safepay's own record says this tracker was paid: it ended with a transaction on our account
+ * for at least `amount` rupees, and that transaction's signature checks out. The redirect back brings
+ * no signature (seen in the sandbox), so this record is what we trust.
+ */
+export function isTrackerPaid(cfg: SafepayConfig, tracker: string, amount: number, rec: TrackerRecord | null | undefined): boolean {
+  const txn = rec?.transaction;
+  if (!rec || !txn) return false;
+  return rec.token === tracker
+    && rec.client === cfg.apiKey
+    && rec.state === 'TRACKER_ENDED'
+    && txn.tracker === tracker
+    && Number(txn.amount) >= amount - 0.5
+    && isValidReturnSignature(cfg, tracker, txn.signature);
+}
+
+/** Reads a tracker from Safepay (it asks for no key on this call). */
+export async function fetchTracker(cfg: SafepayConfig, tracker: string): Promise<TrackerRecord | null> {
+  const res = await fetch(`${API_URL[cfg.env]}/order/v1/${encodeURIComponent(tracker)}`, { signal: AbortSignal.timeout(8_000) });
+  if (!res.ok) throw new Error(`Safepay tracker lookup failed (HTTP ${res.status})`);
+  const body = (await res.json().catch(() => null)) as { data?: TrackerRecord } | null;
+  return body?.data ?? null;
 }
