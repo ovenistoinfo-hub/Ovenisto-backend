@@ -96,6 +96,8 @@ export interface WebsiteConfig {
   mealHours: Record<string, { open: string; close: string }>;
   /** Branch switch for "Pay online" (Safepay). It shows only when the server also has the Safepay keys. */
   onlinePayment: boolean;
+  /** The branch's offer on a customer's first website order (Settings → Website); percent 1–90. */
+  firstOrderDiscount: { enabled: boolean; percent: number };
 }
 
 const HH_MM = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -202,6 +204,50 @@ export function resolveDeliveryLocation(orderType: WebsiteBookingType, value: un
   return null;
 }
 
+/** `{ enabled, percent }` for the first-order offer; a percent outside 1–90 turns it off. */
+export function parseFirstOrderDiscount(value: unknown): { enabled: boolean; percent: number } {
+  const off = { enabled: false, percent: 0 };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return off;
+  const obj = value as Record<string, unknown>;
+  const percent = Number(obj.percent);
+  if (!Number.isFinite(percent) || percent < 1 || percent > 90) return off;
+  return { enabled: obj.enabled === true || obj.enabled === 'true', percent: Math.round(percent * 100) / 100 };
+}
+
+/** The first-order discount in whole rupees. */
+export const firstOrderDiscountAmount = (subtotal: number, percent: number) => Math.round((subtotal * percent) / 100);
+
+/** How the first-order offer is named on the order, the receipt and the website. */
+export const firstOrderLabel = (percent: number) => `First order ${percent}% off`;
+
+/** A booking slot ("YYYY-MM-DD", "HH:mm", PKT) as a UTC timestamp. */
+export function pktSlotToMs(date: string, time: string): number {
+  const [y, m, d] = date.split('-').map(Number);
+  return Date.UTC(y, m - 1, d, Number(time.slice(0, 2)), Number(time.slice(3, 5))) - 5 * 60 * 60 * 1000;
+}
+
+/**
+ * Why a dish that must be ordered `advanceHours` ahead can't be had at `bookingMs` (null = ordered for now),
+ * else null. The message ends with `hint`.
+ */
+export function advanceBlock(dish: { name: string; advanceHours?: number | null }, bookingMs: number | null, nowMs: number, hint: string): string | null {
+  const hours = dish.advanceHours ?? 0;
+  if (hours <= 0) return null;
+  if (bookingMs !== null && bookingMs - nowMs >= hours * 60 * 60 * 1000) return null;
+  return `"${dish.name}" must be ordered at least ${hours} hour${hours === 1 ? '' : 's'} ahead. ${hint}`;
+}
+
+/** An event date ("YYYY-MM-DD", PKT) from tomorrow up to a year ahead; returns the problem, or null. */
+export function validateEventDate(date: string, nowMs: number): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(new Date(date).getTime()) || new Date(date).toISOString().slice(0, 10) !== date) {
+    return 'Invalid date';
+  }
+  const pktNow = nowMs + 5 * 60 * 60 * 1000;
+  if (date <= new Date(pktNow).toISOString().slice(0, 10)) return 'Pick a date from tomorrow onwards';
+  if (date > new Date(pktNow + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)) return 'Pick a date within the next year';
+  return null;
+}
+
 export function readWebsiteConfig(raw: unknown): WebsiteConfig {
   const defaults: WebsiteConfig = {
     enabled: false,
@@ -214,6 +260,7 @@ export function readWebsiteConfig(raw: unknown): WebsiteConfig {
     hours: null,
     mealHours: {},
     onlinePayment: false,
+    firstOrderDiscount: { enabled: false, percent: 0 },
   };
 
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -246,7 +293,9 @@ export function readWebsiteConfig(raw: unknown): WebsiteConfig {
   const hours = parseHours(obj.hours);
   const mealHours = parseMealHours(obj.mealHours);
 
-  return { enabled, deliveryFee, freeDeliveryAbove, minOrder, prepTimeMinutes, reservationsEnabled, location, hours, mealHours, onlinePayment };
+  const firstOrderDiscount = parseFirstOrderDiscount(obj.firstOrderDiscount);
+
+  return { enabled, deliveryFee, freeDeliveryAbove, minOrder, prepTimeMinutes, reservationsEnabled, location, hours, mealHours, onlinePayment, firstOrderDiscount };
 }
 
 export function isAcceptingOrders(params: { outletActive: boolean; onlineOrders: boolean; config: WebsiteConfig }): boolean {

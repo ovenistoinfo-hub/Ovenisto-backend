@@ -73,6 +73,14 @@ function normalizeLowStockAlert(value: unknown): number {
   return Math.floor(n);
 }
 
+/** Hours a dish must be booked ahead on the website: a whole number from 1 to 720, else null (any time). */
+export function normalizeAdvanceHours(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 1) return null;
+  return Math.min(720, Math.floor(n));
+}
+
 /** Auto-generate item code from name: "Chicken Tikka" → "CT", "Pizza" → "PIZ" */
 function buildCodePrefix(name: string): string {
   const words = name.trim().split(/\s+/).filter(Boolean);
@@ -264,7 +272,7 @@ function parseModData(modifiersInput: any[] | undefined, modifierIds: string[] |
 export const createMenuItem = asyncHandler(async (req: Request, res: Response) => {
   const {
     name, code, categoryId, price, dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice, costPrice, lowStockAlert,
-    available, image, tags, cookingTime, mealTypeIds, variants, modifierIds, modifiers: modifiersInput,
+    available, image, tags, cookingTime, mealTypeIds, isNew, advanceHours, variants, modifierIds, modifiers: modifiersInput,
   } = req.body;
 
   if (!name?.trim()) throw ApiError.badRequest('Item name is required');
@@ -299,6 +307,8 @@ export const createMenuItem = asyncHandler(async (req: Request, res: Response) =
       tags: tags ?? [],
       cookingTime: cookingTime ?? 0,
       mealTypeIds: mealTypeIds ?? [],
+      isNew: isNew === true,
+      advanceHours: normalizeAdvanceHours(advanceHours),
       variants: variants?.length
         ? { create: variants.map((v: any, i: number) => ({
             name: v.name, price: v.price, displayOrder: i,
@@ -321,7 +331,7 @@ export const updateMenuItem = asyncHandler(async (req: Request, res: Response) =
   const { id } = req.params;
   const {
     name, code, categoryId, price, dineInPrice, takeAwayPrice, deliveryPrice, foodpandaPrice, costPrice, lowStockAlert,
-    available, image, tags, cookingTime, mealTypeIds, variants, modifierIds, modifiers: modifiersInput,
+    available, image, tags, cookingTime, mealTypeIds, isNew, advanceHours, variants, modifierIds, modifiers: modifiersInput,
   } = req.body;
 
   const existing = await prisma.foodMenuItem.findUnique({ where: { id } });
@@ -362,6 +372,8 @@ export const updateMenuItem = asyncHandler(async (req: Request, res: Response) =
         ...(tags !== undefined && { tags }),
         ...(cookingTime !== undefined && { cookingTime }),
         ...(mealTypeIds !== undefined && { mealTypeIds }),
+        ...(isNew !== undefined && { isNew: isNew === true }),
+        ...(advanceHours !== undefined && { advanceHours: normalizeAdvanceHours(advanceHours) }),
         ...(variants !== undefined && variants.length > 0 && {
           variants: { create: variants.map((v: any, i: number) => ({
             name: v.name, price: v.price, displayOrder: i,

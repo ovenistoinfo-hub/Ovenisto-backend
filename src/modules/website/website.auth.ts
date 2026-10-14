@@ -33,3 +33,17 @@ export const requireWebsiteCustomer = asyncHandler(async (req: Request, res: Res
   res.locals.customerUid = claims.uid;
   next();
 });
+
+/** Quotes: a signed-in customer's uid when a valid token comes along; anyone else stays anonymous. */
+export const optionalWebsiteCustomer = asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
+  const token = parseBearerToken(req.headers.authorization);
+  if (token) {
+    try {
+      const claims = await customerAuth().verifyIdToken(token);
+      if (!isUnverifiedEmailAccount(claims)) res.locals.customerUid = claims.uid;
+    } catch {
+      // An expired token only means no first-order offer on this quote.
+    }
+  }
+  next();
+});

@@ -36,3 +36,15 @@ export async function findOrCreateWebsiteCustomer(prisma: PrismaClient, params: 
   return customer;
 }
 
+/** No earlier website order (not cancelled) on this account or this phone: the first-order offer applies. */
+export async function isFirstWebsiteOrder(prisma: PrismaClient, who: { uid: string; phone?: string | null }) {
+  const earlier = await prisma.order.count({
+    where: {
+      orderSource: 'website',
+      status: { not: 'CANCELLED' },
+      OR: [{ customerUid: who.uid }, ...(who.phone ? [{ phone: who.phone }] : [])],
+    },
+  });
+  return earlier === 0;
+}
+

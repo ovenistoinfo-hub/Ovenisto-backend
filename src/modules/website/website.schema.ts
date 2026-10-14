@@ -19,6 +19,8 @@ export const quoteCartSchema = z.object({
   orderType: z.enum(WEBSITE_ORDER_TYPES, { errorMap: () => ({ message: 'type must be Delivery or Take Away' }) }),
   items: z.array(itemSchema).min(1).max(50, 'Cart cannot have more than 50 distinct items'),
   dealCode: z.string().trim().max(20).optional().nullable(),
+  // Checkout's phone field, so the quote shows the first-order offer exactly as the order will.
+  customerPhone: z.string().trim().max(20).optional(),
 });
 
 export const createOrderSchema = quoteCartSchema.extend({
@@ -79,4 +81,24 @@ export const quoteReservationSchema = z.object({
   items: z.array(itemSchema).max(50, 'Cart cannot have more than 50 distinct items').optional().default([]),
   // The booking time once picked ("HH:mm" PKT): dishes are checked against their meal type's serving time.
   time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/,'Invalid time (HH:mm)').optional(),
+  // With the time, a dish that must be booked hours ahead is checked against the booking.
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Invalid date (YYYY-MM-DD)').optional(),
 }).superRefine(requireItemsUnlessDineIn);
+
+export const suggestionSchema = z.object({
+  text: z.string().trim().min(3, 'Write the dish you would like').max(120),
+  outletId: z.string().uuid().optional(),
+});
+
+export const EVENT_TYPES = ['Birthday', 'Wedding', 'Corporate', 'Family gathering', 'Milad / Aqeeqah', 'Catering at your venue'] as const;
+
+export const eventInquirySchema = z.object({
+  outletId: z.string().uuid('Invalid outletId'),
+  eventType: z.enum(EVENT_TYPES, { errorMap: () => ({ message: 'Choose an event type' }) }),
+  eventDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Invalid date'),
+  guests: z.number().int().min(10, 'At least 10 guests').max(2000, 'At most 2000 guests'),
+  venue: z.enum(['at_ovenisto', 'your_venue']),
+  name: z.string().trim().min(1, 'Name is required').max(100),
+  phone: z.string().trim().max(20, 'Phone is too long'),
+  notes: z.string().trim().max(500).optional(),
+});

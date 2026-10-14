@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
-import { WebsiteOrderType, WebsiteBookingType, WebsiteConfig, computeDeliveryFee } from './website.helpers.js';
-import { getActiveOutlet, getOutletSettings } from './website.service.js';
+import { WebsiteOrderType, WebsiteBookingType, WebsiteConfig, computeDeliveryFee, advanceBlock, firstOrderDiscountAmount, firstOrderLabel } from './website.helpers.js';
+import { getActiveOutlet, getOutletSettings, isFirstWebsiteOrder } from './website.service.js';
 import { readWebsiteConfig, isAcceptingOrders } from './website.helpers.js';
 import { loadBranchMealTypes, assertServedAt } from '../menu/mealTimes.js';
 import { validateOrderStock } from '../order/order.controller.js';
@@ -17,8 +17,10 @@ function round2(num: number): number {
 // today's stock (the staff Reservations picker skips the check for the same reason).
 // `servedAt`: refuse a dish whose meal types (Breakfast, Lunch…) aren't served at that PKT minute; `hint`
 // ends the message. Deal lines are not meal-checked (a deal has its own days/time window).
-export async function priceWebsiteCart(prisma: PrismaClient, req: { outletId: string, orderType: WebsiteBookingType, items: any[], dealCode?: string | null, checkStock?: boolean, servedAt?: { minute: number; hint: string } }) {
-  const { outletId, orderType, items, dealCode, checkStock = true, servedAt } = req;
+// `advance`: refuse a dish that must be ordered N hours ahead unless `bookingMs` (null = now) is far enough off.
+// `firstOrder`: the signed-in customer, for the branch's first-order offer (orders only, never bookings).
+export async function priceWebsiteCart(prisma: PrismaClient, req: { outletId: string, orderType: WebsiteBookingType, items: any[], dealCode?: string | null, checkStock?: boolean, servedAt?: { minute: number; hint: string }, advance?: { bookingMs: number | null; hint: string }, firstOrder?: { uid?: string | null; phone?: string | null } }) {
+  const { outletId, orderType, items, dealCode, checkStock = true, servedAt, advance, firstOrder } = req;
 
   const outlet = await getActiveOutlet(outletId);
   const settings = await getOutletSettings(outlet.id);
@@ -60,6 +62,10 @@ export async function priceWebsiteCart(prisma: PrismaClient, req: { outletId: st
         throw ApiError.badRequest(`Item "${reqItem.name}" is no longer available`);
       }
       if (servedAt) assertServedAt(dbItem, mealTypes, servedAt.minute, servedAt.hint);
+      if (advance) {
+        const blocked = advanceBlock(dbItem, advance.bookingMs, Date.now(), advance.hint);
+        if (blocked) throw ApiError.badRequest(blocked);
+      }
 
       let pricingSource = dbItem;
       const variant = reqItem.variantId ? dbItem.variants.find(v => v.id === reqItem.variantId) : undefined;
@@ -179,7 +185,19 @@ export async function priceWebsiteCart(prisma: PrismaClient, req: { outletId: st
   const subtotal = round2(keyedItemsData.reduce((sum, item) => sum + (item.price * item.qty) - item.discount, 0));
   
   const orderDiscount = hasLineDeal ? null : await resolveOrderDiscount(prisma, { enteredCode: dealCode, outletId: outlet.id, orderType, subtotal });
-  const discount = orderDiscount?.amount ?? 0;
+  let discount = orderDiscount?.amount ?? 0;
+  let appliedDeal = orderDiscount ? { dealId: orderDiscount.dealId as string | null, code: orderDiscount.code, dealName: orderDiscount.dealName } : null;
+
+  // The branch's first-order offer: never with a line deal or a typed promo code, and it replaces an
+  // automatic Minimum Spend deal only when it is bigger (one discount per order).
+  const offer = config.firstOrderDiscount;
+  if (offer.enabled && firstOrder?.uid && !hasLineDeal && !dealCode) {
+    const amount = firstOrderDiscountAmount(subtotal, offer.percent);
+    if (amount > discount && await isFirstWebsiteOrder(prisma, { uid: firstOrder.uid, phone: firstOrder.phone })) {
+      discount = amount;
+      appliedDeal = { dealId: null, code: null, dealName: firstOrderLabel(offer.percent) };
+    }
+  }
   const taxable = round2(subtotal - discount);
   const tax = Math.round(taxable * taxRate / 100);
   const deliveryFee = computeDeliveryFee(orderType, config, taxable);
@@ -193,7 +211,7 @@ export async function priceWebsiteCart(prisma: PrismaClient, req: { outletId: st
     lines: linesOut,
     subtotal,
     discount,
-    appliedDeal: orderDiscount ? { dealId: orderDiscount.dealId, code: orderDiscount.code, dealName: orderDiscount.dealName } : null,
+    appliedDeal,
     taxRate,
     tax,
     deliveryFee,

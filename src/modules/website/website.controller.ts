@@ -7,7 +7,7 @@ import { buildPublicMenu } from '../menu/publicMenu.js';
 import { loadBranchMealTypes } from '../menu/mealTimes.js';
 import { isDealCurrentlyValid, isDealAvailableForChannel, mapDealOutPublic } from '../deals/deal.pricing.js';
 import { getActiveOutlet, getOutletSettings, findOrCreateWebsiteCustomer } from './website.service.js';
-import { WEBSITE_ORDER_TYPES, readWebsiteConfig, isAcceptingOrders, WebsiteOrderType, WebsiteBookingType, parseWebsiteBookingType, normalizePkPhone, toWebsiteOrderStatus, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, resolveDeliveryLocation, pktMinuteNow, toMinutes, listMealTimes, attachDealTags, preOrderSignature, type DealTaggedLine, type PreOrderLineLike } from './website.helpers.js';
+import { WEBSITE_ORDER_TYPES, readWebsiteConfig, isAcceptingOrders, WebsiteOrderType, WebsiteBookingType, parseWebsiteBookingType, normalizePkPhone, toWebsiteOrderStatus, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, resolveDeliveryLocation, pktMinuteNow, toMinutes, listMealTimes, attachDealTags, preOrderSignature, pktSlotToMs, validateEventDate, type DealTaggedLine, type PreOrderLineLike } from './website.helpers.js';
 import { priceWebsiteCart } from './website.pricing.js';
 import { emitOrderEvent } from '../../socket.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
@@ -17,6 +17,9 @@ import { safepayConfig, startPayment, switchToCash, refreshPaymentOrders, return
 import { toPaymentView, toPaymentLike, ONLINE_ORIGIN_MESSAGE } from '../payments/payment.rules.js';
 
 const prisma = new PrismaClient();
+
+// Ends the message when a dish can't be ordered now (outside its meal time, or it must be booked ahead).
+const ORDER_NOW_HINT = 'Remove it from your cart, or pre-order it for later from Reservations.';
 
 export const getOutlets = asyncHandler(async (req: Request, res: Response) => {
   const outlets = await prisma.outlet.findMany({
@@ -86,6 +89,7 @@ export const getConfig = asyncHandler(async (req: Request, res: Response) => {
     acceptingOrders,
     acceptingReservations,
     onlinePaymentAvailable,
+    firstOrderDiscount: config.firstOrderDiscount.enabled ? { percent: config.firstOrderDiscount.percent } : null,
     reservationsEnabled: config.reservationsEnabled,
     orderTypes: WEBSITE_ORDER_TYPES,
     deliveryFee: config.deliveryFee,
@@ -150,9 +154,14 @@ export const getDeals = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const quoteCart = asyncHandler(async (req: Request, res: Response) => {
-  const { outletId, orderType, items, dealCode } = req.body;
+  const { outletId, orderType, items, dealCode, customerPhone } = req.body;
   
-  const quote = await priceWebsiteCart(prisma, { outletId, orderType, items, dealCode, servedAt: { minute: pktMinuteNow(), hint: 'Remove it from your cart, or pre-order it for later from Reservations.' } });
+  const quote = await priceWebsiteCart(prisma, {
+    outletId, orderType, items, dealCode,
+    servedAt: { minute: pktMinuteNow(), hint: ORDER_NOW_HINT },
+    // Signed in (optional on quotes): the first-order offer shows before the order is placed.
+    firstOrder: { uid: res.locals.customerUid ?? null, phone: normalizePkPhone(customerPhone) },
+  });
   
   // Return format omitting outlet and itemsData
   const { outlet, itemsData, ...publicQuote } = quote;
@@ -178,18 +187,22 @@ export const createWebsiteOrder = asyncHandler(async (req: Request, res: Respons
     }
   }
 
-  const priced = await priceWebsiteCart(prisma, { outletId, orderType, items, dealCode, servedAt: { minute: pktMinuteNow(), hint: 'Remove it from your cart, or pre-order it for later from Reservations.' } });
+  const phone = normalizePkPhone(customerPhone);
+  if (!phone) {
+    throw ApiError.badRequest('Enter a valid mobile number (03XX-XXXXXXX)');
+  }
+
+  const priced = await priceWebsiteCart(prisma, {
+    outletId, orderType, items, dealCode,
+    servedAt: { minute: pktMinuteNow(), hint: ORDER_NOW_HINT },
+    firstOrder: { uid: res.locals.customerUid ?? null, phone },
+  });
 
   if (!priced.acceptingOrders) {
     throw ApiError.conflict('This branch is not taking online orders right now');
   }
   if (!priced.meetsMinOrder) {
     throw ApiError.badRequest(`Minimum order for delivery is Rs. ${priced.minOrder}`);
-  }
-
-  const phone = normalizePkPhone(customerPhone);
-  if (!phone) {
-    throw ApiError.badRequest('Enter a valid mobile number (03XX-XXXXXXX)');
   }
 
   // Pay online: the branch must offer it and the server must have the Safepay keys. The browser's origin
@@ -428,7 +441,7 @@ const RESERVATION_MEAL_HINT = 'Remove it from your pre-order, or pick another ti
 // Same figures as /website/quote, for a booking: Dine In allowed, no stock check (the booking is for
 // a later date), no coupon code (a Minimum Spend deal still auto-applies inside the kernel).
 export const quoteWebsiteReservation = asyncHandler(async (req: Request, res: Response) => {
-  const { outletId, orderType, items, time } = req.body as { outletId: string; orderType: WebsiteBookingType; items: ReservationItemInput[]; time?: string };
+  const { outletId, orderType, items, time, date } = req.body as { outletId: string; orderType: WebsiteBookingType; items: ReservationItemInput[]; time?: string; date?: string };
 
   const outlet = await getActiveOutlet(outletId);
   const settings = await getOutletSettings(outlet.id);
@@ -456,7 +469,9 @@ export const quoteWebsiteReservation = asyncHandler(async (req: Request, res: Re
 
   // Once a time is picked, dishes are checked against it (Breakfast items at a lunch booking are refused).
   const servedAt = time ? { minute: toMinutes(time), hint: RESERVATION_MEAL_HINT } : undefined;
-  const priced = await priceWebsiteCart(prisma, { outletId: outlet.id, orderType, items, checkStock: false, servedAt });
+  // With the date too, a dish that must be booked hours ahead is checked against the booking.
+  const advance = time && date ? { bookingMs: pktSlotToMs(date, time), hint: RESERVATION_MEAL_HINT } : undefined;
+  const priced = await priceWebsiteCart(prisma, { outletId: outlet.id, orderType, items, checkStock: false, servedAt, advance });
   res.json(ApiResponse.success({
     acceptingReservations,
     lines: priced.lines,
@@ -535,7 +550,11 @@ export const createWebsiteReservation = asyncHandler(async (req: Request, res: R
 
   // Price the pre-order before anything is written, so a bad item or deal rejects the whole booking.
   const priced = items.length > 0
-    ? await priceWebsiteCart(prisma, { outletId: outlet.id, orderType, items, checkStock: false, servedAt: { minute: toMinutes(time), hint: RESERVATION_MEAL_HINT } })
+    ? await priceWebsiteCart(prisma, {
+        outletId: outlet.id, orderType, items, checkStock: false,
+        servedAt: { minute: toMinutes(time), hint: RESERVATION_MEAL_HINT },
+        advance: { bookingMs: pktSlotToMs(date, time), hint: RESERVATION_MEAL_HINT },
+      })
     : null;
   if (priced && !priced.meetsMinOrder) {
     throw ApiError.badRequest(`Minimum order for delivery is Rs. ${priced.minOrder}`);
@@ -650,5 +669,62 @@ export const getMyWebsiteReservations = asyncHandler(async (req: Request, res: R
   });
   res.setHeader('Cache-Control', 'no-store');
   res.json(ApiResponse.success(reservations.map(toReservationStatusView)));
+});
+
+/** GET /website/best-sellers?outletId= — this branch's most-sold dishes over the last 30 days (completed orders); ids only. */
+export const getBestSellers = asyncHandler(async (req: Request, res: Response) => {
+  const outlet = await getActiveOutlet(req.query.outletId);
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const rows = await prisma.orderItem.groupBy({
+    by: ['menuItemId'],
+    where: { menuItemId: { not: null }, status: 'active', order: { outletId: outlet.id, status: 'COMPLETED', createdAt: { gte: since } } },
+    _sum: { qty: true },
+    orderBy: { _sum: { qty: 'desc' } },
+    take: 8,
+  });
+  res.setHeader('Cache-Control', 'no-cache');
+  res.json(ApiResponse.success({ menuItemIds: rows.map((r) => r.menuItemId).filter((id): id is string => !!id) }));
+});
+
+/** GET /website/coming-soon — dishes customers can vote for, most wanted first. */
+export const getComingSoon = asyncHandler(async (_req: Request, res: Response) => {
+  const dishes = await prisma.comingSoonDish.findMany({
+    where: { isActive: true },
+    orderBy: [{ votes: 'desc' }, { createdAt: 'asc' }],
+    select: { id: true, name: true, description: true, votes: true },
+  });
+  res.setHeader('Cache-Control', 'no-cache');
+  res.json(ApiResponse.success(dishes));
+});
+
+/** POST /website/coming-soon/:id/vote — one more "I want this" (the website lets a browser vote once per dish). */
+export const voteComingSoon = asyncHandler(async (req: Request, res: Response) => {
+  const updated = await prisma.comingSoonDish.updateMany({ where: { id: req.params.id, isActive: true }, data: { votes: { increment: 1 } } });
+  if (updated.count === 0) throw ApiError.notFound('Dish not found');
+  const dish = await prisma.comingSoonDish.findUnique({ where: { id: req.params.id }, select: { id: true, votes: true } });
+  res.json(ApiResponse.success(dish));
+});
+
+/** POST /website/suggestions — "Which new dish should we start?" */
+export const createDishSuggestion = asyncHandler(async (req: Request, res: Response) => {
+  const { text, outletId } = req.body as { text: string; outletId?: string };
+  await prisma.dishSuggestion.create({ data: { text, outletId: outletId ?? null } });
+  res.status(201).json(ApiResponse.success({ received: true }, 'Thanks for the suggestion'));
+});
+
+/** POST /website/event-inquiries — an event or catering quote request; the branch calls back. */
+export const createEventInquiry = asyncHandler(async (req: Request, res: Response) => {
+  const { outletId, eventType, eventDate, guests, venue, name, phone, notes } = req.body as {
+    outletId: string; eventType: string; eventDate: string; guests: number; venue: string; name: string; phone: string; notes?: string;
+  };
+  const outlet = await getActiveOutlet(outletId);
+  const dateError = validateEventDate(eventDate, Date.now());
+  if (dateError) throw ApiError.badRequest(dateError);
+  const cleanPhone = normalizePkPhone(phone);
+  if (!cleanPhone) throw ApiError.badRequest('Enter a valid mobile number (03XX-XXXXXXX)');
+  const inquiry = await prisma.eventInquiry.create({
+    data: { outletId: outlet.id, eventType, eventDate: new Date(eventDate), guests, venue, name, phone: cleanPhone, notes: notes || null },
+  });
+  res.status(201).json(ApiResponse.success({ inquiryId: inquiry.id, outletName: outlet.name }));
 });
 

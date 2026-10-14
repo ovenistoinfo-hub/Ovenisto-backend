@@ -251,6 +251,10 @@ model FoodMenuItem {
   tags           String[]
   cookingTime    Int      @default(0)
   mealTypeIds    String[]
+  // Website: listed under "New on the menu" (staff Food Menu → item form).
+  isNew          Boolean  @default(false)
+  // Website: must be ordered at least this many hours ahead (null = any time), so only a booking can carry it.
+  advanceHours   Int?
   createdAt      DateTime @default(now())
 
   // Relations
@@ -986,6 +990,49 @@ model OrderPayment {
   @@index([orderId])
   @@index([status])
   @@map("order_payments")
+}
+
+// Website "Coming soon": dishes customers vote for (chain-wide, managed in staff Settings → Website).
+model ComingSoonDish {
+  id          String   @id @default(uuid())
+  name        String   @db.VarChar(100)
+  description String?  @db.VarChar(200)
+  votes       Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("coming_soon_dishes")
+}
+
+// Website "Which new dish should we start?" box.
+model DishSuggestion {
+  id        String   @id @default(uuid())
+  text      String   @db.VarChar(120)
+  outletId  String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("dish_suggestions")
+}
+
+// Website "Events & Catering" quote requests; the branch calls back (staff app → Event Inquiries).
+model EventInquiry {
+  id        String   @id @default(uuid())
+  outletId  String
+  eventType String   @db.VarChar(40)
+  eventDate DateTime @db.Date
+  guests    Int
+  venue     String   @db.VarChar(20) // at_ovenisto | your_venue
+  name      String   @db.VarChar(100)
+  phone     String   @db.VarChar(20)
+  notes     String?  @db.VarChar(500)
+  status    String   @default("new") @db.VarChar(20) // new | contacted | closed
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([outletId, createdAt])
+  @@map("event_inquiries")
 }
 
 model OrderKitchenProgress {

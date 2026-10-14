@@ -752,10 +752,50 @@ plus a body explaining _why_ the change was made when that is not obvious.
     save failed. The customer's reads call `refreshPaymentOrders` (status, my orders, pay, pay-cash), which settles their open
     checkouts first, so a paid order heals without any return or webhook and "Pay now" can't start a second payment.
     `expireStalePaymentOrders` asks Safepay before cancelling and leaves an order it couldn't ask about for the next read.
-  - Dashboard "Public key" = `SAFEPAY_API_KEY`, "Secret key" = `SAFEPAY_V1_SECRET`. The sandbox checkout offers cards only.
+  - Dashboard "Public key" = `SAFEPAY_API_KEY`, "Secret key" = `SAFEPAY_V1_SECRET`.
+  - **Cards only (checked 2026-10-13 in the checkout page's own code, sandbox and production builds):** its method switcher renders only
+    "Card payment". Pages for wallets (Easypaisa; JazzCash through PayFast; Abhi) and bank accounts (PayFast / NIFT) exist in that code,
+    but the page opens them only when cards are NOT enabled for the merchant, and Raast is not in it at all. Our sandbox capabilities
+    (`GET /order/payments/v2/capabilities?tracker=`) are `CYBERSOURCE` + `PAYFAST`. The dashboard's intent chart (Abhi, Easypaisa,
+    Payfast, Nift, Cybersource) lists the same types. So Easypaisa / JazzCash need another gateway (PayFast covers both plus bank
+    accounts and Raast) or direct integrations. Owner's decision pending.
   - **Still unconfirmed:** webhooks (`webhookTracker` and the webhook signature have never run against a real one).
 - **Deploy steps:** set the four `SAFEPAY_*` vars on the Railway service; register `https://<api host>/api/payments/safepay/webhook` as the webhook URL in the Safepay dashboard; the production website origin must be in `CORS_ORIGIN` (only `*.vercel.app` and localhost are allowed by pattern) or online payment is refused with 400 'has to be started from the Ovenisto website'; switch on Settings → Website → Accept online payment per branch.
 - **Final-review hardening (2026-10-12):** `POST /safepay/return` is rate-limited (60/min per IP; the webhook is not, its HMAC check runs before any DB work) and finds the payment by the posted `tracker` when `?pid=` is missing (the signature is still checked against that row); `webhookTracker` refuses an event whose `type` names a failure (`fail|cancel|expire|error|declin|void|refund`) even when the state looks paid; `readSafepayConfig` trims all four values and counts a blank one as missing; `emitOrder` is best-effort (try/catch + `console.error`) so a socket or read error after a committed change never becomes a 500; `markRefunded` keeps a stored `refundReference` when none is sent; `getActiveBalances` no longer loads `Online (Safepay)` orders at all (`classifyOrderCash` still skips them).
+
+## Website extra sections (2026-10-14, uncommitted)
+From the owner's mockup PDFs; staff control all of it from the staff app (no website admin panel).
+- **Schema (additive; pushed to the staging DB 2026-10-14 with the owner's OK; production gets it on deploy):**
+  - `FoodMenuItem.isNew Boolean @default(false)` and `FoodMenuItem.advanceHours Int?`.
+  - New tables: `coming_soon_dishes` (chain-wide, with a `votes` counter), `dish_suggestions`, and
+    `event_inquiries` (per outlet, `status` = new | contacted | closed).
+  - This code on a DB without the columns fails every menu read (Prisma selects them), so push the schema first.
+- **First-order discount:**
+  - Stored as `websiteConfig.firstOrderDiscount {enabled, percent 1–90}` (`parseFirstOrderDiscount`).
+  - `priceWebsiteCart` applies it only for a signed-in customer; the quote route now runs
+    `optionalWebsiteCustomer`.
+  - Never with a line deal or a typed code. It replaces a Minimum Spend auto deal only when bigger.
+  - Eligible = no earlier non-cancelled website order with the same `customerUid` or phone (`isFirstWebsiteOrder`).
+  - It comes back as `appliedDeal = {dealId: null, code: null, dealName: "First order N% off"}`.
+  - `/config` returns `firstOrderDiscount: {percent} | null`.
+- **Advance dishes (`advanceBlock`):**
+  - Website reservations only (owner's rule, 2026-10-14): a booking needs `booking time − now ≥ advanceHours`.
+  - The reservation quote checks only when both `date` and `time` are sent.
+  - Orders are never checked: `/website/quote` + `/website/orders`, self-order and staff orders take the dish any
+    time. `advanceBlock`'s `bookingMs: null` branch ("for now") is unused since then.
+- **Public endpoints:**
+  - `GET /website/best-sellers?outletId=`: `{menuItemIds}`, the top 8 by qty from completed orders in the last
+    30 days.
+  - `GET /website/coming-soon`.
+  - `POST /website/coming-soon/:id/vote`: 20/min/IP. The website allows one vote per dish per browser; the server
+    only counts.
+  - `POST /website/suggestions` and `POST /website/event-inquiries`: 5/min/IP. Event date from tomorrow to 365
+    days ahead, guests 10–2000, `EVENT_TYPES`.
+- **Staff endpoints, `/api/site-content` (`site-content` module):**
+  - Coming-soon CRUD and suggestions list/delete: Super Admin / Admin / Manager.
+  - Event inquiries list (outlet-scoped) and `PATCH /:id {status}`: the same roles plus Floor Manager.
+- `menu.controller` create/update accept `isNew` and `advanceHours` (`normalizeAdvanceHours`: 1–720, else null).
+- Typecheck clean, 543 tests (30 files).
 
 ## Public Website API (/api/website)
 - **Endpoints:** `GET /api/website/outlets`, `/api/website/config`, `/api/website/menu`, `/api/website/deals`, `POST /api/website/quote`, `POST /api/website/orders`, `GET /api/website/orders/:id/status`.

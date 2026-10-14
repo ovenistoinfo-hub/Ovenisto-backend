@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, parseLocation, resolveDeliveryLocation, parseWebsiteBookingType, attachDealTags, preOrderSignature, parseBearerToken, isUnverifiedEmailAccount, parseHours, parseMealHours, inHoursWindow, isServedAt, format12h, pktMinuteNow, listMealTimes } from '../website.helpers.js';
+import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, parseLocation, resolveDeliveryLocation, parseWebsiteBookingType, attachDealTags, preOrderSignature, parseBearerToken, isUnverifiedEmailAccount, parseHours, parseMealHours, inHoursWindow, isServedAt, format12h, pktMinuteNow, listMealTimes, parseFirstOrderDiscount, firstOrderDiscountAmount, firstOrderLabel, pktSlotToMs, advanceBlock, validateEventDate } from '../website.helpers.js';
 
 describe('website.helpers.ts', () => {
   const dummyConfig: WebsiteConfig = {
@@ -13,6 +13,7 @@ describe('website.helpers.ts', () => {
     hours: null,
     mealHours: {},
     onlinePayment: false,
+    firstOrderDiscount: { enabled: false, percent: 0 },
   };
 
   describe('computeDeliveryFee', () => {
@@ -419,6 +420,57 @@ describe('website.helpers.ts', () => {
       expect(readWebsiteConfig({ onlinePayment: true }).onlinePayment).toBe(true);
       expect(readWebsiteConfig({ onlinePayment: 'true' }).onlinePayment).toBe(true);
       expect(readWebsiteConfig({ onlinePayment: 'yes' }).onlinePayment).toBe(false);
+    });
+  });
+
+  describe('first-order discount', () => {
+    it('parses the branch offer and turns a bad percent off', () => {
+      expect(parseFirstOrderDiscount({ enabled: true, percent: 15 })).toEqual({ enabled: true, percent: 15 });
+      expect(parseFirstOrderDiscount({ enabled: 'true', percent: '10' })).toEqual({ enabled: true, percent: 10 });
+      expect(parseFirstOrderDiscount({ enabled: true, percent: 0 })).toEqual({ enabled: false, percent: 0 });
+      expect(parseFirstOrderDiscount({ enabled: true, percent: 95 })).toEqual({ enabled: false, percent: 0 });
+      expect(parseFirstOrderDiscount(null)).toEqual({ enabled: false, percent: 0 });
+      expect(readWebsiteConfig({ firstOrderDiscount: { enabled: true, percent: 15 } }).firstOrderDiscount).toEqual({ enabled: true, percent: 15 });
+      expect(readWebsiteConfig({}).firstOrderDiscount).toEqual({ enabled: false, percent: 0 });
+    });
+
+    it('rounds the amount to whole rupees and names it', () => {
+      expect(firstOrderDiscountAmount(2411, 15)).toBe(362);
+      expect(firstOrderDiscountAmount(1000, 10)).toBe(100);
+      expect(firstOrderLabel(15)).toBe('First order 15% off');
+    });
+  });
+
+  describe('advance-order dishes', () => {
+    const now = Date.UTC(2026, 9, 14, 7, 0); // 12:00 PM PKT, 2026-10-14
+    const roast = { name: 'Full Roast', advanceHours: 24 };
+
+    it('turns a PKT slot into a timestamp', () => {
+      expect(pktSlotToMs('2026-10-14', '12:00')).toBe(now);
+    });
+
+    it('lets an ordinary dish through and blocks an advance dish ordered for now', () => {
+      expect(advanceBlock({ name: 'Zinger', advanceHours: null }, null, now, 'h')).toBeNull();
+      expect(advanceBlock(roast, null, now, 'Remove it.')).toBe('"Full Roast" must be ordered at least 24 hours ahead. Remove it.');
+      expect(advanceBlock({ name: 'Bucket', advanceHours: 1 }, null, now, 'h')).toBe('"Bucket" must be ordered at least 1 hour ahead. h');
+    });
+
+    it('checks a booking against the lead time', () => {
+      expect(advanceBlock(roast, pktSlotToMs('2026-10-15', '12:00'), now, 'h')).toBeNull();
+      expect(advanceBlock(roast, pktSlotToMs('2026-10-15', '11:59'), now, 'h')).not.toBeNull();
+    });
+  });
+
+  describe('validateEventDate', () => {
+    const now = Date.UTC(2026, 9, 14, 7, 0);
+
+    it('takes tomorrow up to a year ahead', () => {
+      expect(validateEventDate('2026-10-15', now)).toBeNull();
+      expect(validateEventDate('2027-10-14', now)).toBeNull();
+      expect(validateEventDate('2026-10-14', now)).toBe('Pick a date from tomorrow onwards');
+      expect(validateEventDate('2027-10-15', now)).toBe('Pick a date within the next year');
+      expect(validateEventDate('2026-02-30', now)).toBe('Invalid date');
+      expect(validateEventDate('15-10-2026', now)).toBe('Invalid date');
     });
   });
 });

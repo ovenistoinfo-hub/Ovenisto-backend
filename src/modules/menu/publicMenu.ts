@@ -67,6 +67,8 @@ export function toPublicMenuItem(
     image: item.image ?? null,
     category: item.category ? { id: item.category.id, name: item.category.name } : null,
     mealTypeIds: item.mealTypeIds ?? [],
+    isNew: item.isNew === true,
+    advanceHours: item.advanceHours ?? null,
     available,
     variants,
     modifiers: item.modifiers
