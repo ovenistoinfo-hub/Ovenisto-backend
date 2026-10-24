@@ -4,7 +4,7 @@ import { getActiveOutlet, getOutletSettings, isFirstWebsiteOrder } from './websi
 import { readWebsiteConfig, isAcceptingOrders } from './website.helpers.js';
 import { loadBranchMealTypes, assertServedAt } from '../menu/mealTimes.js';
 import { validateOrderStock } from '../order/order.controller.js';
-import { parsePrices } from '../menu/publicMenu.js';
+import { parsePrices, findSoldOutItem } from '../menu/publicMenu.js';
 import { resolveChannelPrice } from '../deals/deal.pricing.js';
 import { revalidateDealLines, withDealItemKeys, resolveOrderDiscount } from '../deals/deal.revalidate.js';
 import { ApiError } from '../../utils/ApiError.js';
@@ -13,14 +13,15 @@ function round2(num: number): number {
   return Math.round(num * 100) / 100;
 }
 
-// `checkStock: false` is for reservation pre-orders: a booking days ahead must not be refused on
-// today's stock (the staff Reservations picker skips the check for the same reason).
+// `checkStock: false` is for reservation pre-orders on a later day: a booking days ahead must not be refused
+// on today's stock (the staff Reservations picker skips the check for the same reason). `stockHint` ends the
+// sold-out message.
 // `servedAt`: refuse a dish whose meal types (Breakfast, Lunch…) aren't served at that PKT minute; `hint`
 // ends the message. Deal lines are not meal-checked (a deal has its own days/time window).
 // `advance`: refuse a dish that must be ordered N hours ahead unless `bookingMs` (null = now) is far enough off.
 // `firstOrder`: the signed-in customer, for the branch's first-order offer (orders only, never bookings).
-export async function priceWebsiteCart(prisma: PrismaClient, req: { outletId: string, orderType: WebsiteBookingType, items: any[], dealCode?: string | null, checkStock?: boolean, servedAt?: { minute: number; hint: string }, advance?: { bookingMs: number | null; hint: string }, firstOrder?: { uid?: string | null; phone?: string | null } }) {
-  const { outletId, orderType, items, dealCode, checkStock = true, servedAt, advance, firstOrder } = req;
+export async function priceWebsiteCart(prisma: PrismaClient, req: { outletId: string, orderType: WebsiteBookingType, items: any[], dealCode?: string | null, checkStock?: boolean, stockHint?: string, servedAt?: { minute: number; hint: string }, advance?: { bookingMs: number | null; hint: string }, firstOrder?: { uid?: string | null; phone?: string | null } }) {
+  const { outletId, orderType, items, dealCode, checkStock = true, stockHint = '', servedAt, advance, firstOrder } = req;
 
   const outlet = await getActiveOutlet(outletId);
   const settings = await getOutletSettings(outlet.id);
@@ -28,9 +29,16 @@ export async function priceWebsiteCart(prisma: PrismaClient, req: { outletId: st
   const taxRate = settings?.taxRate != null ? Number(settings.taxRate) : 16;
   const acceptingOrders = isAcceptingOrders({ outletActive: outlet.isActive, onlineOrders: settings?.onlineOrders ?? true, config });
 
-  // Check stock (throws if out of stock)
+  // Stock: name the sold-out dish first; validateOrderStock's per-ingredient message is meant for staff.
   if (checkStock !== false) {
-    await validateOrderStock(prisma, outlet.id, items);
+    const soldOut = await findSoldOutItem(prisma, outlet.id, items);
+    if (soldOut) throw ApiError.badRequest(`"${soldOut}" is sold out today. ${stockHint}`.trim());
+    try {
+      await validateOrderStock(prisma, outlet.id, items);
+    } catch (err) {
+      if (!(err instanceof ApiError)) throw err;
+      throw ApiError.badRequest(`We don't have enough stock for these quantities today. Lower a quantity or remove an item. ${stockHint}`.trim());
+    }
   }
 
   const itemsData: any[] = [];

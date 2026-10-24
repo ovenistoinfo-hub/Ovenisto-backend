@@ -104,6 +104,26 @@ export async function buildPublicMenu(prisma: PrismaClient, options: { outletId:
       })
     : [];
 
+  const { ingredientStock, productionStock } = await loadKitchenStock(prisma, outletId, recipes);
+
+  const recipesByItem = new Map<string, typeof recipes>();
+  for (const r of recipes) {
+    if (!recipesByItem.has(r.menuItemId)) recipesByItem.set(r.menuItemId, []);
+    recipesByItem.get(r.menuItemId)!.push(r);
+  }
+
+  const publicItems = items.map((item: any) => {
+    const itemRecipes = recipesByItem.get(item.id) ?? [];
+    return toPublicMenuItem(item, itemRecipes, ingredientStock, productionStock, orderType);
+  });
+
+  return { categories, items: publicItems };
+}
+
+type RecipeRow = { menuItemId: string; variantId: string | null; ingredientId: string | null; productionItemId: string | null; qtyPerUnit: unknown };
+
+/** The outlet's kitchen stock for the ingredients and production items these recipes use. */
+export async function loadKitchenStock(prisma: PrismaClient, outletId: string | null, recipes: RecipeRow[]) {
   const ingredientStock = new Map<string, number>();
   const productionStock = new Map<string, number>();
   if (recipes.length > 0) {
@@ -145,17 +165,29 @@ export async function buildPublicMenu(prisma: PrismaClient, options: { outletId:
       for (const r of rows) ingredientStock.set(r.id, Math.max(0, Number(r.currentStock)));
     }
   }
+  return { ingredientStock, productionStock };
+}
 
-  const recipesByItem = new Map<string, typeof recipes>();
-  for (const r of recipes) {
-    if (!recipesByItem.has(r.menuItemId)) recipesByItem.set(r.menuItemId, []);
-    recipesByItem.get(r.menuItemId)!.push(r);
-  }
-
-  const publicItems = items.map((item: any) => {
-    const itemRecipes = recipesByItem.get(item.id) ?? [];
-    return toPublicMenuItem(item, itemRecipes, ingredientStock, productionStock, orderType);
+/**
+ * The name of the first ordered dish (or size) the outlet's kitchen can't make even one of right now,
+ * by the same rule as the menu's `available` flag; null when every dish can be made.
+ */
+export async function findSoldOutItem(
+  prisma: PrismaClient,
+  outletId: string | null,
+  items: { menuItemId?: string | null; variantId?: string | null }[],
+): Promise<string | null> {
+  const ids = [...new Set(items.map((i) => i.menuItemId).filter((id): id is string => !!id))];
+  if (ids.length === 0) return null;
+  const recipes = await prisma.foodRecipe.findMany({
+    where: { menuItemId: { in: ids } },
+    select: { menuItemId: true, variantId: true, ingredientId: true, productionItemId: true, qtyPerUnit: true },
   });
-
-  return { categories, items: publicItems };
+  if (recipes.length === 0) return null;
+  const { ingredientStock, productionStock } = await loadKitchenStock(prisma, outletId, recipes);
+  const soldOut = items.find((i) => i.menuItemId
+    && !isVariantAvailable(recipes.filter((r) => r.menuItemId === i.menuItemId), i.variantId ?? null, ingredientStock, productionStock));
+  if (!soldOut) return null;
+  const dish = await prisma.foodMenuItem.findUnique({ where: { id: soldOut.menuItemId! }, select: { name: true } });
+  return dish?.name ?? 'An item';
 }

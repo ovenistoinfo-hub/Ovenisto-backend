@@ -797,6 +797,11 @@ From the owner's mockup PDFs; staff control all of it from the staff app (no web
 - `menu.controller` create/update accept `isNew` and `advanceHours` (`normalizeAdvanceHours`: 1–720, else null).
 - Typecheck clean, 543 tests (30 files).
 - **"Inside our kitchen" posts (2026-10-24, uncommitted; schema pushed to staging 2026-10-24):** `KitchenPost` model
+- **Sold-out dishes (2026-10-24, uncommitted):** `priceWebsiteCart` runs `findSoldOutItem` (`menu/publicMenu.ts`; the menu's own `available` rule)
+  before `validateOrderStock`, so the 400 names the dish: `"X" is sold out today. <stockHint>`; the per-ingredient message from
+  `validateOrderStock` becomes "not enough stock for these quantities". Orders always check stock. `/website/reservations` and
+  `/reservations/quote` pass `checkStock: date === pktDateStr()` (new helper in `website.helpers.ts`, tested): a booking for a later day
+  takes a sold-out dish, a booking for today does not. `loadKitchenStock` is the shared stock loader.
   (`kitchen_posts`: title, body, `images String[]`, `videoUrl`, `isPublished`), chain-wide. Staff CRUD at
   `/api/site-content/kitchen-posts` (CONTENT_ROLES; zod: max 10 https photos, video must pass `toVideoEmbedUrl`).
   Public `GET /website/kitchen-posts?limit=` (1-50, default 20) and `/website/kitchen-posts/:id`, published only.

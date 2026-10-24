@@ -403,3 +403,8 @@ export function parseBearerToken(header: string | undefined): string | null {
   const match = /^Bearer\s+(\S+)\s*$/i.exec(header ?? '');
   return match ? match[1] : null;
 }
+
+/** Today's date in PKT (UTC+5), "YYYY-MM-DD". */
+export function pktDateStr(nowMs: number = Date.now()): string {
+  return new Date(nowMs + 5 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}

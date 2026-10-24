@@ -7,7 +7,7 @@ import { buildPublicMenu } from '../menu/publicMenu.js';
 import { loadBranchMealTypes } from '../menu/mealTimes.js';
 import { isDealCurrentlyValid, isDealAvailableForChannel, mapDealOutPublic } from '../deals/deal.pricing.js';
 import { getActiveOutlet, getOutletSettings, findOrCreateWebsiteCustomer } from './website.service.js';
-import { WEBSITE_ORDER_TYPES, readWebsiteConfig, isAcceptingOrders, WebsiteOrderType, WebsiteBookingType, parseWebsiteBookingType, normalizePkPhone, toWebsiteOrderStatus, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, resolveDeliveryLocation, pktMinuteNow, toMinutes, listMealTimes, attachDealTags, preOrderSignature, pktSlotToMs, validateEventDate, type DealTaggedLine, type PreOrderLineLike } from './website.helpers.js';
+import { WEBSITE_ORDER_TYPES, readWebsiteConfig, isAcceptingOrders, WebsiteOrderType, WebsiteBookingType, parseWebsiteBookingType, normalizePkPhone, toWebsiteOrderStatus, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, resolveDeliveryLocation, pktMinuteNow, toMinutes, listMealTimes, attachDealTags, preOrderSignature, pktSlotToMs, pktDateStr, validateEventDate, type DealTaggedLine, type PreOrderLineLike } from './website.helpers.js';
 import { priceWebsiteCart } from './website.pricing.js';
 import { emitOrderEvent } from '../../socket.js';
 import { mapReservation } from '../reservations/reservation.controller.js';
@@ -21,6 +21,9 @@ const prisma = new PrismaClient();
 
 // Ends the message when a dish can't be ordered now (outside its meal time, or it must be booked ahead).
 const ORDER_NOW_HINT = 'Remove it from your cart, or pre-order it for later from Reservations.';
+// Ends the sold-out message: an order is for today; a booking for today is checked too, a later one isn't.
+const ORDER_STOCK_HINT = 'Remove it from your cart to order now, or book it for another day from Reservations.';
+const BOOKING_STOCK_HINT = 'Pick a later date, or remove it from your pre-order.';
 
 export const getOutlets = asyncHandler(async (req: Request, res: Response) => {
   const outlets = await prisma.outlet.findMany({
@@ -158,7 +161,7 @@ export const quoteCart = asyncHandler(async (req: Request, res: Response) => {
   const { outletId, orderType, items, dealCode, customerPhone } = req.body;
   
   const quote = await priceWebsiteCart(prisma, {
-    outletId, orderType, items, dealCode,
+    outletId, orderType, items, dealCode, stockHint: ORDER_STOCK_HINT,
     servedAt: { minute: pktMinuteNow(), hint: ORDER_NOW_HINT },
     // Signed in (optional on quotes): the first-order offer shows before the order is placed.
     firstOrder: { uid: res.locals.customerUid ?? null, phone: normalizePkPhone(customerPhone) },
@@ -194,7 +197,7 @@ export const createWebsiteOrder = asyncHandler(async (req: Request, res: Respons
   }
 
   const priced = await priceWebsiteCart(prisma, {
-    outletId, orderType, items, dealCode,
+    outletId, orderType, items, dealCode, stockHint: ORDER_STOCK_HINT,
     servedAt: { minute: pktMinuteNow(), hint: ORDER_NOW_HINT },
     firstOrder: { uid: res.locals.customerUid ?? null, phone },
   });
@@ -472,7 +475,7 @@ export const quoteWebsiteReservation = asyncHandler(async (req: Request, res: Re
   const servedAt = time ? { minute: toMinutes(time), hint: RESERVATION_MEAL_HINT } : undefined;
   // With the date too, a dish that must be booked hours ahead is checked against the booking.
   const advance = time && date ? { bookingMs: pktSlotToMs(date, time), hint: RESERVATION_MEAL_HINT } : undefined;
-  const priced = await priceWebsiteCart(prisma, { outletId: outlet.id, orderType, items, checkStock: false, servedAt, advance });
+  const priced = await priceWebsiteCart(prisma, { outletId: outlet.id, orderType, items, checkStock: date === pktDateStr(), stockHint: BOOKING_STOCK_HINT, servedAt, advance });
   res.json(ApiResponse.success({
     acceptingReservations,
     lines: priced.lines,
@@ -552,7 +555,7 @@ export const createWebsiteReservation = asyncHandler(async (req: Request, res: R
   // Price the pre-order before anything is written, so a bad item or deal rejects the whole booking.
   const priced = items.length > 0
     ? await priceWebsiteCart(prisma, {
-        outletId: outlet.id, orderType, items, checkStock: false,
+        outletId: outlet.id, orderType, items, checkStock: date === pktDateStr(), stockHint: BOOKING_STOCK_HINT,
         servedAt: { minute: toMinutes(time), hint: RESERVATION_MEAL_HINT },
         advance: { bookingMs: pktSlotToMs(date, time), hint: RESERVATION_MEAL_HINT },
       })

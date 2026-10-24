@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, parseLocation, resolveDeliveryLocation, parseWebsiteBookingType, attachDealTags, preOrderSignature, parseBearerToken, isUnverifiedEmailAccount, parseHours, parseMealHours, inHoursWindow, isServedAt, format12h, pktMinuteNow, listMealTimes, parseFirstOrderDiscount, firstOrderDiscountAmount, firstOrderLabel, pktSlotToMs, advanceBlock, validateEventDate } from '../website.helpers.js';
+import { computeDeliveryFee, normalizePkPhone, toWebsiteOrderStatus, WebsiteConfig, readWebsiteConfig, isAcceptingOrders, validateReservationSlot, toWebsiteReservationStatus, resolveBranchContact, parseLocation, resolveDeliveryLocation, parseWebsiteBookingType, attachDealTags, preOrderSignature, parseBearerToken, isUnverifiedEmailAccount, parseHours, parseMealHours, inHoursWindow, isServedAt, format12h, pktMinuteNow, listMealTimes, parseFirstOrderDiscount, firstOrderDiscountAmount, firstOrderLabel, pktSlotToMs, advanceBlock, validateEventDate, pktDateStr } from '../website.helpers.js';
 
 describe('website.helpers.ts', () => {
   const dummyConfig: WebsiteConfig = {
@@ -472,5 +472,12 @@ describe('website.helpers.ts', () => {
       expect(validateEventDate('2026-02-30', now)).toBe('Invalid date');
       expect(validateEventDate('15-10-2026', now)).toBe('Invalid date');
     });
+  });
+});
+
+describe('pktDateStr', () => {
+  it('rolls to the next day at 19:00 UTC (midnight PKT)', () => {
+    expect(pktDateStr(Date.UTC(2026, 9, 24, 18, 59))).toBe('2026-10-24');
+    expect(pktDateStr(Date.UTC(2026, 9, 24, 19, 0))).toBe('2026-10-25');
   });
 });
