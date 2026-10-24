@@ -796,6 +796,12 @@ From the owner's mockup PDFs; staff control all of it from the staff app (no web
   - Event inquiries list (outlet-scoped) and `PATCH /:id {status}`: the same roles plus Floor Manager.
 - `menu.controller` create/update accept `isNew` and `advanceHours` (`normalizeAdvanceHours`: 1–720, else null).
 - Typecheck clean, 543 tests (30 files).
+- **"Inside our kitchen" posts (2026-10-24, uncommitted; schema pushed to staging 2026-10-24):** `KitchenPost` model
+  (`kitchen_posts`: title, body, `images String[]`, `videoUrl`, `isPublished`), chain-wide. Staff CRUD at
+  `/api/site-content/kitchen-posts` (CONTENT_ROLES; zod: max 10 https photos, video must pass `toVideoEmbedUrl`).
+  Public `GET /website/kitchen-posts?limit=` (1-50, default 20) and `/website/kitchen-posts/:id`, published only.
+  Pure `site-content.helpers.ts` `toVideoEmbedUrl` (tested) turns a YouTube / Instagram link into its embed URL and
+  refuses every other host; responses carry it as `videoEmbedUrl`. Videos are links on purpose (no video uploads).
 
 ## Public Website API (/api/website)
 - **Endpoints:** `GET /api/website/outlets`, `/api/website/config`, `/api/website/menu`, `/api/website/deals`, `POST /api/website/quote`, `POST /api/website/orders`, `GET /api/website/orders/:id/status`.

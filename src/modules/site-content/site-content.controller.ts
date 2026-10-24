@@ -8,6 +8,7 @@ import { ApiResponse } from '../../utils/ApiResponse.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope } from '../../middleware/outletScope.js';
+import { toVideoEmbedUrl } from './site-content.helpers.js';
 
 /** GET /api/site-content/coming-soon — every dish, hidden ones last. */
 export const listComingSoon = asyncHandler(async (_req: Request, res: Response) => {
@@ -81,4 +82,46 @@ export const updateEventInquiry = asyncHandler(async (req: Request, res: Respons
   if (!existing || (scope && existing.outletId !== scope)) throw ApiError.notFound('Inquiry not found');
   const updated = await prisma.eventInquiry.update({ where: { id: existing.id }, data: { status: req.body.status } });
   res.json(ApiResponse.success(toInquiryOut(updated), 'Inquiry updated'));
+});
+
+/** A kitchen post as both the staff app and the website read it. */
+export const toKitchenPostOut = <T extends { videoUrl: string | null }>(p: T) => ({ ...p, videoEmbedUrl: toVideoEmbedUrl(p.videoUrl) });
+
+type KitchenPostBody = { title?: string; body?: string | null; images?: string[]; videoUrl?: string | null; isPublished?: boolean };
+
+/** GET /api/site-content/kitchen-posts — every post, newest first (drafts included). */
+export const listKitchenPosts = asyncHandler(async (_req: Request, res: Response) => {
+  const posts = await prisma.kitchenPost.findMany({ orderBy: { createdAt: 'desc' } });
+  res.json(ApiResponse.success(posts.map(toKitchenPostOut)));
+});
+
+export const createKitchenPost = asyncHandler(async (req: Request, res: Response) => {
+  const { title, body, images, videoUrl, isPublished } = req.body as KitchenPostBody;
+  const post = await prisma.kitchenPost.create({
+    data: { title: title!, body: body || null, images: images ?? [], videoUrl: videoUrl || null, isPublished: isPublished ?? true },
+  });
+  res.status(201).json(ApiResponse.created(toKitchenPostOut(post), 'Post added'));
+});
+
+export const updateKitchenPost = asyncHandler(async (req: Request, res: Response) => {
+  const { title, body, images, videoUrl, isPublished } = req.body as KitchenPostBody;
+  const existing = await prisma.kitchenPost.findUnique({ where: { id: req.params.id } });
+  if (!existing) throw ApiError.notFound('Post not found');
+  const post = await prisma.kitchenPost.update({
+    where: { id: existing.id },
+    data: {
+      ...(title !== undefined && { title }),
+      ...(body !== undefined && { body: body || null }),
+      ...(images !== undefined && { images }),
+      ...(videoUrl !== undefined && { videoUrl: videoUrl || null }),
+      ...(isPublished !== undefined && { isPublished }),
+    },
+  });
+  res.json(ApiResponse.success(toKitchenPostOut(post), 'Post updated'));
+});
+
+export const deleteKitchenPost = asyncHandler(async (req: Request, res: Response) => {
+  const deleted = await prisma.kitchenPost.deleteMany({ where: { id: req.params.id } });
+  if (deleted.count === 0) throw ApiError.notFound('Post not found');
+  res.json(ApiResponse.success(null, 'Post removed'));
 });

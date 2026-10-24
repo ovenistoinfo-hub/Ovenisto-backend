@@ -15,6 +15,7 @@ import { emitReservationEvent } from '../../socket.js';
 import { mapOrderOut, generateOrderNumber } from '../order/order.controller.js';
 import { safepayConfig, startPayment, switchToCash, refreshPaymentOrders, returnOriginOf, apiBaseOf } from '../payments/payment.service.js';
 import { toPaymentView, toPaymentLike, ONLINE_ORIGIN_MESSAGE } from '../payments/payment.rules.js';
+import { toKitchenPostOut } from '../site-content/site-content.controller.js';
 
 const prisma = new PrismaClient();
 
@@ -728,3 +729,26 @@ export const createEventInquiry = asyncHandler(async (req: Request, res: Respons
   res.status(201).json(ApiResponse.success({ inquiryId: inquiry.id, outletName: outlet.name }));
 });
 
+
+const PUBLIC_POST_SELECT = { id: true, title: true, body: true, images: true, videoUrl: true, createdAt: true } as const;
+
+/** GET /website/kitchen-posts?limit= — published "Inside our kitchen" posts, newest first (max 50). */
+export const getKitchenPosts = asyncHandler(async (req: Request, res: Response) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
+  const posts = await prisma.kitchenPost.findMany({
+    where: { isPublished: true },
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+    select: PUBLIC_POST_SELECT,
+  });
+  res.setHeader('Cache-Control', 'no-cache');
+  res.json(ApiResponse.success(posts.map(toKitchenPostOut)));
+});
+
+/** GET /website/kitchen-posts/:id — one published post. */
+export const getKitchenPost = asyncHandler(async (req: Request, res: Response) => {
+  const post = await prisma.kitchenPost.findFirst({ where: { id: req.params.id, isPublished: true }, select: PUBLIC_POST_SELECT });
+  if (!post) throw ApiError.notFound('Post not found');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.json(ApiResponse.success(toKitchenPostOut(post)));
+});

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
-import { getOutlets, getConfig, getMenu, getDeals, quoteCart, createWebsiteOrder, getWebsiteOrderStatus, createWebsiteReservation, getWebsiteReservationStatus, quoteWebsiteReservation, getMyWebsiteOrders, getMyWebsiteReservations, payWebsiteOrder, payCashWebsiteOrder, getBestSellers, getComingSoon, voteComingSoon, createDishSuggestion, createEventInquiry } from './website.controller.js';
+import { getOutlets, getConfig, getMenu, getDeals, quoteCart, createWebsiteOrder, getWebsiteOrderStatus, createWebsiteReservation, getWebsiteReservationStatus, quoteWebsiteReservation, getMyWebsiteOrders, getMyWebsiteReservations, payWebsiteOrder, payCashWebsiteOrder, getBestSellers, getComingSoon, voteComingSoon, createDishSuggestion, createEventInquiry, getKitchenPosts, getKitchenPost } from './website.controller.js';
 import { requireWebsiteCustomer, optionalWebsiteCustomer } from './website.auth.js';
 import { validateRequest } from '../../middleware/validateRequest.js';
 import { quoteCartSchema, createOrderSchema, reservationSchema, quoteReservationSchema, suggestionSchema, eventInquirySchema } from './website.schema.js';
@@ -78,6 +78,8 @@ websiteRouter.get('/my/reservations', readLimiter, requireWebsiteCustomer, getMy
 websiteRouter.get('/best-sellers', readLimiter, getBestSellers);
 websiteRouter.get('/coming-soon', readLimiter, getComingSoon);
 websiteRouter.post('/coming-soon/:id/vote', voteLimiter, voteComingSoon);
+websiteRouter.get('/kitchen-posts', readLimiter, getKitchenPosts);
+websiteRouter.get('/kitchen-posts/:id', readLimiter, getKitchenPost);
 websiteRouter.post('/suggestions', formLimiter, validateRequest({ body: suggestionSchema }), createDishSuggestion);
 websiteRouter.post('/event-inquiries', formLimiter, validateRequest({ body: eventInquirySchema }), createEventInquiry);
 
