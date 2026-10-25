@@ -80,31 +80,30 @@ export function toPublicMenuItem(
 export async function buildPublicMenu(prisma: PrismaClient, options: { outletId: string | null; orderType?: string }) {
   const { outletId, orderType } = options;
 
-  const categories = await prisma.foodCategory.findMany({
-    where: { status: 'active' },
-    orderBy: [{ displayOrder: 'asc' }, { name: 'asc' }],
-    select: { id: true, name: true, displayOrder: true, status: true },
-  });
+  // Independent reads run together: this is a public page load, and each DB round trip adds up.
+  const [categories, items, recipes, kitchenWarehouseId] = await Promise.all([
+    prisma.foodCategory.findMany({
+      where: { status: 'active' },
+      orderBy: [{ displayOrder: 'asc' }, { name: 'asc' }],
+      select: { id: true, name: true, displayOrder: true, status: true },
+    }),
+    prisma.foodMenuItem.findMany({
+      where: { available: true },
+      orderBy: [{ category: { displayOrder: 'asc' } }, { name: 'asc' }],
+      include: {
+        category: { select: { id: true, name: true } },
+        variants: { orderBy: { displayOrder: 'asc' } },
+        modifiers: { include: { modifier: true } },
+      },
+    }),
+    prisma.foodRecipe.findMany({
+      where: { menuItem: { available: true } },
+      select: { menuItemId: true, variantId: true, ingredientId: true, productionItemId: true, qtyPerUnit: true },
+    }),
+    findKitchenWarehouseId(prisma, outletId),
+  ]);
 
-  const items = await prisma.foodMenuItem.findMany({
-    where: { available: true },
-    orderBy: [{ category: { displayOrder: 'asc' } }, { name: 'asc' }],
-    include: {
-      category: { select: { id: true, name: true } },
-      variants: { orderBy: { displayOrder: 'asc' } },
-      modifiers: { include: { modifier: true } },
-    },
-  });
-
-  const menuItemIds = items.map((item: any) => item.id);
-  const recipes = menuItemIds.length
-    ? await prisma.foodRecipe.findMany({
-        where: { menuItemId: { in: menuItemIds } },
-        select: { menuItemId: true, variantId: true, ingredientId: true, productionItemId: true, qtyPerUnit: true },
-      })
-    : [];
-
-  const { ingredientStock, productionStock } = await loadKitchenStock(prisma, outletId, recipes);
+  const { ingredientStock, productionStock } = await loadKitchenStock(prisma, outletId, recipes, kitchenWarehouseId);
 
   const recipesByItem = new Map<string, typeof recipes>();
   for (const r of recipes) {
@@ -122,38 +121,45 @@ export async function buildPublicMenu(prisma: PrismaClient, options: { outletId:
 
 type RecipeRow = { menuItemId: string; variantId: string | null; ingredientId: string | null; productionItemId: string | null; qtyPerUnit: unknown };
 
-/** The outlet's kitchen stock for the ingredients and production items these recipes use. */
-export async function loadKitchenStock(prisma: PrismaClient, outletId: string | null, recipes: RecipeRow[]) {
+async function findKitchenWarehouseId(prisma: PrismaClient, outletId: string | null): Promise<string | null> {
+  if (!outletId) return null;
+  const kw = await prisma.warehouse.findFirst({
+    where: { outletId, type: 'KITCHEN' as never, isActive: true },
+    select: { id: true },
+  });
+  return kw?.id ?? null;
+}
+
+/**
+ * The outlet's kitchen stock for the ingredients and production items these recipes use.
+ * `knownWarehouseId`: the kitchen warehouse when the caller already looked it up (undefined = look it up here).
+ */
+export async function loadKitchenStock(prisma: PrismaClient, outletId: string | null, recipes: RecipeRow[], knownWarehouseId?: string | null) {
   const ingredientStock = new Map<string, number>();
   const productionStock = new Map<string, number>();
   if (recipes.length > 0) {
-    let kitchenWarehouseId: string | null = null;
-    if (outletId) {
-      const kw = await prisma.warehouse.findFirst({
-        where: { outletId, type: 'KITCHEN' as never, isActive: true },
-        select: { id: true },
-      });
-      kitchenWarehouseId = kw?.id ?? null;
-    }
+    const kitchenWarehouseId = knownWarehouseId !== undefined ? knownWarehouseId : await findKitchenWarehouseId(prisma, outletId);
     const ingredientIds = Array.from(new Set(recipes.map((r: any) => r.ingredientId).filter((id: any): id is string => !!id)));
     const productionItemIds = Array.from(new Set(recipes.map((r: any) => r.productionItemId).filter((id: any): id is string => !!id)));
 
     if (kitchenWarehouseId) {
-      if (ingredientIds.length) {
-        const rows = await prisma.warehouseStock.findMany({
-          where: { warehouseId: kitchenWarehouseId, ingredientId: { in: ingredientIds } },
-          select: { ingredientId: true, currentStock: true },
-        });
-        for (const r of rows) ingredientStock.set(r.ingredientId, Math.max(0, Number(r.currentStock)));
-      }
-      if (productionItemIds.length) {
-        const rows = await prisma.productionWarehouseStock.findMany({
-          where: { warehouseId: kitchenWarehouseId, productionItemId: { in: productionItemIds } },
-          select: { productionItemId: true, currentStock: true },
-        });
-        for (const r of rows) {
-          productionStock.set(r.productionItemId, (productionStock.get(r.productionItemId) ?? 0) + Math.max(0, Number(r.currentStock)));
-        }
+      const [ingredientRows, productionRows] = await Promise.all([
+        ingredientIds.length
+          ? prisma.warehouseStock.findMany({
+              where: { warehouseId: kitchenWarehouseId, ingredientId: { in: ingredientIds } },
+              select: { ingredientId: true, currentStock: true },
+            })
+          : [],
+        productionItemIds.length
+          ? prisma.productionWarehouseStock.findMany({
+              where: { warehouseId: kitchenWarehouseId, productionItemId: { in: productionItemIds } },
+              select: { productionItemId: true, currentStock: true },
+            })
+          : [],
+      ]);
+      for (const r of ingredientRows) ingredientStock.set(r.ingredientId, Math.max(0, Number(r.currentStock)));
+      for (const r of productionRows) {
+        productionStock.set(r.productionItemId, (productionStock.get(r.productionItemId) ?? 0) + Math.max(0, Number(r.currentStock)));
       }
     } else if (ingredientIds.length) {
       // No kitchen warehouse for this outlet — fall back to the chain-wide

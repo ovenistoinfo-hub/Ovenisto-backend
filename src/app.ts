@@ -11,9 +11,20 @@ import { errorHandler } from './middleware/errorHandler.js';
 import { ApiResponse } from './utils/ApiResponse.js';
 import { prisma } from './config/database.js';
 import routes from './routes/index.js';
+import { isLocalOrigin } from './utils/origin.js';
 
 const app: Application = express();
 app.set('trust proxy', 1); // Railway = one proxy hop; rate limiters then key on the real client IP
+app.disable('x-powered-by');
+
+// Basic hardening headers for a JSON API (no helmet dependency for four headers).
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  next();
+});
 
 // ============================================
 // MIDDLEWARE
@@ -32,7 +43,7 @@ const corsMiddleware = (
       const isAllowed =
         allowedOrigins.includes(origin) ||
         origin.endsWith('.vercel.app') ||
-        origin.includes('localhost');
+        isLocalOrigin(origin);
 
       if (isAllowed) {
         return callback(null, true);
@@ -59,7 +70,9 @@ if (env.NODE_ENV !== 'test') {
   app.use(morgan(env.NODE_ENV === 'development' ? 'dev' : 'combined'));
 }
 
-// Body parsing
+// Body parsing. The public, unauthenticated routes get a small limit (a website order is a few KB), so nobody
+// can make the server parse 10 MB bodies for free; the first parser that runs wins.
+app.use(['/api/website', '/api/self-order'], express.json({ limit: '100kb' }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 

@@ -3,7 +3,8 @@ import rateLimit from 'express-rate-limit';
 import { getOutlets, getConfig, getMenu, getDeals, quoteCart, createWebsiteOrder, getWebsiteOrderStatus, createWebsiteReservation, getWebsiteReservationStatus, quoteWebsiteReservation, getMyWebsiteOrders, getMyWebsiteReservations, payWebsiteOrder, payCashWebsiteOrder, getBestSellers, getComingSoon, voteComingSoon, createDishSuggestion, createEventInquiry, getKitchenPosts, getKitchenPost } from './website.controller.js';
 import { requireWebsiteCustomer, optionalWebsiteCustomer } from './website.auth.js';
 import { validateRequest } from '../../middleware/validateRequest.js';
-import { quoteCartSchema, createOrderSchema, reservationSchema, quoteReservationSchema, suggestionSchema, eventInquirySchema } from './website.schema.js';
+import { quoteCartSchema, createOrderSchema, reservationSchema, quoteReservationSchema, suggestionSchema, eventInquirySchema, passwordResetRequestSchema, passwordResetVerifySchema, passwordResetConfirmSchema } from './website.schema.js';
+import { requestPasswordReset, verifyPasswordResetCode, confirmPasswordReset } from './website.passwordReset.js';
 
 export const websiteRouter = Router();
 
@@ -55,6 +56,26 @@ const voteLimiter = rateLimit({
   legacyHeaders: false,
   message: { success: false, error: 'Too many requests - please wait a moment and try again.' },
 });
+
+// Forgot password: a code by email. Tight per-IP limits are what keep a 6-digit code from being guessed.
+const resetRequestLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'Too many reset requests - please wait 15 minutes and try again.' },
+});
+const resetCodeLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  limit: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'Too many tries - please wait 15 minutes and ask for a new code.' },
+});
+
+websiteRouter.post('/auth/password-reset', resetRequestLimiter, validateRequest({ body: passwordResetRequestSchema }), requestPasswordReset);
+websiteRouter.post('/auth/password-reset/verify', resetCodeLimiter, validateRequest({ body: passwordResetVerifySchema }), verifyPasswordResetCode);
+websiteRouter.post('/auth/password-reset/confirm', resetCodeLimiter, validateRequest({ body: passwordResetConfirmSchema }), confirmPasswordReset);
 
 websiteRouter.get('/outlets', readLimiter, getOutlets);
 websiteRouter.get('/config', readLimiter, getConfig);

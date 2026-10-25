@@ -85,6 +85,18 @@ export const quoteReservationSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Invalid date (YYYY-MM-DD)').optional(),
 }).superRefine(requireItemsUnlessDineIn);
 
+// Forgot password (code by email). Firebase's own minimum password length is 6.
+export const passwordResetRequestSchema = z.object({
+  email: z.string().trim().email('Enter a valid email address').max(254),
+});
+export const passwordResetVerifySchema = z.object({
+  challenge: z.string().min(10).max(1000),
+  code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code from the email'),
+});
+export const passwordResetConfirmSchema = passwordResetVerifySchema.extend({
+  password: z.string().min(6, 'Use at least 6 characters').max(128),
+});
+
 export const suggestionSchema = z.object({
   text: z.string().trim().min(3, 'Write the dish you would like').max(120),
   outletId: z.string().uuid().optional(),

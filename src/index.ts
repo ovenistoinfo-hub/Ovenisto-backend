@@ -10,6 +10,7 @@ import { env } from './config/env.js';
 import { connectDatabase, disconnectDatabase } from './config/database.js';
 import { registerIO } from './socket.js';
 import { socketAuth } from './middleware/socketAuth.js';
+import { isLocalOrigin } from './utils/origin.js';
 import { setupSelfOrderNamespace } from './modules/self-order/self-order.socket.js';
 
 // NOTE: A 60-second background auto-expiry timer used to live here. It was
@@ -37,7 +38,7 @@ const allowedOrigins = env.CORS_ORIGIN.split(',').map((origin) => origin.trim())
 const io = new SocketServer(server, {
   cors: {
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app') || origin.includes('localhost')) {
+      if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app') || isLocalOrigin(origin)) {
         return callback(null, true);
       }
       return callback(new Error('CORS not allowed'));

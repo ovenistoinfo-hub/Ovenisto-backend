@@ -15,7 +15,7 @@ let hasLoggedConfigWarning = false;
  * Lazily initialize the firebase-admin app on first use (module-level singleton).
  * Fails soft if env vars are missing or invalid, returning null.
  */
-function getFirebaseApp(): App | null {
+export function getFirebaseApp(): App | null {
   if (firebaseInitialized) {
     return firebaseApp;
   }

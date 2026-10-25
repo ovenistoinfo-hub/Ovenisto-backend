@@ -922,3 +922,26 @@ Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
 3. Use `get_affected_flows` to understand impact.
 4. Use `query_graph` pattern="tests_for" to check coverage.
 
+
+## Speed + security + password reset by code (2026-10-25, uncommitted)
+- **`buildPublicMenu`** runs categories, items, recipes (`where: { menuItem: { available: true } }`) and the
+  kitchen-warehouse lookup in one `Promise.all`, then both stock reads together (`loadKitchenStock` takes an
+  optional known warehouse id). 6 sequential round trips → 2. Staging `/website/menu` was ~2.4 s vs config 0.7 s.
+  If staging/production `DATABASE_URL` is the public proxy, switching to `${{Postgres.DATABASE_URL}}` (private)
+  cuts every query further.
+- **Hardening (`app.ts`):** `x-powered-by` off; `X-Content-Type-Options`, `X-Frame-Options: DENY`,
+  `Referrer-Policy: no-referrer`, HSTS on every response. CORS + Socket.IO allow localhost by hostname
+  (`utils/origin.ts` `isLocalOrigin`, tested); the old `origin.includes('localhost')` let
+  `https://localhost.attacker.com` through. `/api/website` and `/api/self-order` parse JSON up to 100 KB (staff
+  routes keep 10 MB).
+- **Website password reset by code (`website/website.passwordReset.ts`, tested):** stateless. `POST
+  /website/auth/password-reset {email}` (5 per 15 min per IP, one per email per minute) answers the same
+  `{challenge}` whether or not the account exists, and emails a 6-digit code only when it does. The challenge =
+  base64url `{e, x, s}`, `s` = HMAC(`JWT_SECRET:website-password-reset`, email|code|expiry|tokensValidAfterTime),
+  10 minutes. `/verify {challenge, code}` and `/confirm {challenge, code, password}` (15 per 15 min per IP) re-check
+  it; confirm runs Admin `updateUser(uid, {password, emailVerified: true})` + `revokeRefreshTokens`, which changes
+  tokensValidAfterTime, so the code works once. Uses the FCM service-account app (`push.service` `getFirebaseApp`,
+  now exported).
+- **Email (nodemailer):** `SMTP_HOST`, `SMTP_PORT` (587; 465 = TLS), `SMTP_USER`, `SMTP_PASS`, optional
+  `MAIL_FROM`. Without them production answers 503 (the website then sends Firebase's link instead) and
+  development logs the code to the console. **Not set on Railway yet.**
