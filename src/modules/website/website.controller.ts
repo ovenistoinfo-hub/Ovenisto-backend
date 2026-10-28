@@ -661,6 +661,7 @@ function toReservationStatusView(reservation: Prisma.ReservationGetPayload<{ inc
     outletName: reservation.outlet?.name,
     orderType: reservation.orderType,
     totalAmount: Number(reservation.totalAmount),
+    rejectionReason: reservation.status === 'cancelled' ? reservation.rejectionReason : null,
     createdAt: reservation.createdAt,
   };
 }

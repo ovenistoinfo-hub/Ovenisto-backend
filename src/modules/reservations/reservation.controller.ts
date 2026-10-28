@@ -120,13 +120,18 @@ export const updateReservation = asyncHandler(async (req: Request, res: Response
     customerName, customerPhone, date, time, guestCount, tableId, tableNumber,
     status, specialRequests, source, bookingType, orderType, deliveryAddress,
     advancePaid, paymentMethod, paymentStatus, depositRef, preOrderItems,
-    subtotal, tax, totalAmount, isAdvanceAdjusted, orderId, advanceRefunded,
+    subtotal, tax, totalAmount, isAdvanceAdjusted, orderId, advanceRefunded, rejectionReason,
   } = req.body;
 
   const existing = await prisma.reservation.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Reservation not found');
   const scope = resolveOutletScope(req);
   if (scope && existing.outletId !== scope) throw ApiError.notFound('Reservation not found');
+
+  // The decline reason belongs to a cancelled booking only: any other status clears it.
+  const reason = status !== undefined && String(status) !== 'cancelled'
+    ? null
+    : rejectionReason !== undefined ? String(rejectionReason ?? '').trim().slice(0, 200) || null : undefined;
 
   // The advance's Cash Hub side: stamp who took it, and refuse a change that would move money
   // already settled or already counted on an order.
@@ -164,6 +169,7 @@ export const updateReservation = asyncHandler(async (req: Request, res: Response
       ...(totalAmount !== undefined && { totalAmount: Number(totalAmount) }),
       ...(isAdvanceAdjusted !== undefined && { isAdvanceAdjusted: Boolean(isAdvanceAdjusted) }),
       ...(orderId !== undefined && { orderId: orderId || null }),
+      ...(reason !== undefined && { rejectionReason: reason }),
       ...advance.data,
     },
   });

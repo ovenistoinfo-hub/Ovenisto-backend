@@ -1817,6 +1817,8 @@ model Reservation {
   advanceSettlementId    String?
   // Set when the booking is cancelled and the advance was handed back; it then leaves Cash Hub.
   advanceRefunded        Boolean   @default(false)
+  // Why staff declined a website booking; shown to the customer on its status page.
+  rejectionReason   String?  @db.VarChar(200)
   createdAt         DateTime @default(now())
 
   // Relations
