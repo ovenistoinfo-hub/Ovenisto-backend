@@ -371,7 +371,8 @@ export const createSelfOrder = asyncHandler(async (req: Request, res: Response) 
       status: 'PENDING',
       paymentMethod: 'Pending',
       date: new Date(),
-      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+      // The server runs UTC; receipts and Sales show this string, so format it in Pakistan time.
+      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Karachi' }),
       staffName: 'Self Order',
       tableNumber: !isNaN(Number(table.number)) ? Number(table.number) : null,
       orderSource: 'self-order',

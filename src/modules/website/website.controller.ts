@@ -260,7 +260,8 @@ export const createWebsiteOrder = asyncHandler(async (req: Request, res: Respons
       paymentMethod: 'Pending',
       status: payOnline ? 'AWAITING_PAYMENT' : 'PENDING',
       date: now,
-      time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+      // The server runs UTC; receipts and Sales show this string, so format it in Pakistan time.
+      time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Karachi' }),
       staffId: null,
       staffName: 'Website',
       deliveryAddress: orderType === 'Delivery' ? deliveryAddress : null,
