@@ -945,3 +945,11 @@ Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
 - **Email (nodemailer):** `SMTP_HOST`, `SMTP_PORT` (587; 465 = TLS), `SMTP_USER`, `SMTP_PASS`, optional
   `MAIL_FROM`. Without them production answers 503 (the website then sends Firebase's link instead) and
   development logs the code to the console. **Not set on Railway yet.**
+
+## Production on Railway (2026-10-27)
+Production backend `ovenistobackend-production.up.railway.app`; its frontends are on Railway too (website `www.ovenisto.com`,
+staff `ovenistosoftware-production.up.railway.app`). **A new frontend origin must be added to the production `CORS_ORIGIN`
+variable** (comma-separated, no spaces): the `*.vercel.app` and localhost patterns in `app.ts` / `index.ts` do not cover
+custom domains or `*.up.railway.app`, and a blocked origin gets a `500` on the preflight and the request. Check with
+`curl -i -H "Origin: <origin>" <backend>/api/website/outlets`. Password-reset email needs `SMTP_*` + `MAIL_FROM` (not set on
+production yet). Root guide → "Production go-live" has the full list.

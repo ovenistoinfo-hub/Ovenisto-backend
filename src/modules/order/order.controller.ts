@@ -933,7 +933,8 @@ export const createOrder = asyncHandler(async (req: Request, res: Response) => {
       status: prismaStatus as any,
       paymentMethod: paymentMethod || null,
       date: new Date(),
-      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+      // The server runs UTC; receipts and Sales show this string, so format it in Pakistan time.
+      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Karachi' }),
       staffId: req.user?.id || null,
       staffName: staffName || req.user?.name || null,
       tableNumber: tableNumber !== undefined && tableNumber !== null && !isNaN(Number(tableNumber)) ? Number(tableNumber) : null,
