@@ -210,7 +210,9 @@ export async function priceWebsiteCart(prisma: PrismaClient, req: { outletId: st
   const tax = Math.round(taxable * taxRate / 100);
   const deliveryFee = computeDeliveryFee(orderType, config, taxable);
   const total = round2(taxable + tax + deliveryFee);
-  const meetsMinOrder = orderType !== 'Delivery' || taxable >= config.minOrder;
+  // Judged on the cart the customer sees, before the discount: a first-order 10% off must not push a
+  // Rs. 520 cart under a Rs. 500 minimum.
+  const meetsMinOrder = orderType !== 'Delivery' || subtotal >= config.minOrder;
 
   return {
     outlet,
