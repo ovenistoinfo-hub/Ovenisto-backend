@@ -45,8 +45,8 @@ async function getCustomerStatsMap(gte?: Date, lte?: Date) {
     }
 
     if (phoneKey && !map[phoneKey]) map[phoneKey] = map[key];
-    if (nameKey && !map[nameKey]) map[nameKey] = map[key];
     if (idKey && !map[idKey]) map[idKey] = map[key];
+    // No name alias: it pointed every same-named customer at whichever order came first.
 
     const amt = Number(o.total || 0);
     const isCancelled = String(o.status).toLowerCase() === 'cancelled';
@@ -91,15 +91,26 @@ function validateAndFormatPhone(phone: string | null | undefined, required = fal
   return `${digits.slice(0, 4)}-${digits.slice(4)}`;
 }
 
-function mapCustomerWithStats(c: any, statsMap?: Record<string, any>, periodActive = false) {
+/**
+ * Which stats entry belongs to a customer: their own id, else their phone. The NAME key is only a last resort
+ * for a customer with no usable phone, because two customers can share a name ("Awais" x4 on staging) and then
+ * each would show the other's orders and Due.
+ */
+export function pickCustomerStat<T>(c: { id: string; name: string; phone?: string | null }, statsMap?: Record<string, T>): T | null {
+  if (!statsMap) return null;
   const cleanPhone = c.phone ? c.phone.replace(/\D/g, '') : '';
   const isDummy = !cleanPhone || cleanPhone === '00000000000' || cleanPhone === '11111111111' || cleanPhone === '12345678901';
+  const hasUsablePhone = !isDummy && cleanPhone.length >= 7;
+  return (
+    statsMap[`id:${c.id}`] ||
+    (hasUsablePhone ? statsMap[`phone:${cleanPhone}`] : null) ||
+    (hasUsablePhone ? null : statsMap[`name:${c.name.toLowerCase().trim()}`]) ||
+    null
+  );
+}
 
-  const stat = statsMap
-    ? (statsMap[`id:${c.id}`] ||
-       (!isDummy && cleanPhone.length >= 7 ? statsMap[`phone:${cleanPhone}`] : null) ||
-       statsMap[`name:${c.name.toLowerCase().trim()}`])
-    : null;
+function mapCustomerWithStats(c: any, statsMap?: Record<string, any>, periodActive = false) {
+  const stat = pickCustomerStat(c, statsMap);
 
   const formattedPhone = formatPakistaniPhone(c.phone);
 
