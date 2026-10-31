@@ -15,6 +15,14 @@ function mapExpense(e: any) {
   };
 }
 
+function checkAmountAndDate(amount: unknown, date: unknown) {
+  if (amount != null) {
+    const n = Number(amount);
+    if (!Number.isFinite(n) || n <= 0) throw new ApiError('Amount must be greater than 0', 400);
+  }
+  if (date && Number.isNaN(new Date(date as string).getTime())) throw new ApiError('Invalid date', 400);
+}
+
 export const getExpenses = asyncHandler(async (req: Request, res: Response) => {
   const { page = '1', limit = '20', category, search, from, to } = req.query as Record<string, string>;
   const skip = (Number(page) - 1) * Number(limit);
@@ -66,6 +74,7 @@ export const createExpense = asyncHandler(async (req: Request, res: Response) =>
   const { category, description, amount, paymentMethod, reference, receipt, date } = req.body;
   if (!description) throw new ApiError('Description is required', 400);
   if (amount == null) throw new ApiError('Amount is required', 400);
+  checkAmountAndDate(amount, date);
 
   const recordedBy = req.user?.name || req.user?.email || null;
   const outletId = resolveCreateOutlet(req);
@@ -94,6 +103,7 @@ export const updateExpense = asyncHandler(async (req: Request, res: Response) =>
   if (scope && existing.outletId !== scope) throw new ApiError('Expense not found', 404);
 
   const { category, description, amount, paymentMethod, reference, receipt, date } = req.body;
+  checkAmountAndDate(amount, date);
 
   const e = await prisma.expense.update({
     where: { id: req.params.id },
