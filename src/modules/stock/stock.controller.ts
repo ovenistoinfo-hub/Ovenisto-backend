@@ -701,6 +701,9 @@ export const createWasteRecord = asyncHandler(async (req: Request, res: Response
   const { itemName, quantity, unit, reason, cost, ingredientId, warehouseId } = req.body;
 
   if (!itemName?.trim()) throw ApiError.badRequest('Item name is required');
+  // A negative waste quantity would add stock back through the decrement below.
+  if (quantity != null && quantity !== '' && !(Number(quantity) >= 0)) throw ApiError.badRequest('Quantity cannot be negative');
+  if (cost != null && cost !== '' && !(Number(cost) >= 0)) throw ApiError.badRequest('Cost cannot be negative');
   let outletId: string | null = null;
   if (warehouseId) {
     const pWarehouse = await prisma.warehouse.findUnique({ where: { id: warehouseId }, select: { outletId: true } });
