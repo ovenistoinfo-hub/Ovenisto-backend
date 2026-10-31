@@ -406,6 +406,12 @@ export const receiveChallan = asyncHandler(async (req: Request, res: Response) =
     if (input) {
       const receivedQty = Number(input.receivedQty ?? item.qty);
       const wasteQty = Number(input.wasteQty ?? 0);
+      if (!Number.isFinite(receivedQty) || receivedQty < 0 || receivedQty > Number(item.qty)) {
+        throw new ApiError(`Received quantity for "${item.ingredient.name}" must be between 0 and the dispatched ${Number(item.qty)}`, 400);
+      }
+      if (!Number.isFinite(wasteQty) || wasteQty < 0) {
+        throw new ApiError(`Waste quantity for "${item.ingredient.name}" cannot be negative`, 400);
+      }
       if (wasteQty > receivedQty) {
         throw new ApiError(`Waste quantity cannot exceed received quantity for "${item.ingredient.name}"`, 400);
       }
