@@ -416,21 +416,23 @@ export const createDeal = asyncHandler(async (req: Request, res: Response) => {
   }
 });
 
+/** Non-Super-Admin may only change a deal that targets exactly their own outlet. */
+function assertCanModifyDeal(req: Request, existing: { outletIds: string[] }) {
+  if (req.user?.role === 'Super Admin') return;
+  const own = req.user?.outletId;
+  const ownOnly = existing.outletIds.length === 1 && existing.outletIds[0] === own;
+  if (!ownOnly) {
+    throw ApiError.forbidden('Only Super Admin can edit a chain-wide deal, or a deal outside your outlet');
+  }
+}
+
 /** PUT /api/deals/:id — full replace (components/optionGroups deleted + recreated). */
 export const updateDeal = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   const existing = await prisma.deal.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Deal not found');
 
-  const role = req.user?.role;
-  if (role !== 'Super Admin') {
-    const own = req.user?.outletId;
-    const existingIsChainWide = existing.outletIds.length === 0;
-    const existingIsOwnOnly = existing.outletIds.length === 1 && existing.outletIds[0] === own;
-    if (existingIsChainWide || !existingIsOwnOnly) {
-      throw ApiError.forbidden('Only Super Admin can edit a chain-wide deal, or a deal outside your outlet');
-    }
-  }
+  assertCanModifyDeal(req, existing);
 
   const body = req.body as DealInput;
   await assertPriceBelowRegularValue(body);
@@ -480,6 +482,7 @@ export const toggleDeal = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   const existing = await prisma.deal.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Deal not found');
+  assertCanModifyDeal(req, existing);
 
   const deal = await prisma.deal.update({
     where: { id },
@@ -495,6 +498,7 @@ export const deleteDeal = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   const existing = await prisma.deal.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Deal not found');
+  assertCanModifyDeal(req, existing);
 
   const soldCount = await prisma.orderItem.count({ where: { dealId: id } });
   if (soldCount > 0) {
