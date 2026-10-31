@@ -17,7 +17,7 @@ export const getMySchedule = asyncHandler(async (req: Request, res: Response) =>
   if (!week) throw new ApiError('week query param required (YYYY-MM-DD Monday)', 400);
 
   const schedule = await prisma.staffSchedule.findFirst({
-    where: { userId: req.user!.id, weekStart: week },
+    where: { userId: req.user!.id, weekStart: week, status: 'published' },
     include: { shifts: { orderBy: { dayIndex: 'asc' } } },
   });
 
