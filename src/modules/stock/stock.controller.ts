@@ -70,6 +70,19 @@ export const getAdjustments = asyncHandler(async (req: Request, res: Response) =
   res.json(ApiResponse.paginated(adjustments, Number(page), Number(limit), total));
 });
 
+/** Refuse to take more out of stock than is there (would leave negative stock). */
+async function assertEnoughStock(ingredientId: string, warehouseId: string | null | undefined, qty: number) {
+  const available = warehouseId
+    ? Number((await prisma.warehouseStock.findUnique({
+        where: { warehouseId_ingredientId: { warehouseId, ingredientId } },
+        select: { currentStock: true },
+      }))?.currentStock ?? 0)
+    : Number((await prisma.ingredient.findUnique({ where: { id: ingredientId }, select: { currentStock: true } }))?.currentStock ?? 0);
+  if (qty > available) {
+    throw ApiError.badRequest(`Not enough stock: only ${available} available, cannot remove ${qty}`);
+  }
+}
+
 /** POST /api/stock/adjustments */
 export const createAdjustment = asyncHandler(async (req: Request, res: Response) => {
   const { ingredientId, type, quantity, reason, warehouseId } = req.body;
@@ -95,6 +108,7 @@ export const createAdjustment = asyncHandler(async (req: Request, res: Response)
 
   const adjustedById = req.user?.id;
   const stockChange = ['add', 'correction'].includes(type) ? Number(quantity) : -Number(quantity);
+  if (stockChange < 0) await assertEnoughStock(ingredientId, warehouseId, Number(quantity));
 
   const adjustment = await prisma.$transaction(async (tx) => {
     const adj = await tx.stockAdjustment.create({
@@ -712,6 +726,7 @@ export const createWasteRecord = asyncHandler(async (req: Request, res: Response
   } else {
     outletId = resolveCreateOutlet(req);
   }
+  if (ingredientId && quantity) await assertEnoughStock(ingredientId, warehouseId, Number(quantity));
 
   const record = await prisma.$transaction(async (tx) => {
     const waste = await tx.wasteRecord.create({
