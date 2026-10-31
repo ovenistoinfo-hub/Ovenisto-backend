@@ -850,12 +850,30 @@ export const wasteProductionBatch = asyncHandler(async (req: Request, res: Respo
   if (Number(batch.remainingQty) <= 0) throw ApiError.badRequest('Batch is already fully consumed');
 
   const wasteQty = Math.min(Number(qty), Number(batch.remainingQty));
+  const productionItem = await prisma.productionItem.findUnique({
+    where: { id: batch.productionItemId },
+    select: { name: true, unit: true },
+  });
 
   await prisma.$transaction(async (tx) => {
     await tx.productionBatch.update({ where: { id }, data: { remainingQty: { decrement: wasteQty } } });
     await tx.productionWarehouseStock.updateMany({
       where: { productionItemId: batch.productionItemId, warehouseId: batch.warehouseId },
       data: { currentStock: { decrement: wasteQty } },
+    });
+    // Same record the auto-expiry writes, so manual waste shows in Food Loss reports.
+    await tx.wasteRecord.create({
+      data: {
+        itemName: productionItem?.name ?? 'Production item',
+        quantity: wasteQty,
+        unit: productionItem?.unit ?? null,
+        cost: batch.unitCost != null ? Number(batch.unitCost) * wasteQty : 0,
+        reason: 'Production waste',
+        outletId: batchWarehouse?.outletId ?? null,
+        warehouseId: batch.warehouseId,
+        recordedBy: req.user?.name || null,
+        date: new Date(),
+      },
     });
   });
 
