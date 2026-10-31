@@ -572,6 +572,10 @@ export const correctAttendance = asyncHandler(async (req: Request, res: Response
   if (!parsed.success) throw new ApiError(parsed.error.errors[0].message, 400);
   const { clockIn: ci, clockOut: co, status, notes } = parsed.data;
 
+  const finalIn = ci !== undefined ? (ci ? new Date(ci) : null) : existing.clockIn;
+  const finalOut = co !== undefined ? (co ? new Date(co) : null) : existing.clockOut;
+  if (finalIn && finalOut && finalOut < finalIn) throw new ApiError('Clock-out cannot be before clock-in', 400);
+
   const overtimeMinutes = co !== undefined
     ? (co ? await calcOvertimeMinutes(existing.userId, existing.outletId, existing.date, new Date(co)) : 0)
     : undefined;

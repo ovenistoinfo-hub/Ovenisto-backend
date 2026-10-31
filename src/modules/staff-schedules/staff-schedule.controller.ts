@@ -51,7 +51,26 @@ export const saveSchedule = asyncHandler(async (req: Request, res: Response) => 
     throw new ApiError('userId, weekStart, and shifts[] are required', 400);
   }
 
+  // weekStart is a Monday "YYYY-MM-DD"; each shift is one of four types on one day 0-6.
+  const monday = /^\d{4}-\d{2}-\d{2}$/.test(String(weekStart)) ? new Date(`${weekStart}T00:00:00Z`) : null;
+  if (!monday || Number.isNaN(monday.getTime()) || monday.getUTCDay() !== 1) {
+    throw new ApiError('weekStart must be a Monday in YYYY-MM-DD format', 400);
+  }
+  const days = new Set<number>();
+  for (const s of shifts) {
+    const d = Number(s?.dayIndex);
+    if (!Number.isInteger(d) || d < 0 || d > 6) throw new ApiError('Each shift needs a dayIndex from 0 to 6', 400);
+    if (!['morning', 'evening', 'night', 'off'].includes(s?.shiftType)) {
+      throw new ApiError('shiftType must be morning, evening, night or off', 400);
+    }
+    if (days.has(d)) throw new ApiError('Only one shift per day is allowed', 400);
+    days.add(d);
+  }
+
   const outletId = resolveCreateOutlet(req);
+
+  const staff = await prisma.user.findUnique({ where: { id: userId }, select: { outletId: true } });
+  if (!staff || (outletId && staff.outletId !== outletId)) throw new ApiError('Staff member not found', 404);
 
   let settings = await prisma.settings.findFirst({
     where: { outletId: outletId || undefined }

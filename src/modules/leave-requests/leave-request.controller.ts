@@ -122,6 +122,15 @@ export const submitLeaveRequest = asyncHandler(async (req: Request, res: Respons
 
   const userId = req.user!.id;
 
+  // Dates are plain "YYYY-MM-DD" strings, so string comparison is date comparison.
+  const overlapping = await prisma.leaveRequest.findFirst({
+    where: { userId, status: { in: ['pending', 'approved'] }, startDate: { lte: endDate }, endDate: { gte: startDate } },
+    select: { startDate: true, endDate: true },
+  });
+  if (overlapping) {
+    throw new ApiError(`You already have a leave request from ${overlapping.startDate} to ${overlapping.endDate} that overlaps these dates`, 400);
+  }
+
   // 1. Fetch user's HR profile defaultOffDay (0=Sun..6=Sat, default: 1 = Monday)
   const emp = await prisma.employee.findFirst({ where: { userId } });
   const userDefaultOff = emp?.defaultOffDay ?? 1;
