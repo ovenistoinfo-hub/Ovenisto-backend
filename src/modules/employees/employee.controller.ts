@@ -21,6 +21,15 @@ function mapEmployee(e: any) {
   };
 }
 
+const PAY_VISIBLE_ROLES = ['Super Admin', 'Admin', 'Manager', 'Store Manager', 'Accountant'];
+
+/** Other staff (cashier, waiter, rider…) read the employee list for names, but must not see anyone's pay. */
+function mapEmployeeFor(role: string | undefined, e: any) {
+  const mapped = mapEmployee(e);
+  if (role && PAY_VISIBLE_ROLES.includes(role)) return mapped;
+  return { ...mapped, rate: null, penaltyFee: null, commissionPerDelivery: null };
+}
+
 export const getEmployees = asyncHandler(async (req: Request, res: Response) => {
   const { page = '1', limit = '20', search, status } = req.query as Record<string, string>;
   const skip = (Number(page) - 1) * Number(limit);
@@ -49,7 +58,7 @@ export const getEmployees = asyncHandler(async (req: Request, res: Response) => 
     prisma.employee.count({ where }),
   ]);
 
-  return res.json(ApiResponse.paginated(data.map(mapEmployee), Number(page), Number(limit), total));
+  return res.json(ApiResponse.paginated(data.map((e) => mapEmployeeFor(req.user?.role, e)), Number(page), Number(limit), total));
 });
 
 export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
@@ -60,7 +69,7 @@ export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
   if (!e) throw new ApiError('Employee not found', 404);
   const scope = resolveOutletScope(req);
   if (scope && e.outletId !== scope) throw new ApiError('Employee not found', 404);
-  return res.json(ApiResponse.success(mapEmployee(e)));
+  return res.json(ApiResponse.success(mapEmployeeFor(req.user?.role, e)));
 });
 
 export const getMyEmployee = asyncHandler(async (req: Request, res: Response) => {

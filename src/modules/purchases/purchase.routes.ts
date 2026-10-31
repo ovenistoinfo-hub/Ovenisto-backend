@@ -12,12 +12,13 @@ import {
 } from './purchase.controller.js';
 
 const writeRoles = ['Super Admin', 'Admin', 'Manager', 'Store Manager'];
+const readRoles = [...writeRoles, 'Accountant'];
 
 export const purchasesRouter = Router();
 
-purchasesRouter.get('/stats/summary', authenticate, getPurchaseStats);
-purchasesRouter.get('/',          authenticate, getPurchases);
-purchasesRouter.get('/:id',       authenticate, getPurchase);
+purchasesRouter.get('/stats/summary', authenticate, authorize(readRoles), getPurchaseStats);
+purchasesRouter.get('/',          authenticate, authorize(readRoles), getPurchases);
+purchasesRouter.get('/:id',       authenticate, authorize(readRoles), getPurchase);
 purchasesRouter.post('/',         authenticate, authorize(writeRoles), createPurchase);
 purchasesRouter.post('/:id/pay',  authenticate, authorize(writeRoles), payPurchase);
 purchasesRouter.put('/:id',       authenticate, authorize(writeRoles), updatePurchase);
