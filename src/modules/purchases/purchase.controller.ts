@@ -8,6 +8,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope, resolveCreateOutlet } from '../../middleware/outletScope.js';
 import { emitPurchaseEvent } from '../../socket.js';
+import { invalidPurchaseItem } from './purchase.items.js';
 
 function mapPurchase(p: any) {
   return {
@@ -159,6 +160,8 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
   if (!items || !Array.isArray(items) || items.length === 0) {
     throw new ApiError('Purchase items are required', 400);
   }
+  const itemProblem = invalidPurchaseItem(items);
+  if (itemProblem) throw new ApiError(itemProblem, 400);
   if (total == null) throw new ApiError('Total amount is required', 400);
   if (!status) throw new ApiError('Payment status is required', 400);
 
