@@ -300,9 +300,10 @@ export const calculateDeliveryCommissions = asyncHandler(async (req: Request, re
     where: {
       riderId: rider.id,
       status: 'delivered',
+      // startDate/endDate are PKT calendar days (UTC+5), deliveredAt is a UTC instant.
       deliveredAt: {
-        gte: new Date(`${startDate}T00:00:00.000Z`),
-        lte: new Date(`${endDate}T23:59:59.999Z`),
+        gte: new Date(new Date(`${startDate}T00:00:00.000Z`).getTime() - 5 * 3_600_000),
+        lte: new Date(new Date(`${endDate}T23:59:59.999Z`).getTime() - 5 * 3_600_000),
       },
     },
     select: { commissionEarned: true },
