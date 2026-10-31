@@ -8,7 +8,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { resolveOutletScope, resolveCreateOutlet } from '../../middleware/outletScope.js';
 import { emitPurchaseEvent } from '../../socket.js';
-import { invalidPurchaseItem } from './purchase.items.js';
+import { invalidPurchaseItem, invalidPurchasePayment } from './purchase.items.js';
 
 function mapPurchase(p: any) {
   return {
@@ -164,6 +164,8 @@ export const createPurchase = asyncHandler(async (req: Request, res: Response) =
   if (itemProblem) throw new ApiError(itemProblem, 400);
   if (total == null) throw new ApiError('Total amount is required', 400);
   if (!status) throw new ApiError('Payment status is required', 400);
+  const paymentProblem = invalidPurchasePayment(total, paid, status);
+  if (paymentProblem) throw new ApiError(paymentProblem, 400);
 
   // Validate purchase request if provided
   if (purchaseRequestId) {
@@ -381,6 +383,8 @@ export const updatePurchase = asyncHandler(async (req: Request, res: Response) =
 
   const totalAmount = Number(existing.total ?? 0);
   const paidAmount = Number(paid ?? 0);
+  const paymentProblem = invalidPurchasePayment(totalAmount, paidAmount, status);
+  if (paymentProblem) throw new ApiError(paymentProblem, 400);
   const newDue =
     status === 'paid' ? 0 :
     status === 'unpaid' ? totalAmount :

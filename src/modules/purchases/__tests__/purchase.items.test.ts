@@ -23,3 +23,26 @@ describe('invalidPurchaseItem', () => {
     expect(invalidPurchaseItem([{ qty: 1, unitPrice: -3 }])).toMatch(/price/);
   });
 });
+
+import { invalidPurchasePayment } from '../purchase.items.js';
+
+describe('invalidPurchasePayment', () => {
+  it('accepts the three normal shapes', () => {
+    expect(invalidPurchasePayment(200, 0, 'unpaid')).toBeNull();
+    expect(invalidPurchasePayment(200, 80, 'partial')).toBeNull();
+    expect(invalidPurchasePayment(200, 200, 'paid')).toBeNull();
+  });
+
+  it('rejects a negative total or paid amount', () => {
+    expect(invalidPurchasePayment(-500, 0, 'unpaid')).toMatch(/Total/);
+    expect(invalidPurchasePayment(100, -1, 'partial')).toMatch(/Paid/);
+  });
+
+  it('rejects paying more than the total', () => {
+    expect(invalidPurchasePayment(200, 5000, 'partial')).toMatch(/more than/);
+  });
+
+  it('rejects an unknown status', () => {
+    expect(invalidPurchasePayment(200, 0, 'bogus')).toMatch(/status/);
+  });
+});

@@ -15,3 +15,16 @@ export function invalidPurchaseItem(items: Array<Record<string, unknown>>): stri
   }
   return null;
 }
+
+/** Returns the first problem with a purchase's payment fields, or null when they are fine.
+ *  Total cannot be negative, paid must be between 0 and the total, and status must be one
+ *  the due maths understands — otherwise a supplier's balance can go negative. */
+export function invalidPurchasePayment(total: unknown, paid: unknown, status: unknown): string | null {
+  const t = Number(total);
+  const p = Number(paid ?? 0);
+  if (!Number.isFinite(t) || t < 0) return 'Total cannot be negative';
+  if (!Number.isFinite(p) || p < 0) return 'Paid amount cannot be negative';
+  if (p > t) return 'Paid amount cannot be more than the total';
+  if (!['paid', 'unpaid', 'partial'].includes(String(status))) return 'Payment status must be paid, unpaid or partial';
+  return null;
+}
