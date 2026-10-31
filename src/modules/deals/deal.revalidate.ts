@@ -490,7 +490,8 @@ export async function resolveOrderDiscount(
 
   if (enteredCode) {
     const deal: any = await (tx as any).deal.findFirst({
-      where: { type: 'PROMO_CODE', code: enteredCode.toUpperCase() },
+      // Legacy ORDER_DISCOUNT rows with a code are promo codes until the backfill script has run.
+      where: { type: { in: ['PROMO_CODE', 'ORDER_DISCOUNT'] }, code: enteredCode.toUpperCase() },
     });
     if (!deal) throw ApiError.badRequest('Invalid or expired coupon code');
 
@@ -513,7 +514,11 @@ export async function resolveOrderDiscount(
   // No code entered — look for the best currently-eligible Minimum Spend
   // deal instead. Silent no-match is normal here.
   const candidates: any[] = await (tx as any).deal.findMany({
-    where: { type: 'MIN_SPEND', isActive: true, status: { not: 'archived' } },
+    where: {
+      OR: [{ type: 'MIN_SPEND' }, { type: 'ORDER_DISCOUNT', code: null }], // legacy code-less rows are Minimum Spend deals
+      isActive: true,
+      status: { not: 'archived' },
+    },
   });
 
   let best: OrderDiscountApplied | null = null;
