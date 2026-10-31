@@ -199,6 +199,8 @@ export const createPurchaseRequest = asyncHandler(async (req: Request, res: Resp
     throw ApiError.badRequest('Warehouse is not in your outlet');
   }
 
+  if (items.some((i: any) => !(Number(i.requestedQty) > 0))) throw ApiError.badRequest('Each item needs a quantity greater than 0');
+
   // Validate all ingredients exist
   const ingredientIds = items.map((i: any) => i.ingredientId);
   const ingredients = await prisma.ingredient.findMany({ where: { id: { in: ingredientIds } }, select: { id: true } });
@@ -254,6 +256,9 @@ export const approveRequest = asyncHandler(async (req: Request, res: Response) =
   if (pr.status !== 'PENDING') throw ApiError.badRequest(`Cannot approve a ${pr.status} request`);
 
   if (!items || !Array.isArray(items)) throw ApiError.badRequest('Items with approved quantities are required');
+  if (items.some((i: any) => !Number.isFinite(Number(i.approvedQty)) || Number(i.approvedQty) < 0)) {
+    throw ApiError.badRequest('Approved quantity cannot be negative');
+  }
 
   // Build all update operations and run as a batch transaction
   const updateOps = items.map((item: { ingredientId: string; approvedQty: number }) =>
