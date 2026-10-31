@@ -50,6 +50,11 @@ export const updateBalance = asyncHandler(async (req: Request, res: Response) =>
   const { userId } = req.params;
   const year = currentYear();
   const { annual, sick, casual, halfday } = req.body;
+  for (const v of [annual, sick, casual, halfday]) {
+    if (v != null && (!Number.isFinite(Number(v)) || Number(v) < 0)) {
+      throw new ApiError('Leave balances must be zero or more', 400);
+    }
+  }
 
   const balance = await prisma.leaveBalance.upsert({
     where: { userId_year: { userId, year } },
@@ -110,6 +115,9 @@ export const submitLeaveRequest = asyncHandler(async (req: Request, res: Respons
 
   const start = new Date(startDate + 'T00:00:00Z');
   const end   = new Date(endDate + 'T00:00:00Z');
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    throw new ApiError('startDate and endDate must be valid YYYY-MM-DD dates', 400);
+  }
   if (end < start) throw new ApiError('endDate must be >= startDate', 400);
 
   const userId = req.user!.id;

@@ -23,6 +23,23 @@ function mapPaymentLog(log: any) {
   };
 }
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Returns an error message if the payout dates or amounts are unusable, else null. */
+function invalidPayout(p: any): string | null {
+  if (!DATE_RE.test(String(p.startDate)) || !DATE_RE.test(String(p.endDate)) || p.endDate < p.startDate) {
+    return 'Invalid payment period dates';
+  }
+  for (const k of ['basePay', 'penalties', 'rewards', 'finalPay', 'advanceAmount']) {
+    const v = p[k];
+    if (v == null && k === 'advanceAmount') continue;
+    if (typeof v !== 'number' && typeof v !== 'string') return `${k} must be a number`;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) return `${k} cannot be negative`;
+  }
+  return null;
+}
+
 export const createPaymentLog = asyncHandler(async (req: Request, res: Response) => {
   const {
     employeeId, startDate, endDate, basePay, penalties, rewards, finalPay, notes,
@@ -38,6 +55,9 @@ export const createPaymentLog = asyncHandler(async (req: Request, res: Response)
   if (!paidById) {
     throw new ApiError('Not authenticated', 401);
   }
+
+  const payoutError = invalidPayout(req.body);
+  if (payoutError) throw new ApiError(payoutError, 400);
 
   const isAdvanceFlag = Boolean(isAdvance || (notes && typeof notes === 'string' && notes.startsWith('Salary Advance')));
 
@@ -63,7 +83,7 @@ export const createPaymentLog = asyncHandler(async (req: Request, res: Response)
       SELECT id FROM payment_logs
       WHERE "employeeId" = ${employeeId}
         AND "isAdvance" = false
-        AND notes NOT LIKE 'Salary Advance%'
+        AND COALESCE(notes, '') NOT LIKE 'Salary Advance%'
         AND "startDate" >= ${startDate}
         AND "startDate" <= ${endDate}
       LIMIT 1
@@ -137,6 +157,12 @@ export const createBatchPaymentLogs = asyncHandler(async (req: Request, res: Res
     throw new ApiError('Invalid or empty payments array', 400);
   }
 
+  for (const p of payments) {
+    if (!p?.employeeId) throw new ApiError('Missing required payment fields', 400);
+    const payoutError = invalidPayout(p);
+    if (payoutError) throw new ApiError(payoutError, 400);
+  }
+
   // Skip any employee/period combination already paid (non-advance).
   // Use raw SQL to avoid Prisma ORM ambiguity with isAdvance + NOT combinations.
   const alreadyPaidKeys = new Set<string>();
@@ -145,7 +171,7 @@ export const createBatchPaymentLogs = asyncHandler(async (req: Request, res: Res
       SELECT id FROM payment_logs
       WHERE "employeeId" = ${p.employeeId}
         AND "isAdvance" = false
-        AND notes NOT LIKE 'Salary Advance%'
+        AND COALESCE(notes, '') NOT LIKE 'Salary Advance%'
         AND "startDate" >= ${p.startDate}
         AND "startDate" <= ${p.endDate}
       LIMIT 1
