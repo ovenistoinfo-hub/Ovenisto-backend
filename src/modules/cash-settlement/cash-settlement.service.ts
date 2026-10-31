@@ -814,6 +814,10 @@ export async function createSettlement(
   const totalExpected = staffBalance.totalExpected;
 
   const actualByMethod = data.actualByMethod || {};
+  const received = [...Object.values(actualByMethod), data.actualCash, data.actualCard, data.actualOnline];
+  if (received.some((v) => v != null && (!Number.isFinite(Number(v)) || Number(v) < 0))) {
+    throw ApiError.badRequest('Received amounts cannot be negative');
+  }
   let totalActualFromMethods = 0;
 
   for (const [m, val] of Object.entries(actualByMethod)) {
