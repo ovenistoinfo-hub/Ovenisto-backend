@@ -5,8 +5,8 @@
 import { z } from 'zod';
 
 export const updateSettingsSchema = z.object({
-  restaurantName: z.string().max(100).optional(),
-  currency: z.string().max(10).optional(),
+  restaurantName: z.string().trim().min(1, 'Business name is required').max(100).optional(),
+  currency: z.string().trim().min(1, 'Currency is required').max(10).optional(),
   taxRate: z.coerce.number().min(0).max(100).optional(),
   taxName: z.string().max(20).optional(),
   phone: z.string().max(20).optional().nullable(),
@@ -21,7 +21,7 @@ export const updateSettingsSchema = z.object({
   reservationConfig: z.record(z.any()).optional(),
   shiftConfig: z.record(z.any()).optional(),
   graceMinutes: z.coerce.number().min(10).max(30).optional(),
-  paymentMethods: z.array(z.string()).optional(),
+  paymentMethods: z.array(z.string().trim().min(1)).optional(),
 });
 
 export type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>;
