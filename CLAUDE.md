@@ -884,6 +884,9 @@ From the owner's mockup PDFs; staff control all of it from the staff app (no web
   - **New outlets:** `createOutlet` creates the outlet's Settings row in the same transaction.
 - Full status of the 8-step website plan lives in the root `CLAUDE.md` ("Public Website Integration").
 
+## Menu item sizes keep their ids (2026-11-01)
+`updateMenuItem` (`menu.controller.ts`) syncs `variants` **in place** (match by `id` if sent, else by name; create the new, delete only the removed). It used to delete all sizes and re-create them, so every edit gave each size a new id. Things that point at a size by id then went stale: `DealOptionItem`/`DealBogoItem.variantId` (no FK, so they dangle silently), `FoodRecipe.variantId` (FK cascade: the recipe rows were deleted) and order lines. Symptom: a deal picker listing the same dish twice with no size. A **rename** still gives a new id. Deals saved before this fix (staging "Family Deal") may hold dead size ids: re-save them in the Deals form.
+
 ## MCP Tools: code-review-graph
 
 **IMPORTANT: This project has a knowledge graph. ALWAYS use the
