@@ -349,7 +349,30 @@ export const updateMenuItem = asyncHandler(async (req: Request, res: Response) =
   // Update item + replace variants & modifiers if provided
   const item = await prisma.$transaction(async (tx) => {
     if (variants !== undefined) {
-      await tx.foodMenuVariant.deleteMany({ where: { menuItemId: id } });
+      // Sync sizes in place (by id, else by name) instead of delete + recreate: deals, recipes and
+      // order lines point at a size by id, and recreating it left them with dead ids.
+      const current = await tx.foodMenuVariant.findMany({ where: { menuItemId: id } });
+      const kept = new Set<string>();
+      for (let i = 0; i < variants.length; i++) {
+        const v = variants[i];
+        const match =
+          current.find((c) => c.id === v.id && !kept.has(c.id)) ??
+          current.find((c) => c.name.trim().toLowerCase() === String(v.name).trim().toLowerCase() && !kept.has(c.id));
+        const data = {
+          name: v.name, price: v.price, displayOrder: i,
+          dineInPrice: v.dineInPrice ?? null, takeAwayPrice: v.takeAwayPrice ?? null,
+          deliveryPrice: v.deliveryPrice ?? null, foodpandaPrice: v.foodpandaPrice ?? null,
+          costPrice: v.costPrice ?? 0,
+        };
+        if (match) {
+          kept.add(match.id);
+          await tx.foodMenuVariant.update({ where: { id: match.id }, data });
+        } else {
+          const created = await tx.foodMenuVariant.create({ data: { ...data, menuItemId: id } });
+          kept.add(created.id);
+        }
+      }
+      await tx.foodMenuVariant.deleteMany({ where: { menuItemId: id, id: { notIn: [...kept] } } });
     }
     if (hasModInput) {
       await tx.menuItemModifier.deleteMany({ where: { menuItemId: id } });
@@ -374,14 +397,6 @@ export const updateMenuItem = asyncHandler(async (req: Request, res: Response) =
         ...(mealTypeIds !== undefined && { mealTypeIds }),
         ...(isNew !== undefined && { isNew: isNew === true }),
         ...(advanceHours !== undefined && { advanceHours: normalizeAdvanceHours(advanceHours) }),
-        ...(variants !== undefined && variants.length > 0 && {
-          variants: { create: variants.map((v: any, i: number) => ({
-            name: v.name, price: v.price, displayOrder: i,
-            dineInPrice: v.dineInPrice ?? null, takeAwayPrice: v.takeAwayPrice ?? null,
-            deliveryPrice: v.deliveryPrice ?? null, foodpandaPrice: v.foodpandaPrice ?? null,
-            costPrice: v.costPrice ?? 0,
-          })) },
-        }),
         ...(hasModInput && modData.length > 0 && {
           modifiers: { create: modData },
         }),
