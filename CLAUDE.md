@@ -953,3 +953,28 @@ variable** (comma-separated, no spaces): the `*.vercel.app` and localhost patter
 custom domains or `*.up.railway.app`, and a blocked origin gets a `500` on the preflight and the request. Check with
 `curl -i -H "Origin: <origin>" <backend>/api/website/outlets`. Password-reset email needs `SMTP_*` + `MAIL_FROM` (not set on
 production yet). Root guide → "Production go-live" has the full list.
+
+## QA round 2026-10-28/30 (backend side)
+- **`Order.time` is built on the UTC server:** `order.controller.ts` `createOrder`, `website.controller.ts` `createWebsiteOrder` and
+  `self-order.controller.ts` `createSelfOrder` must all pass `timeZone: 'Asia/Karachi'` to `toLocaleTimeString`. Only new orders are fixed.
+- **`meetsMinOrder` in `website.pricing.ts` uses the subtotal before any discount**, so the first-order offer can't push a cart under the minimum.
+- **A website order's `paymentMethod` is `'Pending'`** and `computeOrderAmountToCollect` (delivery.controller.ts) treats it as to-collect.
+  The staff helper `utils/deliveryPayment.ts` must agree.
+- **`Reservation.rejectionReason`** (`VarChar(200)`, additive, pushed to staging 2026-10-30): `updateReservation` stores it only when the new
+  status is `cancelled` and clears it for any other status; `toReservationStatusView` returns it (only while cancelled).
+- **`vitest.config.ts` supplies dummy `DATABASE_URL` / `JWT_SECRET`**, so a test that imports a controller no longer dies on `config/env.ts`'s
+  `process.exit`. 33 files / 553 tests (2026-10-30).
+- The QA recipe (staging flow, clean-up scripts, deploy checks) is in the root guide's "QA round 2026-10-28/30" block; ZZTEST rows are deleted
+  with a throwaway `tsx` Prisma script run from this folder.
+
+## QA round 2026-10-31 (backend side)
+Server-side input rules added after a full staging sweep; keep them when touching these handlers.
+- **Stock can't go negative by hand:** `stock.controller.ts` `assertEnoughStock(ingredientId, warehouseId, qty)` runs before `createWasteRecord` and before a deduct/damage `createAdjustment` (warehouse stock when a warehouse is given, else the global `Ingredient.currentStock`).
+- **Manual production-batch waste** (`wasteProductionBatch`) writes a `WasteRecord` (reason "Production waste", cost = `unitCost × qty`), like the auto-expiry path.
+- **Purchases:** `purchase.items.ts` `invalidPurchasePayment(total, paid, status)` guards `createPurchase` and `updatePurchase`; items keep `invalidPurchaseItem`.
+- **Expenses:** `checkAmountAndDate` (amount > 0, real date) on create and update.
+- **Payroll:** `invalidPayout` on `/pay` and `/pay-batch`; both "already paid" queries use `COALESCE(notes, '')`; the commission window shifts the PKT calendar days by −5 h.
+- **Settings:** `updateSettingsSchema` requires a non-empty `restaurantName` and `currency`, and non-empty payment method strings.
+- **HR:** `correctAttendance` rejects clock-out < clock-in; `submitLeaveRequest` rejects overlap with the user's pending/approved leave (string compare on `"YYYY-MM-DD"`); `updateBalance` rejects negatives; `saveSchedule` validates `weekStart` (Monday), `shiftType`, `dayIndex`, one shift per day and that `userId` belongs to the caller's outlet; `getMySchedule` returns published schedules only (query param `week`).
+- **Deals:** `assertCanModifyDeal` guards update, toggle and delete (non-Super-Admin: only a deal whose `outletIds` is exactly their own outlet).
+- 564 tests (35 files). No schema change between `main` and `develop` at the 2026-10-31 merge.
