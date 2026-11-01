@@ -469,7 +469,7 @@ export const updateDeal = asyncHandler(async (req: Request, res: Response) => {
         },
         include: dealInclude,
       });
-    });
+    }, { timeout: 25000, maxWait: 10000 });
     res.json(ApiResponse.success(mapDealOut(deal), 'Deal updated'));
   } catch (err: any) {
     if (err?.code === 'P2002') throw ApiError.badRequest('A deal with this code already exists');
