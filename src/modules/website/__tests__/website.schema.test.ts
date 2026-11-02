@@ -48,3 +48,26 @@ describe('createOrderSchema paymentChoice', () => {
     expect(createOrderSchema.safeParse({ ...order, paymentChoice: 'card' }).success).toBe(false);
   });
 });
+
+describe('createOrderSchema gift', () => {
+  const delivery = {
+    outletId: OUTLET, orderType: 'Delivery', items: [ITEM], customerName: 'Buyer', customerPhone: '0300-1234567',
+    deliveryAddress: 'House 12, Street 4, DHA Lahore',
+  };
+  const gift = { recipientName: 'Sara Khan', recipientPhone: '0321-2222222', message: 'Happy birthday' };
+
+  it('is optional, so an ordinary order is unchanged', () => {
+    expect(createOrderSchema.parse(delivery).gift).toBeUndefined();
+  });
+  it('accepts a gift on a Delivery order', () => {
+    expect(createOrderSchema.parse({ ...delivery, gift }).gift?.recipientName).toBe('Sara Khan');
+  });
+  it('refuses a gift on Take Away (a gift is delivered)', () => {
+    expect(createOrderSchema.safeParse({ ...delivery, orderType: 'Take Away', gift }).success).toBe(false);
+  });
+  it('needs the recipient name and phone, and caps the card message', () => {
+    expect(createOrderSchema.safeParse({ ...delivery, gift: { ...gift, recipientName: ' ' } }).success).toBe(false);
+    expect(createOrderSchema.safeParse({ ...delivery, gift: { ...gift, recipientPhone: '' } }).success).toBe(false);
+    expect(createOrderSchema.safeParse({ ...delivery, gift: { ...gift, message: 'x'.repeat(201) } }).success).toBe(false);
+  });
+});

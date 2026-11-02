@@ -173,8 +173,8 @@ export const quoteCart = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const createWebsiteOrder = asyncHandler(async (req: Request, res: Response) => {
-  const { outletId, orderType, items, dealCode, customerName, customerPhone, deliveryAddress, deliveryLocation, specialInstructions, clientRequestId, paymentChoice } = req.body;
-  
+  const { outletId, orderType, items, dealCode, customerName, customerPhone, deliveryAddress, deliveryLocation, specialInstructions, clientRequestId, paymentChoice, gift } = req.body;
+
   if (clientRequestId) {
     const existing = await prisma.order.findFirst({
       where: { clientRequestId }
@@ -195,6 +195,10 @@ export const createWebsiteOrder = asyncHandler(async (req: Request, res: Respons
   if (!phone) {
     throw ApiError.badRequest('Enter a valid mobile number (03XX-XXXXXXX)');
   }
+
+  // A gift is for someone else: its phone is checked like the buyer's.
+  const giftPhone = gift ? normalizePkPhone(gift.recipientPhone) : null;
+  if (gift && !giftPhone) throw ApiError.badRequest("Enter a valid mobile number for the recipient (03XX-XXXXXXX)");
 
   const priced = await priceWebsiteCart(prisma, {
     outletId, orderType, items, dealCode, stockHint: ORDER_STOCK_HINT,
@@ -225,7 +229,8 @@ export const createWebsiteOrder = asyncHandler(async (req: Request, res: Respons
   const customer = await findOrCreateWebsiteCustomer(prisma, { 
     name: customerName, 
     phone, 
-    address: orderType === 'Delivery' ? deliveryAddress : null 
+    // A gift's address is the recipient's, not the buyer's.
+    address: orderType === 'Delivery' && !gift ? deliveryAddress : null
   });
 
   // Apply special instructions to the first item's notes if it lacks notes
@@ -271,6 +276,9 @@ export const createWebsiteOrder = asyncHandler(async (req: Request, res: Respons
       cashApproved: true,
       clientRequestId: clientRequestId || null,
       customerUid: res.locals.customerUid ?? null,
+      giftRecipientName: gift ? gift.recipientName : null,
+      giftRecipientPhone: giftPhone,
+      giftMessage: gift?.message || null,
       items: {
         create: priced.itemsData.map(i => ({
           menuItemId: i.menuItemId,
@@ -371,6 +379,8 @@ function toOrderStatusView(order: Prisma.OrderGetPayload<{ include: typeof ORDER
     items: order.items.map(i => ({ name: i.name, qty: i.qty })),
     outletName: order.outlet?.name || 'Unknown',
     createdAt: order.createdAt,
+    // A gift shows who it is for (never their phone) and the card message.
+    gift: order.giftRecipientName ? { recipientName: order.giftRecipientName, message: order.giftMessage } : null,
     payment: toPaymentView(
       { status: order.status, total: Number(order.total), paymentMethod: order.paymentMethod },
       order.payments.map(toPaymentLike)
@@ -697,7 +707,7 @@ export const getComingSoon = asyncHandler(async (_req: Request, res: Response) =
   const dishes = await prisma.comingSoonDish.findMany({
     where: { isActive: true },
     orderBy: [{ votes: 'desc' }, { createdAt: 'asc' }],
-    select: { id: true, name: true, description: true, votes: true },
+    select: { id: true, name: true, description: true, image: true, votes: true },
   });
   res.setHeader('Cache-Control', 'no-cache');
   res.json(ApiResponse.success(dishes));

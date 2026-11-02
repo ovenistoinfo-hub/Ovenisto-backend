@@ -981,3 +981,18 @@ Server-side input rules added after a full staging sweep; keep them when touchin
 - **HR:** `correctAttendance` rejects clock-out < clock-in; `submitLeaveRequest` rejects overlap with the user's pending/approved leave (string compare on `"YYYY-MM-DD"`); `updateBalance` rejects negatives; `saveSchedule` validates `weekStart` (Monday), `shiftType`, `dayIndex`, one shift per day and that `userId` belongs to the caller's outlet; `getMySchedule` returns published schedules only (query param `week`).
 - **Deals:** `assertCanModifyDeal` guards update, toggle and delete (non-Super-Admin: only a deal whose `outletIds` is exactly their own outlet).
 - 564 tests (35 files). No schema change between `main` and `develop` at the 2026-10-31 merge.
+
+## Gifts + Coming Soon photos (2026-11-02, uncommitted; schema pushed to staging 2026-11-02 with the owner's OK)
+- **Schema (additive):** `Order.giftRecipientName/giftRecipientPhone/giftMessage` (nullable) and `ComingSoonDish.image` (`VarChar(500)`).
+  Production gets them from the deploy-time `db push`.
+- **Gift = a Delivery order for someone else.** `POST /website/orders` takes optional `gift {recipientName, recipientPhone, message?}`
+  (zod in `website.schema.ts`: Delivery only, name 2+, message 200 max). The controller normalises the recipient phone (400 if not a Pakistani
+  mobile) and stores the three columns. `customerName`/`phone` stay the BUYER (My Orders, reports, `findOrCreateWebsiteCustomer`); a gift's
+  address is not saved on the buyer's customer record.
+- **The rider sees the recipient:** pure `delivery.helpers.ts` `deliveryContact(order)` (tested) = gift recipient, else buyer. It fills
+  `DeliveryAssignment.customerPhone` at both assignment-create sites, `mapAssignment`'s `order.customerName/phone` and
+  `mapUnassignedDeliveryOrder`, so the Flutter rider app and the web portal call the recipient with no client change. Every delivery order
+  `select` includes the three gift fields (they ride in `a.order`); keep that when adding a delivery query.
+- **Status views** (`/orders/:id/status`, `/my/orders`) return `gift: {recipientName, message} | null` (never the recipient's phone).
+- **Coming soon photo:** `/site-content/coming-soon` create/update accept `image` (https URL from `/api/upload/image`); the public
+  `GET /website/coming-soon` returns it. 571 tests (35 files).

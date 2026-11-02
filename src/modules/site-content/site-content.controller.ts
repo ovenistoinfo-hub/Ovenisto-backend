@@ -19,13 +19,13 @@ export const listComingSoon = asyncHandler(async (_req: Request, res: Response) 
 });
 
 export const createComingSoon = asyncHandler(async (req: Request, res: Response) => {
-  const { name, description } = req.body as { name: string; description?: string };
-  const dish = await prisma.comingSoonDish.create({ data: { name, description: description || null } });
+  const { name, description, image } = req.body as { name: string; description?: string; image?: string };
+  const dish = await prisma.comingSoonDish.create({ data: { name, description: description || null, image: image || null } });
   res.status(201).json(ApiResponse.created(dish, 'Dish added'));
 });
 
 export const updateComingSoon = asyncHandler(async (req: Request, res: Response) => {
-  const { name, description, isActive } = req.body as { name?: string; description?: string | null; isActive?: boolean };
+  const { name, description, image, isActive } = req.body as { name?: string; description?: string | null; image?: string | null; isActive?: boolean };
   const existing = await prisma.comingSoonDish.findUnique({ where: { id: req.params.id } });
   if (!existing) throw ApiError.notFound('Dish not found');
   const dish = await prisma.comingSoonDish.update({
@@ -33,6 +33,7 @@ export const updateComingSoon = asyncHandler(async (req: Request, res: Response)
     data: {
       ...(name !== undefined && { name }),
       ...(description !== undefined && { description: description || null }),
+      ...(image !== undefined && { image: image || null }),
       ...(isActive !== undefined && { isActive }),
     },
   });

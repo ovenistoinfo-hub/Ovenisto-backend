@@ -31,7 +31,16 @@ export const createOrderSchema = quoteCartSchema.extend({
   specialInstructions: z.string().max(500).optional(),
   clientRequestId: z.string().max(64).optional(),
   paymentChoice: z.enum(['online', 'cash']).optional().default('cash'),
+  // "Send as a gift": the address above is the recipient's, and the rider calls them, not the buyer.
+  gift: z.object({
+    recipientName: z.string().trim().min(2, 'Enter the recipient\'s name').max(100),
+    recipientPhone: z.string().trim().min(1, 'Enter the recipient\'s mobile number').max(20),
+    message: z.string().trim().max(200, 'The card message can be up to 200 characters').optional(),
+  }).optional(),
 }).superRefine((data, ctx) => {
+  if (data.gift && data.orderType !== 'Delivery') {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'A gift is delivered: choose Delivery', path: ['gift'] });
+  }
   if (data.orderType === 'Delivery') {
     if (!data.deliveryAddress || data.deliveryAddress.length < 10) {
       ctx.addIssue({

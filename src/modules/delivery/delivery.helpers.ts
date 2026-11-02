@@ -202,3 +202,19 @@ export function deriveHistoryPaymentLabel(
   // Plain method ("Card", "Credit Card") -> unchanged
   return pm;
 }
+
+/**
+ * Who the rider sees and calls for a delivery: a gift's recipient, else the buyer. The order keeps the buyer
+ * in customerName/phone (reports, My Orders); only the delivery side swaps in the recipient.
+ */
+export function deliveryContact(order: {
+  customerName?: string | null;
+  phone?: string | null;
+  giftRecipientName?: string | null;
+  giftRecipientPhone?: string | null;
+}): { name: string | null; phone: string } {
+  return {
+    name: order.giftRecipientName || order.customerName || null,
+    phone: order.giftRecipientPhone || order.phone || '',
+  };
+}

@@ -4,6 +4,7 @@ import {
   groupDeliveriesByDay,
   rankRiders,
   deriveHistoryPaymentLabel,
+  deliveryContact,
 } from '../delivery.helpers.js';
 
 describe('getDefaultWeekRange', () => {
@@ -158,5 +159,18 @@ describe('nonZeroMethods', () => {
     const { nonZeroMethods } = await import('../../cash-settlement/cash-settlement.service.js');
     const input = { Cash: 1500, Card: 0, JazzCash: 500, EasyPaisa: 0 };
     expect(nonZeroMethods(input)).toEqual({ Cash: 1500, JazzCash: 500 });
+  });
+});
+
+describe('deliveryContact', () => {
+  it('uses the buyer when the order is not a gift', () => {
+    expect(deliveryContact({ customerName: 'Ali', phone: '0300-1111111' })).toEqual({ name: 'Ali', phone: '0300-1111111' });
+  });
+  it('uses the gift recipient when there is one', () => {
+    expect(deliveryContact({ customerName: 'Ali', phone: '0300-1111111', giftRecipientName: 'Sara', giftRecipientPhone: '0321-2222222' }))
+      .toEqual({ name: 'Sara', phone: '0321-2222222' });
+  });
+  it('never returns a null phone', () => {
+    expect(deliveryContact({})).toEqual({ name: null, phone: '' });
   });
 });

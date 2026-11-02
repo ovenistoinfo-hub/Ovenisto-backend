@@ -15,13 +15,17 @@ import { toVideoEmbedUrl } from './site-content.helpers.js';
 const CONTENT_ROLES = ['Super Admin', 'Admin', 'Manager'];
 const INQUIRY_ROLES = ['Super Admin', 'Admin', 'Manager', 'Floor Manager'];
 
+// The photo comes from /api/upload/image, like a kitchen post's.
+const dishImage = z.string().url().startsWith('https://').max(500);
 const dishCreate = z.object({
   name: z.string().trim().min(2, 'Name is required').max(100),
   description: z.string().trim().max(200).optional(),
+  image: dishImage.optional(),
 });
 const dishUpdate = z.object({
   name: z.string().trim().min(2).max(100).optional(),
   description: z.string().trim().max(200).nullable().optional(),
+  image: dishImage.nullable().optional(),
   isActive: z.boolean().optional(),
 });
 const inquiryUpdate = z.object({ status: z.enum(['new', 'contacted', 'closed']) });

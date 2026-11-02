@@ -895,6 +895,11 @@ model Order {
   clientRequestId String?     @unique @db.VarChar(64)
   // Firebase uid of the signed-in website customer who placed it (website orders only): "My orders".
   customerUid     String?     @db.VarChar(128)
+  // Website "Send as a gift" (Delivery only): who the rider delivers to, and an optional card message.
+  // customerName/phone stay the buyer; the rider and delivery board show the recipient (deliveryContact).
+  giftRecipientName  String?  @db.VarChar(100)
+  giftRecipientPhone String?  @db.VarChar(20)
+  giftMessage        String?  @db.VarChar(200)
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
@@ -997,6 +1002,8 @@ model ComingSoonDish {
   id          String   @id @default(uuid())
   name        String   @db.VarChar(100)
   description String?  @db.VarChar(200)
+  /// Photo URL, uploaded in staff Settings → Website
+  image       String?  @db.VarChar(500)
   votes       Int      @default(0)
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
