@@ -216,6 +216,8 @@ export const createWebsiteOrder = asyncHandler(async (req: Request, res: Respons
   // Pay online: the branch must offer it and the server must have the Safepay keys. The browser's origin
   // is where Safepay sends the customer back, so it has to be one the CORS rule allows.
   const payOnline = paymentChoice === 'online';
+  // A gift is paid by the buyer up front: the recipient never pays the rider.
+  if (gift && !payOnline) throw ApiError.badRequest('Gift orders are paid online');
   const returnOrigin = payOnline ? returnOriginOf(req) : null;
   if (payOnline) {
     const branchConfig = readWebsiteConfig((await getOutletSettings(priced.outlet.id))?.websiteConfig);
